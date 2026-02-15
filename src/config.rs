@@ -324,6 +324,9 @@ pub struct OpenAiCompatibleConfig {
     pub base_url: String,
     pub api_key: Option<SecretString>,
     pub model: String,
+    /// Extra HTTP headers to send with every request (e.g. for Cloudflare AI Gateway).
+    /// Parsed from `LLM_EXTRA_HEADERS` as comma-separated `key=value` pairs.
+    pub extra_headers: Vec<(String, String)>,
 }
 
 /// LLM provider configuration.
@@ -408,10 +411,23 @@ impl LlmConfig {
             let model = optional_env("LLM_MODEL")?
                 .or_else(|| settings.selected_model.clone())
                 .unwrap_or_else(|| "default".to_string());
+            let extra_headers = optional_env("LLM_EXTRA_HEADERS")?
+                .map(|raw| {
+                    raw.split(',')
+                        .filter_map(|pair| {
+                            let pair = pair.trim();
+                            let (k, v) = pair.split_once('=')?;
+                            Some((k.trim().to_string(), v.trim().to_string()))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
             Some(OpenAiCompatibleConfig {
                 base_url,
                 api_key,
                 model,
+                extra_headers,
             })
         } else {
             None

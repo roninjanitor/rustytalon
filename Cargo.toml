@@ -114,6 +114,9 @@ rig-core = "0.30"
 # Docker sandbox
 bollard = "0.18"
 
+# HTTP types (shared with rig-core)
+http = "1"
+
 # HTTP proxy for sandboxed network access
 hyper = { version = "1.5", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server", "tokio", "http1", "http2"] }

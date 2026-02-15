@@ -139,14 +139,34 @@ fn create_openai_compatible_provider(config: &LlmConfig) -> Result<Arc<dyn LlmPr
         .map(|k| k.expose_secret().to_string())
         .unwrap_or_else(|| "no-key".to_string());
 
-    let client: openai::Client = openai::Client::builder()
+    let mut builder = openai::Client::builder()
         .base_url(&compat.base_url)
-        .api_key(api_key)
-        .build()
-        .map_err(|e| LlmError::RequestFailed {
-            provider: "openai_compatible".to_string(),
-            reason: format!("Failed to create OpenAI-compatible client: {}", e),
-        })?;
+        .api_key(api_key);
+
+    if !compat.extra_headers.is_empty() {
+        let mut headers = http::HeaderMap::new();
+        for (key, value) in &compat.extra_headers {
+            let name = http::header::HeaderName::from_bytes(key.as_bytes()).map_err(|e| {
+                LlmError::RequestFailed {
+                    provider: "openai_compatible".to_string(),
+                    reason: format!("Invalid header name '{key}': {e}"),
+                }
+            })?;
+            let val = http::header::HeaderValue::from_str(value).map_err(|e| {
+                LlmError::RequestFailed {
+                    provider: "openai_compatible".to_string(),
+                    reason: format!("Invalid header value for '{key}': {e}"),
+                }
+            })?;
+            headers.insert(name, val);
+        }
+        builder = builder.http_headers(headers);
+    }
+
+    let client: openai::Client = builder.build().map_err(|e| LlmError::RequestFailed {
+        provider: "openai_compatible".to_string(),
+        reason: format!("Failed to create OpenAI-compatible client: {e}"),
+    })?;
 
     let model = client.completion_model(&compat.model);
     tracing::info!(

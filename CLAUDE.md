@@ -278,6 +278,13 @@ LLM_BACKEND=anthropic  # anthropic (default), openai, ollama, openai_compatible
 ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
+# OpenAI-compatible (Cloudflare AI Gateway, LiteLLM, etc.)
+# LLM_BACKEND=openai_compatible
+# LLM_BASE_URL=https://gateway.ai.cloudflare.com/v1/ACCOUNT/GATEWAY/openai
+# LLM_API_KEY=sk-...
+# LLM_MODEL=gpt-4o
+# LLM_EXTRA_HEADERS=cf-aig-authorization=Bearer token  # extra HTTP headers
+
 # Agent settings
 AGENT_NAME=rustytalon
 MAX_PARALLEL_JOBS=5
@@ -333,7 +340,7 @@ RustyTalon uses [rig-core](https://crates.io/crates/rig-core) for multi-provider
 | Anthropic | `ANTHROPIC_` | Default, Claude models |
 | OpenAI | `OPENAI_` | GPT models |
 | Ollama | `OLLAMA_` | Local models, no API key needed |
-| OpenAI-compatible | `OPENAI_COMPATIBLE_` | Any API with OpenAI-compatible format |
+| OpenAI-compatible | `LLM_` | Any OpenAI-compatible API; supports `LLM_EXTRA_HEADERS` for gateways |
 
 The `SmartRouter` (when `ROUTING_ENABLED=true`) selects the best provider per-request based on query complexity, cost, and provider health. `TrackedProvider` wraps providers with retry logic and cost recording via `Database::record_llm_call()`.
 
