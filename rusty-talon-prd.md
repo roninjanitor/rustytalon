@@ -11,19 +11,21 @@
 ## Problem Statement
 
 Current AI assistant solutions suffer from:
-- **Vendor Lock-in**: RustyTalon requires NEAR AI account, OpenClaw lacks type safety
-- **Cost Inefficiency**: No smart routing between cheap and expensive models
+- **Vendor Lock-in**: IronClaw (our starting point) requires NEAR AI account; other solutions lack flexibility
+- **Cost Inefficiency**: Single-provider solutions can't route queries to cost-effective models
 - **Security Concerns**: Python/TypeScript implementations lack memory safety guarantees
 - **Limited Control**: Can't mix providers or implement custom routing logic
 
 ## Solution
 
-RustyTalon is a Rust-based fork of RustyTalon that:
-1. Removes NEAR AI dependency
-2. Supports direct API access to multiple providers (Anthropic, OpenAI, Liquid AI, etc.)
-3. Implements intelligent routing between cheap and expensive models
-4. Maintains RustyTalon's security architecture (WASM sandbox, credential protection)
-5. Integrates with existing homelab infrastructure (PostgreSQL, Infisical, Signal)
+RustyTalon is derived from [IronClaw](https://github.com/nearai/ironclaw) (NEAR AI), an excellent secure AI assistant. We've enhanced it by:
+1. **Removing vendor lock-in** - Direct API access to multiple providers instead of NEAR AI dependency
+2. **Adding multi-provider support** - Route between Anthropic, OpenAI, Ollama, and OpenAI-compatible APIs
+3. **Implementing smart routing** - Automatically select the best provider based on query complexity and cost
+4. **Preserving security** - Retain IronClaw's WASM sandbox, credential protection, and prompt injection defense
+5. **Expanding capabilities** - Add Docker sandbox execution, web gateway, smart routing, and cost tracking
+
+RustyTalon maintains IronClaw's robust foundation while removing vendor dependency and adding intelligent multi-provider support.
 
 ---
 
@@ -762,47 +764,48 @@ Secrets:
 
 ---
 
-## Migration from RustyTalon
+## Derivation from IronClaw
+
+RustyTalon is derived from [IronClaw](https://github.com/nearai/ironclaw) (Copyright 2024 NEAR AI). This section documents what we preserved, removed, and enhanced.
 
 ### Code Preservation
 
-**Keep from RustyTalon:**
-- ✅ WASM sandbox implementation (`src/sandbox/`)
-- ✅ Signal channel (`src/channels/signal.rs`)
+**Keep from IronClaw:**
+- ✅ WASM sandbox implementation (`src/tools/wasm/`)
+- ✅ Signal channel integration (`src/channels/`)
 - ✅ Database schema and migrations
 - ✅ Security features (credential injection, endpoint allowlisting)
 - ✅ Tool execution framework
+- ✅ Workspace/memory system with hybrid search
+- ✅ Safety layer (sanitizer, validator, leak detector)
 
-**Remove from RustyTalon:**
-- ❌ NEAR AI client code
-- ❌ NEAR AI authentication
+**Remove from IronClaw:**
+- ❌ NEAR AI client and provider code
+- ❌ NEAR AI authentication flows
 - ❌ NEAR AI-specific configuration
 
-**Modify from RustyTalon:**
-- 🔄 `src/llm/` - Replace NEAR AI provider with multi-provider system
-- 🔄 `src/config/` - New configuration schema
-- 🔄 `src/onboard.rs` - New setup wizard
-- 🔄 `Cargo.toml` - Different dependencies
+**Enhance from IronClaw:**
+- 🔄 `src/llm/` - Replace single NEAR AI provider with multi-provider system (Anthropic, OpenAI, Ollama, OpenAI-compatible)
+- 🔄 `src/llm/routing/` - Add smart routing based on query complexity and cost
+- 🔄 `src/config.rs` - New flexible configuration for multiple providers
+- 🔄 Docker support - Add Dockerfile, docker-compose, CI/CD pipelines
+- 🔄 `src/orchestrator/` - Enhance Docker sandbox execution
+- 🔄 Web gateway - Add comprehensive API and browser UI
 
 ### Data Migration
 
 **Database Schema:**
-- Add `provider_used` column to messages table
-- Add `tokens_input`, `tokens_output`, `cost_usd` columns
-- Keep existing conversation and message tables
+- Keep all IronClaw tables (conversations, messages, workspace, etc.)
+- Add `provider_used` column to track which provider handled each request
+- Add `tokens_input`, `tokens_output`, `cost_usd` for cost tracking
+- Existing conversation and message data remains intact
 
-**Settings Migration:**
+**Configuration Migration:**
+From IronClaw's simple single-provider config to RustyTalon's multi-provider config:
 ```bash
-# Old RustyTalon settings
-~/.rustytalon/settings.toml
-
-# New RustyTalon settings
-~/.rustytalon/settings.toml
-
-# Migration script will:
-# 1. Copy database URL
-# 2. Prompt for new API keys
-# 3. Set default routing strategy
+# Example: migrate from IronClaw to RustyTalon
+# Configure your LLM provider(s) - see Configuration section above
+# All workspace data and conversation history preserved
 ```
 
 ---
