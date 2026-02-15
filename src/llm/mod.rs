@@ -84,16 +84,49 @@ fn create_anthropic_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>,
 
     use rig::providers::anthropic;
 
-    let client: anthropic::Client =
-        anthropic::Client::new(anth.api_key.expose_secret()).map_err(|e| {
-            LlmError::RequestFailed {
-                provider: "anthropic".to_string(),
-                reason: format!("Failed to create Anthropic client: {}", e),
-            }
-        })?;
+    let mut builder = anthropic::Client::builder()
+        .api_key(anth.api_key.expose_secret().to_string());
+
+    if let Some(ref base_url) = anth.base_url {
+        builder = builder.base_url(base_url);
+    }
+
+    if !anth.extra_headers.is_empty() {
+        let mut headers = http::HeaderMap::new();
+        for (key, value) in &anth.extra_headers {
+            tracing::debug!("Adding extra header: {} = {}", key, value);
+            let name = http::header::HeaderName::from_bytes(key.as_bytes()).map_err(|e| {
+                LlmError::RequestFailed {
+                    provider: "anthropic".to_string(),
+                    reason: format!("Invalid header name '{key}': {e}"),
+                }
+            })?;
+            let val = http::header::HeaderValue::from_str(value).map_err(|e| {
+                LlmError::RequestFailed {
+                    provider: "anthropic".to_string(),
+                    reason: format!("Invalid header value for '{key}': {e}"),
+                }
+            })?;
+            headers.insert(name, val);
+        }
+        tracing::debug!("Configured {} extra headers (http_headers should merge with api_key)", headers.len());
+        builder = builder.http_headers(headers);
+    }
+
+    let client: anthropic::Client = builder.build().map_err(|e| {
+        LlmError::RequestFailed {
+            provider: "anthropic".to_string(),
+            reason: format!("Failed to create Anthropic client: {}", e),
+        }
+    })?;
 
     let model = client.completion_model(&anth.model);
-    tracing::info!("Using Anthropic direct API (model: {})", anth.model);
+    let display_url = anth.base_url.as_deref().unwrap_or("https://api.anthropic.com");
+    tracing::info!(
+        "Using Anthropic API (base_url: {}, model: {})",
+        display_url,
+        anth.model
+    );
     Ok(Arc::new(RigAdapter::new(model, &anth.model)))
 }
 

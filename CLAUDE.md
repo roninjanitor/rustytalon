@@ -277,13 +277,23 @@ LIBSQL_PATH=~/.rustytalon/rustytalon.db    # libSQL local path (default)
 LLM_BACKEND=anthropic  # anthropic (default), openai, ollama, openai_compatible
 ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
+# ANTHROPIC_BASE_URL=https://api.anthropic.com  # Custom base URL (for proxies/gateways)
+# ANTHROPIC_EXTRA_HEADERS="key=value,key2=value2"  # Extra HTTP headers (comma-separated)
+#   NOTE: Quote values containing '=' signs in .env files (dotenvy requires it)
 
-# OpenAI-compatible (Cloudflare AI Gateway, LiteLLM, etc.)
+# Cloudflare AI Gateway example (Anthropic)
+# LLM_BACKEND=anthropic
+# ANTHROPIC_API_KEY=sk-ant-...
+# ANTHROPIC_MODEL=claude-sonnet-4-20250514
+# ANTHROPIC_BASE_URL=https://gateway.ai.cloudflare.com/v1/ACCOUNT/GATEWAY/anthropic
+# ANTHROPIC_EXTRA_HEADERS="cf-aig-authorization=Bearer token"  # Quote required (value contains '=')
+
+# OpenAI-compatible (LiteLLM, Together, etc.)
 # LLM_BACKEND=openai_compatible
-# LLM_BASE_URL=https://gateway.ai.cloudflare.com/v1/ACCOUNT/GATEWAY/openai
+# LLM_BASE_URL=https://api.example.com/v1
 # LLM_API_KEY=sk-...
 # LLM_MODEL=gpt-4o
-# LLM_EXTRA_HEADERS=cf-aig-authorization=Bearer token  # extra HTTP headers
+# LLM_EXTRA_HEADERS="key=value,key2=value2"  # Extra HTTP headers (quote if values contain '=')
 
 # Agent settings
 AGENT_NAME=rustytalon

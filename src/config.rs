@@ -309,6 +309,10 @@ pub struct OpenAiDirectConfig {
 pub struct AnthropicDirectConfig {
     pub api_key: SecretString,
     pub model: String,
+    pub base_url: Option<String>,
+    /// Extra HTTP headers to send with every request (e.g. for Cloudflare AI Gateway).
+    /// Parsed from `ANTHROPIC_EXTRA_HEADERS` as comma-separated `key=value` pairs.
+    pub extra_headers: Vec<(String, String)>,
 }
 
 /// Configuration for local Ollama.
@@ -370,7 +374,30 @@ impl LlmConfig {
             let model = optional_env("ANTHROPIC_MODEL")?
                 .or_else(|| settings.selected_model.clone())
                 .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
-            Some(AnthropicDirectConfig { api_key, model })
+            let base_url = optional_env("ANTHROPIC_BASE_URL")?;
+            let extra_headers_raw = optional_env("ANTHROPIC_EXTRA_HEADERS")?;
+            tracing::debug!("ANTHROPIC_EXTRA_HEADERS raw value: {:?}", extra_headers_raw);
+            let extra_headers = extra_headers_raw
+                .map(|raw| {
+                    let headers: Vec<_> = raw.split(',')
+                        .filter_map(|pair| {
+                            let pair = pair.trim();
+                            let (k, v) = pair.split_once('=')?;
+                            let result = (k.trim().to_string(), v.trim().to_string());
+                            tracing::debug!("  Parsed Anthropic header: {} = {}", result.0, result.1);
+                            Some(result)
+                        })
+                        .collect();
+                    tracing::debug!("Total Anthropic extra headers: {}", headers.len());
+                    headers
+                })
+                .unwrap_or_default();
+            Some(AnthropicDirectConfig {
+                api_key,
+                model,
+                base_url,
+                extra_headers,
+            })
         } else {
             None
         };
