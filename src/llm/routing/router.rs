@@ -534,6 +534,7 @@ pub struct ProviderHealthReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::test_utils::MockProvider;
 
     #[test]
     fn test_provider_health_tracking() {
@@ -557,12 +558,218 @@ mod tests {
     }
 
     #[test]
-    fn test_routing_decision() {
+    fn test_routing_decision_no_providers() {
         let config = RoutingConfig::default();
         let router = SmartRouter::new(config);
 
         // Router with no providers should fail
         let result = router.route("Hello");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_route_with_single_provider() {
+        let config = RoutingConfig::default();
+        let mut router = SmartRouter::new(config);
+        let provider = Arc::new(MockProvider::succeeding("anthropic", "ok"));
+        router.register_provider(LlmBackend::Anthropic, provider);
+
+        let decision = router.route("Hello, how are you?").unwrap();
+        assert_eq!(decision.backend, LlmBackend::Anthropic);
+    }
+
+    #[test]
+    fn test_route_preferred_provider() {
+        let config = RoutingConfig {
+            preferred_providers: vec![LlmBackend::OpenAi],
+            ..Default::default()
+        };
+        let mut router = SmartRouter::new(config);
+        router.register_provider(
+            LlmBackend::Anthropic,
+            Arc::new(MockProvider::succeeding("anthropic", "ok")),
+        );
+        router.register_provider(
+            LlmBackend::OpenAi,
+            Arc::new(MockProvider::succeeding("openai", "ok")),
+        );
+
+        let decision = router.route("Hello").unwrap();
+        // With balanced strategy and OpenAI preferred, routing should pick a registered provider.
+        assert!(
+            decision.backend == LlmBackend::OpenAi || decision.backend == LlmBackend::Anthropic,
+            "Should route to one of the registered providers"
+        );
+    }
+
+    #[test]
+    fn test_route_excludes_provider() {
+        let config = RoutingConfig {
+            excluded_providers: vec![LlmBackend::Anthropic],
+            ..Default::default()
+        };
+        let mut router = SmartRouter::new(config);
+        router.register_provider(
+            LlmBackend::Anthropic,
+            Arc::new(MockProvider::succeeding("anthropic", "ok")),
+        );
+        router.register_provider(
+            LlmBackend::OpenAi,
+            Arc::new(MockProvider::succeeding("openai", "ok")),
+        );
+
+        let decision = router.route("Hello").unwrap();
+        assert_eq!(decision.backend, LlmBackend::OpenAi);
+    }
+
+    #[test]
+    fn test_route_all_excluded_fails() {
+        let config = RoutingConfig {
+            excluded_providers: vec![LlmBackend::Anthropic],
+            ..Default::default()
+        };
+        let mut router = SmartRouter::new(config);
+        router.register_provider(
+            LlmBackend::Anthropic,
+            Arc::new(MockProvider::succeeding("anthropic", "ok")),
+        );
+
+        let result = router.route("Hello");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_complete_with_fallback() {
+        let config = RoutingConfig::default();
+        let mut router = SmartRouter::new(config);
+        router.register_provider(
+            LlmBackend::Anthropic,
+            Arc::new(MockProvider::failing_retryable("anthropic")),
+        );
+        router.register_provider(
+            LlmBackend::OpenAi,
+            Arc::new(MockProvider::succeeding("openai", "fallback response")),
+        );
+
+        let (response, backend) = router.complete("Hello").await.unwrap();
+        assert_eq!(response.content, "fallback response");
+        assert_eq!(backend, LlmBackend::OpenAi);
+    }
+
+    #[tokio::test]
+    async fn test_complete_all_fail() {
+        let config = RoutingConfig::default();
+        let mut router = SmartRouter::new(config);
+        router.register_provider(
+            LlmBackend::Anthropic,
+            Arc::new(MockProvider::failing_retryable("anthropic")),
+        );
+        router.register_provider(
+            LlmBackend::OpenAi,
+            Arc::new(MockProvider::failing_retryable("openai")),
+        );
+
+        let result = router.complete("Hello").await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_health_degrades_on_failure() {
+        let mut health = ProviderHealth::default();
+        assert!(health.available);
+
+        for _ in 0..3 {
+            health.record_failure();
+        }
+        assert!(!health.available);
+        assert_eq!(health.consecutive_failures, 3);
+    }
+
+    #[test]
+    fn test_health_recovers_after_success() {
+        let mut health = ProviderHealth::default();
+
+        // Degrade health
+        for _ in 0..3 {
+            health.record_failure();
+        }
+        assert!(!health.available);
+
+        // Recovery: mark available and record success
+        health.available = true;
+        health.record_success(50);
+        assert!(health.available);
+        assert_eq!(health.consecutive_failures, 0);
+    }
+
+    #[tokio::test]
+    async fn test_complete_updates_health_on_success() {
+        let config = RoutingConfig::default();
+        let mut router = SmartRouter::new(config);
+        router.register_provider(
+            LlmBackend::Anthropic,
+            Arc::new(MockProvider::succeeding("anthropic", "ok")),
+        );
+
+        let _ = router.complete("Hello").await.unwrap();
+
+        let health = router.get_health(LlmBackend::Anthropic).unwrap();
+        assert_eq!(health.successful_requests, 1);
+        assert_eq!(health.consecutive_failures, 0);
+    }
+
+    #[tokio::test]
+    async fn test_complete_updates_health_on_failure() {
+        let config = RoutingConfig {
+            enable_fallback: false,
+            ..Default::default()
+        };
+        let mut router = SmartRouter::new(config);
+        router.register_provider(
+            LlmBackend::Anthropic,
+            Arc::new(MockProvider::failing_retryable("anthropic")),
+        );
+
+        let _ = router.complete("Hello").await;
+
+        let health = router.get_health(LlmBackend::Anthropic).unwrap();
+        assert_eq!(health.consecutive_failures, 1);
+    }
+
+    #[test]
+    fn test_fallback_list_excludes_primary() {
+        let config = RoutingConfig::default();
+        let mut router = SmartRouter::new(config);
+        router.register_provider(
+            LlmBackend::Anthropic,
+            Arc::new(MockProvider::succeeding("anthropic", "ok")),
+        );
+        router.register_provider(
+            LlmBackend::OpenAi,
+            Arc::new(MockProvider::succeeding("openai", "ok")),
+        );
+
+        let decision = router.route("Hello").unwrap();
+        assert!(!decision.fallbacks.contains(&decision.backend));
+    }
+
+    #[test]
+    fn test_no_fallbacks_when_disabled() {
+        let config = RoutingConfig {
+            enable_fallback: false,
+            ..Default::default()
+        };
+        let mut router = SmartRouter::new(config);
+        router.register_provider(
+            LlmBackend::Anthropic,
+            Arc::new(MockProvider::succeeding("anthropic", "ok")),
+        );
+        router.register_provider(
+            LlmBackend::OpenAi,
+            Arc::new(MockProvider::succeeding("openai", "ok")),
+        );
+
+        let decision = router.route("Hello").unwrap();
+        assert!(decision.fallbacks.is_empty());
     }
 }

@@ -20,6 +20,9 @@ mod rig_adapter;
 pub mod routing;
 pub mod tracked;
 
+#[cfg(test)]
+pub(crate) mod test_utils;
+
 pub use costs::{default_cost, model_cost};
 pub use failover::FailoverProvider;
 pub use provider::{

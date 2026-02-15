@@ -274,6 +274,8 @@ pub struct LlmCallStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::test_utils::MockDatabase;
+    use crate::llm::test_utils::{MockProvider, MultiCallMockProvider, make_request};
 
     #[test]
     fn test_is_retryable_error() {
@@ -303,5 +305,72 @@ mod tests {
             provider: "p".into(),
             model: "m".into(),
         }));
+    }
+
+    #[tokio::test]
+    async fn test_tracked_delegates_to_inner() {
+        let inner = Arc::new(MockProvider::succeeding("test-model", "hello world"));
+        let db = MockDatabase::new();
+        let tracked = TrackedProvider::new(inner, db.clone(), 0, "test");
+
+        let response = tracked.complete(make_request()).await.unwrap();
+        assert_eq!(response.content, "hello world");
+        assert_eq!(db.recorded_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_tracked_model_name_delegates() {
+        let inner = Arc::new(MockProvider::succeeding("my-model", "ok"));
+        let db = MockDatabase::new();
+        let tracked = TrackedProvider::new(inner, db, 0, "test");
+
+        assert_eq!(tracked.model_name(), "my-model");
+    }
+
+    #[tokio::test]
+    async fn test_tracked_retries_transient_error() {
+        // Fail once, then succeed
+        let inner = Arc::new(MultiCallMockProvider::failing_then_succeeding(
+            "test-model",
+            1,
+            "recovered",
+        ));
+        let db = MockDatabase::new();
+        let tracked = TrackedProvider::new(inner, db.clone(), 2, "test");
+
+        let response = tracked.complete(make_request()).await.unwrap();
+        assert_eq!(response.content, "recovered");
+        // Only recorded on success
+        assert_eq!(db.recorded_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_tracked_no_retry_on_auth_error() {
+        let inner = Arc::new(MockProvider::failing_non_retryable("test-model"));
+        let db = MockDatabase::new();
+        let tracked = TrackedProvider::new(inner, db.clone(), 3, "test");
+
+        let err = tracked.complete(make_request()).await.unwrap_err();
+        match err {
+            LlmError::AuthFailed { provider } => assert_eq!(provider, "test-model"),
+            other => panic!("expected AuthFailed, got: {other:?}"),
+        }
+        // No recording on error
+        assert_eq!(db.recorded_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_tracked_exhausts_retries() {
+        // Always fail (need max_retries + 1 results in the queue)
+        let inner = Arc::new(MultiCallMockProvider::always_failing("test-model", 4));
+        let db = MockDatabase::new();
+        let tracked = TrackedProvider::new(inner, db.clone(), 3, "test");
+
+        let err = tracked.complete(make_request()).await.unwrap_err();
+        match err {
+            LlmError::RequestFailed { .. } => {}
+            other => panic!("expected RequestFailed, got: {other:?}"),
+        }
+        assert_eq!(db.recorded_calls(), 0);
     }
 }

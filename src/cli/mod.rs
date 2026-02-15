@@ -142,3 +142,82 @@ impl Cli {
         matches!(self.command, None | Some(Command::Run))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_parse_no_args() {
+        let cli = Cli::try_parse_from(["rustytalon"]).unwrap();
+        assert!(cli.command.is_none());
+        assert!(cli.should_run_agent());
+    }
+
+    #[test]
+    fn test_parse_run() {
+        let cli = Cli::try_parse_from(["rustytalon", "run"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Run)));
+        assert!(cli.should_run_agent());
+    }
+
+    #[test]
+    fn test_parse_status() {
+        let cli = Cli::try_parse_from(["rustytalon", "status"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Status)));
+        assert!(!cli.should_run_agent());
+    }
+
+    #[test]
+    fn test_parse_tool_list() {
+        let cli = Cli::try_parse_from(["rustytalon", "tool", "list"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Tool(_))));
+    }
+
+    #[test]
+    fn test_parse_tool_install() {
+        let cli =
+            Cli::try_parse_from(["rustytalon", "tool", "install", "/path/to/tool.wasm"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Tool(_))));
+    }
+
+    #[test]
+    fn test_parse_config_get() {
+        let cli = Cli::try_parse_from(["rustytalon", "config", "get", "agent.name"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Config(_))));
+    }
+
+    #[test]
+    fn test_parse_memory_search() {
+        let cli = Cli::try_parse_from(["rustytalon", "memory", "search", "dark mode preference"])
+            .unwrap();
+        assert!(matches!(cli.command, Some(Command::Memory(_))));
+    }
+
+    #[test]
+    fn test_parse_cli_only_flag() {
+        let cli = Cli::try_parse_from(["rustytalon", "--cli-only", "run"]).unwrap();
+        assert!(cli.cli_only);
+        assert!(matches!(cli.command, Some(Command::Run)));
+    }
+
+    #[test]
+    fn test_parse_no_db_flag() {
+        let cli = Cli::try_parse_from(["rustytalon", "--no-db", "status"]).unwrap();
+        assert!(cli.no_db);
+        assert!(matches!(cli.command, Some(Command::Status)));
+    }
+
+    #[test]
+    fn test_parse_message_mode() {
+        let cli = Cli::try_parse_from(["rustytalon", "-m", "hello world"]).unwrap();
+        assert_eq!(cli.message.as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn test_parse_invalid_command() {
+        let result = Cli::try_parse_from(["rustytalon", "nonexistent"]);
+        assert!(result.is_err());
+    }
+}

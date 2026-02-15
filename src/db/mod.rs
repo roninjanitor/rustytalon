@@ -18,6 +18,9 @@ pub mod libsql_backend;
 #[cfg(feature = "libsql")]
 pub mod libsql_migrations;
 
+#[cfg(test)]
+pub(crate) mod test_utils;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

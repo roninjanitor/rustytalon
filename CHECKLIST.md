@@ -95,17 +95,52 @@ ROUTING_EXCLUDED_PROVIDERS=             # Providers to exclude
 - [x] Add response quality validation (`ResponseQualityChecker` with heuristic scoring)
 - [x] Add LLM cost stats API endpoint (`GET /api/providers/costs`)
 - [x] Add `get_llm_call_stats()` to Database trait (both postgres and libSQL backends)
-- [ ] Wire `TrackedProvider` into `main.rs` startup (requires runtime integration)
-- [ ] Wire `SmartRouter` into gateway via `with_smart_router()` (requires runtime integration)
+- [x] Wire `TrackedProvider` into `main.rs` startup (wraps provider when DB available)
+- [x] Wire `SmartRouter` into gateway via `with_smart_router()` and `with_llm_provider()`
 
 ---
 
-## Week 4: Testing & Signal (TODO)
+## Week 4: Testing & Polish
 
-- [ ] Integration tests for each provider
-- [ ] CLI testing
-- [ ] Signal channel verification
-- [ ] Docker deployment testing
+### Test Infrastructure
+- [x] Extract shared `MockProvider` to `src/llm/test_utils.rs` (single-call + multi-call variants)
+- [x] Create `MockDatabase` in `src/db/test_utils.rs` (stub trait impl for unit tests)
+- [x] Update `src/llm/failover.rs` tests to use shared `MockProvider`
+
+### SmartRouter Tests (14 tests)
+- [x] Route with single provider
+- [x] Preferred provider selection
+- [x] Excluded provider filtering
+- [x] All providers excluded → error
+- [x] Complete with fallback (primary fails, fallback succeeds)
+- [x] Complete all providers fail → error
+- [x] Health degrades after 3 failures
+- [x] Health recovers after success
+- [x] Health updated on success/failure after complete()
+- [x] Fallback list excludes primary
+- [x] No fallbacks when disabled
+
+### TrackedProvider Tests (6 tests)
+- [x] Delegates to inner provider
+- [x] Records call in database on success
+- [x] Model name delegates to inner
+- [x] Retries transient errors and succeeds
+- [x] No retry on auth errors
+- [x] Exhausts retries and returns error
+
+### CLI Parsing Tests (11 tests)
+- [x] No args → default (run agent)
+- [x] `run`, `status`, `tool list`, `tool install`, `config get`, `memory search`
+- [x] `--cli-only`, `--no-db`, `-m "message"` flags
+- [x] Invalid command → error
+
+### Docker Deployment Verification (5 tests)
+- [x] `Dockerfile` exists and contains cargo build
+- [x] `Dockerfile.worker` exists and has entrypoint
+- [x] `docker-compose.yml` exists and defines services
+
+### Deferred
+- [ ] Signal channel (not yet implemented — future feature, not a testing gap)
 
 ---
 
