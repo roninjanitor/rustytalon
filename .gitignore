@@ -1,0 +1,10 @@
+
+.env
+.env.local
+
+target/
+
+# WASM build artifacts (loaded from disk, not bundled)
+*.wasm
+
+.DS_Store
