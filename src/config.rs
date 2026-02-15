@@ -353,7 +353,7 @@ pub struct LlmConfig {
 
 impl LlmConfig {
     fn resolve(settings: &Settings) -> Result<Self, ConfigError> {
-        // Determine backend (default: Anthropic)
+        // Determine primary backend (default: Anthropic)
         let backend: LlmBackend = if let Some(b) = optional_env("LLM_BACKEND")? {
             b.parse().map_err(|e| ConfigError::InvalidValue {
                 key: "LLM_BACKEND".to_string(),
@@ -363,102 +363,22 @@ impl LlmConfig {
             LlmBackend::default()
         };
 
-        // Resolve provider-specific configs based on backend
-        let anthropic = if backend == LlmBackend::Anthropic {
-            let api_key = optional_env("ANTHROPIC_API_KEY")?
-                .map(SecretString::from)
-                .ok_or_else(|| ConfigError::MissingRequired {
-                    key: "ANTHROPIC_API_KEY".to_string(),
-                    hint: "Set ANTHROPIC_API_KEY environment variable".to_string(),
-                })?;
-            let model = optional_env("ANTHROPIC_MODEL")?
-                .or_else(|| settings.selected_model.clone())
-                .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
-            let base_url = optional_env("ANTHROPIC_BASE_URL")?;
-            let extra_headers_raw = optional_env("ANTHROPIC_EXTRA_HEADERS")?;
-            tracing::debug!("ANTHROPIC_EXTRA_HEADERS raw value: {:?}", extra_headers_raw);
-            let extra_headers = extra_headers_raw
-                .map(|raw| {
-                    let headers: Vec<_> = raw.split(',')
-                        .filter_map(|pair| {
-                            let pair = pair.trim();
-                            let (k, v) = pair.split_once('=')?;
-                            let result = (k.trim().to_string(), v.trim().to_string());
-                            tracing::debug!("  Parsed Anthropic header: {} = {}", result.0, result.1);
-                            Some(result)
-                        })
-                        .collect();
-                    tracing::debug!("Total Anthropic extra headers: {}", headers.len());
-                    headers
-                })
-                .unwrap_or_default();
-            Some(AnthropicDirectConfig {
-                api_key,
-                model,
-                base_url,
-                extra_headers,
-            })
-        } else {
-            None
-        };
+        // Resolve ALL provider configs where credentials are present.
+        // The primary backend's config is required; others are optional
+        // and used as fallback providers when routing is enabled.
 
-        let openai = if backend == LlmBackend::OpenAi {
-            let api_key = optional_env("OPENAI_API_KEY")?
-                .map(SecretString::from)
-                .ok_or_else(|| ConfigError::MissingRequired {
-                    key: "OPENAI_API_KEY".to_string(),
-                    hint: "Set OPENAI_API_KEY when LLM_BACKEND=openai".to_string(),
-                })?;
-            let model = optional_env("OPENAI_MODEL")?
-                .or_else(|| settings.selected_model.clone())
-                .unwrap_or_else(|| "gpt-4o".to_string());
-            Some(OpenAiDirectConfig { api_key, model })
-        } else {
-            None
-        };
+        // Anthropic: required if primary, optional otherwise
+        let anthropic = Self::resolve_anthropic(settings, backend == LlmBackend::Anthropic)?;
 
-        let ollama = if backend == LlmBackend::Ollama {
-            let base_url = optional_env("OLLAMA_BASE_URL")?
-                .unwrap_or_else(|| "http://localhost:11434".to_string());
-            let model = optional_env("OLLAMA_MODEL")?
-                .or_else(|| settings.selected_model.clone())
-                .unwrap_or_else(|| "llama3".to_string());
-            Some(OllamaConfig { base_url, model })
-        } else {
-            None
-        };
+        // OpenAI: required if primary, optional otherwise
+        let openai = Self::resolve_openai(settings, backend == LlmBackend::OpenAi)?;
 
-        let openai_compatible = if backend == LlmBackend::OpenAiCompatible {
-            let base_url =
-                optional_env("LLM_BASE_URL")?.ok_or_else(|| ConfigError::MissingRequired {
-                    key: "LLM_BASE_URL".to_string(),
-                    hint: "Set LLM_BASE_URL when LLM_BACKEND=openai_compatible".to_string(),
-                })?;
-            let api_key = optional_env("LLM_API_KEY")?.map(SecretString::from);
-            let model = optional_env("LLM_MODEL")?
-                .or_else(|| settings.selected_model.clone())
-                .unwrap_or_else(|| "default".to_string());
-            let extra_headers = optional_env("LLM_EXTRA_HEADERS")?
-                .map(|raw| {
-                    raw.split(',')
-                        .filter_map(|pair| {
-                            let pair = pair.trim();
-                            let (k, v) = pair.split_once('=')?;
-                            Some((k.trim().to_string(), v.trim().to_string()))
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+        // Ollama: required if primary, optional otherwise (no API key needed)
+        let ollama = Self::resolve_ollama(settings, backend == LlmBackend::Ollama)?;
 
-            Some(OpenAiCompatibleConfig {
-                base_url,
-                api_key,
-                model,
-                extra_headers,
-            })
-        } else {
-            None
-        };
+        // OpenAI-compatible: required if primary, optional otherwise
+        let openai_compatible =
+            Self::resolve_openai_compatible(settings, backend == LlmBackend::OpenAiCompatible)?;
 
         Ok(Self {
             backend,
@@ -467,6 +387,179 @@ impl LlmConfig {
             ollama,
             openai_compatible,
         })
+    }
+
+    /// Resolve Anthropic config. When `required` is true (primary backend),
+    /// missing API key is an error. Otherwise, returns None if key is absent.
+    fn resolve_anthropic(
+        settings: &Settings,
+        required: bool,
+    ) -> Result<Option<AnthropicDirectConfig>, ConfigError> {
+        let api_key = match optional_env("ANTHROPIC_API_KEY")?.map(SecretString::from) {
+            None if required => {
+                return Err(ConfigError::MissingRequired {
+                    key: "ANTHROPIC_API_KEY".to_string(),
+                    hint: "Set ANTHROPIC_API_KEY environment variable".to_string(),
+                });
+            }
+            None => return Ok(None),
+            Some(key) => key,
+        };
+        let model = optional_env("ANTHROPIC_MODEL")?
+            .or_else(|| {
+                if required {
+                    settings.selected_model.clone()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
+        let base_url = optional_env("ANTHROPIC_BASE_URL")?;
+        let extra_headers_raw = optional_env("ANTHROPIC_EXTRA_HEADERS")?;
+        tracing::debug!("ANTHROPIC_EXTRA_HEADERS raw value: {:?}", extra_headers_raw);
+        let extra_headers = extra_headers_raw
+            .map(|raw| {
+                let headers: Vec<_> = raw
+                    .split(',')
+                    .filter_map(|pair| {
+                        let pair = pair.trim();
+                        let (k, v) = pair.split_once('=')?;
+                        let result = (k.trim().to_string(), v.trim().to_string());
+                        tracing::debug!("  Parsed Anthropic header: {} = {}", result.0, result.1);
+                        Some(result)
+                    })
+                    .collect();
+                tracing::debug!("Total Anthropic extra headers: {}", headers.len());
+                headers
+            })
+            .unwrap_or_default();
+
+        Ok(Some(AnthropicDirectConfig {
+            api_key,
+            model,
+            base_url,
+            extra_headers,
+        }))
+    }
+
+    /// Resolve OpenAI config. Required when primary, optional otherwise.
+    fn resolve_openai(
+        settings: &Settings,
+        required: bool,
+    ) -> Result<Option<OpenAiDirectConfig>, ConfigError> {
+        let api_key = match optional_env("OPENAI_API_KEY")?.map(SecretString::from) {
+            None if required => {
+                return Err(ConfigError::MissingRequired {
+                    key: "OPENAI_API_KEY".to_string(),
+                    hint: "Set OPENAI_API_KEY when LLM_BACKEND=openai".to_string(),
+                });
+            }
+            None => return Ok(None),
+            Some(key) => key,
+        };
+        let model = optional_env("OPENAI_MODEL")?
+            .or_else(|| {
+                if required {
+                    settings.selected_model.clone()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "gpt-4o".to_string());
+
+        Ok(Some(OpenAiDirectConfig { api_key, model }))
+    }
+
+    /// Resolve Ollama config. Required when primary, optional otherwise.
+    /// Ollama doesn't need an API key, so it's detected by checking
+    /// `OLLAMA_BASE_URL` or `OLLAMA_MODEL` env vars.
+    fn resolve_ollama(
+        settings: &Settings,
+        required: bool,
+    ) -> Result<Option<OllamaConfig>, ConfigError> {
+        let base_url = optional_env("OLLAMA_BASE_URL")?;
+        let model_env = optional_env("OLLAMA_MODEL")?;
+
+        // If not primary and no Ollama env vars set, skip
+        if !required && base_url.is_none() && model_env.is_none() {
+            return Ok(None);
+        }
+
+        let base_url = base_url.unwrap_or_else(|| "http://localhost:11434".to_string());
+        let model = model_env
+            .or_else(|| {
+                if required {
+                    settings.selected_model.clone()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "llama3".to_string());
+
+        Ok(Some(OllamaConfig { base_url, model }))
+    }
+
+    /// Resolve OpenAI-compatible config. Required when primary, optional otherwise.
+    fn resolve_openai_compatible(
+        settings: &Settings,
+        required: bool,
+    ) -> Result<Option<OpenAiCompatibleConfig>, ConfigError> {
+        let base_url = match optional_env("LLM_BASE_URL")? {
+            None if required => {
+                return Err(ConfigError::MissingRequired {
+                    key: "LLM_BASE_URL".to_string(),
+                    hint: "Set LLM_BASE_URL when LLM_BACKEND=openai_compatible".to_string(),
+                });
+            }
+            None => return Ok(None),
+            Some(url) => url,
+        };
+        let api_key = optional_env("LLM_API_KEY")?.map(SecretString::from);
+        let model = optional_env("LLM_MODEL")?
+            .or_else(|| {
+                if required {
+                    settings.selected_model.clone()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "default".to_string());
+        let extra_headers = optional_env("LLM_EXTRA_HEADERS")?
+            .map(|raw| {
+                raw.split(',')
+                    .filter_map(|pair| {
+                        let pair = pair.trim();
+                        let (k, v) = pair.split_once('=')?;
+                        Some((k.trim().to_string(), v.trim().to_string()))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        Ok(Some(OpenAiCompatibleConfig {
+            base_url,
+            api_key,
+            model,
+            extra_headers,
+        }))
+    }
+
+    /// Returns the list of backends that have configs populated (credentials present).
+    pub fn available_backends(&self) -> Vec<LlmBackend> {
+        let mut backends = Vec::new();
+        if self.anthropic.is_some() {
+            backends.push(LlmBackend::Anthropic);
+        }
+        if self.openai.is_some() {
+            backends.push(LlmBackend::OpenAi);
+        }
+        if self.ollama.is_some() {
+            backends.push(LlmBackend::Ollama);
+        }
+        if self.openai_compatible.is_some() {
+            backends.push(LlmBackend::OpenAiCompatible);
+        }
+        backends
     }
 }
 

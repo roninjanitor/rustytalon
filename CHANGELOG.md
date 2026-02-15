@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Multi-provider LLM failover and routing from .env configuration
+  - All LLM backends with credentials present are now initialized (not just the primary)
+  - Automatic failover between providers on transient errors when multiple backends are configured
+  - Smart router can select from all available providers based on query complexity and cost
 - GitHub Actions CI/CD workflow for multi-architecture Docker builds (amd64, arm64)
 - Makefile with convenient development commands (docker-build, docker-up, docker-logs, ship quality gate, etc.)
 - Deploy systemd service file for RustyTalon on GCP

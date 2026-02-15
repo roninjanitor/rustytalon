@@ -10,10 +10,7 @@
 use std::sync::Arc;
 
 use rustytalon::{
-    agent::HeartbeatRunner,
-    config::Config,
-    history::Store,
-    llm::{SessionConfig, create_llm_provider, create_session_manager},
+    agent::HeartbeatRunner, config::Config, history::Store, llm::create_llm_provider,
     workspace::Workspace,
 };
 
@@ -78,12 +75,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // 5. Create LLM provider
-    let session = create_session_manager(SessionConfig {
-        auth_base_url: config.llm.nearai.auth_base_url.clone(),
-        session_path: config.llm.nearai.session_path.clone(),
-    })
-    .await;
-    let llm = create_llm_provider(&config.llm, session)?;
+    let llm = create_llm_provider(&config.llm)?;
     println!("[5/6] LLM provider created (model: {})", llm.model_name());
 
     // 6. Run heartbeat check

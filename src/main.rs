@@ -19,10 +19,12 @@ use rustytalon::{
     cli::{
         Cli, Command, run_mcp_command, run_pairing_command, run_status_command, run_tool_command,
     },
-    config::Config,
+    config::{Config, LlmBackend},
     context::ContextManager,
     extensions::ExtensionManager,
-    llm::{LlmProvider, TrackedProvider, create_llm_provider, routing::SmartRouter},
+    llm::{
+        FailoverProvider, LlmProvider, TrackedProvider, create_all_providers, routing::SmartRouter,
+    },
     orchestrator::{
         ContainerJobConfig, ContainerJobManager, OrchestratorApi, TokenStore,
         api::OrchestratorState,
@@ -414,33 +416,80 @@ async fn main() -> anyhow::Result<()> {
             tracing::warn!("Failed to cleanup stale sandbox jobs: {}", e);
         }
     }
-    // Initialize LLM provider, optionally wrapped with cost tracking and retry
-    let llm = create_llm_provider(&config.llm)?;
-    tracing::info!("LLM provider initialized: {}", llm.model_name());
-    let llm: Arc<dyn LlmProvider> = if let Some(ref db) = db {
-        let backend_name = format!("{:?}", config.llm.backend).to_lowercase();
-        tracing::info!(
-            "Wrapping LLM with TrackedProvider (retries: {})",
-            config.routing.max_retries
-        );
-        Arc::new(TrackedProvider::new(
-            llm,
-            Arc::clone(db),
-            config.routing.max_retries,
-            backend_name,
-        ))
+    // Initialize LLM providers — primary plus any additional backends with
+    // credentials present in the environment (for routing/failover).
+    let all_providers = create_all_providers(&config.llm)?;
+    tracing::info!(
+        "LLM providers initialized: {} total (primary: {})",
+        all_providers.len(),
+        config.llm.backend
+    );
+    for (backend, provider) in &all_providers {
+        tracing::info!("  {} -> {}", backend, provider.model_name());
+    }
+
+    // Wrap providers with cost tracking and retry if DB is available
+    let all_providers: Vec<(LlmBackend, Arc<dyn LlmProvider>)> = if let Some(ref db) = db {
+        all_providers
+            .into_iter()
+            .map(|(backend, provider)| {
+                let backend_name = backend.to_string();
+                let tracked: Arc<dyn LlmProvider> = Arc::new(TrackedProvider::new(
+                    provider,
+                    Arc::clone(db),
+                    config.routing.max_retries,
+                    backend_name,
+                ));
+                (backend, tracked)
+            })
+            .collect()
     } else {
-        llm
+        all_providers
     };
 
-    // Create smart router if enabled
+    // Build the primary LLM provider. If multiple providers are available,
+    // wrap them in a FailoverProvider so the primary automatically falls
+    // back to others on transient errors.
+    let llm: Arc<dyn LlmProvider> = if all_providers.len() > 1 {
+        let provider_arcs: Vec<Arc<dyn LlmProvider>> =
+            all_providers.iter().map(|(_, p)| Arc::clone(p)).collect();
+        let failover_names: Vec<&str> = all_providers
+            .iter()
+            .map(|(_, p): &(LlmBackend, Arc<dyn LlmProvider>)| p.model_name())
+            .collect();
+        tracing::info!(
+            "FailoverProvider enabled with {} providers: {:?}",
+            provider_arcs.len(),
+            failover_names
+        );
+        match FailoverProvider::new(provider_arcs) {
+            Ok(failover) => Arc::new(failover),
+            Err(e) => {
+                // This branch should never be reached since we only create
+                // FailoverProvider when all_providers.len() > 1, but handle
+                // it gracefully anyway by falling back to the first provider.
+                tracing::warn!(
+                    "Failed to create FailoverProvider despite having multiple providers: {}, using first provider only",
+                    e
+                );
+                Arc::clone(&all_providers[0].1)
+            }
+        }
+    } else {
+        Arc::clone(&all_providers[0].1)
+    };
+
+    // Create smart router if enabled, registering all available providers
     let smart_router = if config.routing.enabled {
         let routing_config = config.routing.to_routing_config();
         let mut router = SmartRouter::new(routing_config);
-        router.register_provider(config.llm.backend, Arc::clone(&llm));
+        for (backend, provider) in &all_providers {
+            router.register_provider(*backend, Arc::clone(provider));
+        }
         tracing::info!(
-            "Smart router enabled (strategy: {})",
-            config.routing.strategy
+            "Smart router enabled (strategy: {}, providers: {})",
+            config.routing.strategy,
+            all_providers.len()
         );
         Some(Arc::new(router))
     } else {
