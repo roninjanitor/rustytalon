@@ -673,6 +673,66 @@ RUST_LOG=rustytalon=debug,tower_http=debug cargo run
 - Keep functions focused, extract helpers when logic is reused
 - Comments for non-obvious logic only
 
+## Changelog Management
+
+Update `CHANGELOG.md` for all user-facing changes. This keeps the release notes accurate and helps users understand what's new.
+
+### When to Update
+
+**Update for:**
+- ✅ New features
+- ✅ Bug fixes
+- ✅ Breaking changes
+- ✅ Performance improvements
+- ✅ Documentation updates
+- ✅ Dependency upgrades
+- ✅ Architecture changes affecting users
+
+**Don't update for:**
+- ❌ Internal refactoring (unless it changes behavior)
+- ❌ Code cleanup with no functional change
+- ❌ CI/CD improvements (unless they affect users)
+- ❌ Test additions (unless they document new features)
+
+### Format
+
+Use the [Keep a Changelog](https://keepachangelog.com/) format under `[Unreleased]`:
+
+```markdown
+### Added
+- New feature description
+
+### Changed
+- Behavior change that might affect users
+
+### Fixed
+- Bug fix description
+
+### Deprecated
+- Feature that will be removed soon
+
+### Removed
+- Previously deprecated feature removal
+
+### Security
+- Security fix with impact description
+```
+
+### Example
+
+```markdown
+## [Unreleased]
+
+### Added
+- GitHub Actions workflow for Docker image builds
+
+### Changed
+- Updated build-all.sh to show Makefile reference
+
+### Fixed
+- CHANGELOG hardcoded links causing broken URLs
+```
+
 ## Review & Fix Discipline
 
 Hard-won lessons from code review -- follow these when fixing bugs or addressing review feedback.
