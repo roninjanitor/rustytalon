@@ -22,7 +22,7 @@ use rustytalon::{
     config::Config,
     context::ContextManager,
     extensions::ExtensionManager,
-    llm::create_llm_provider,
+    llm::{LlmProvider, TrackedProvider, create_llm_provider, routing::SmartRouter},
     orchestrator::{
         ContainerJobConfig, ContainerJobManager, OrchestratorApi, TokenStore,
         api::OrchestratorState,
@@ -414,9 +414,38 @@ async fn main() -> anyhow::Result<()> {
             tracing::warn!("Failed to cleanup stale sandbox jobs: {}", e);
         }
     }
-    // Initialize LLM provider
+    // Initialize LLM provider, optionally wrapped with cost tracking and retry
     let llm = create_llm_provider(&config.llm)?;
     tracing::info!("LLM provider initialized: {}", llm.model_name());
+    let llm: Arc<dyn LlmProvider> = if let Some(ref db) = db {
+        let backend_name = format!("{:?}", config.llm.backend).to_lowercase();
+        tracing::info!(
+            "Wrapping LLM with TrackedProvider (retries: {})",
+            config.routing.max_retries
+        );
+        Arc::new(TrackedProvider::new(
+            llm,
+            Arc::clone(db),
+            config.routing.max_retries,
+            backend_name,
+        ))
+    } else {
+        llm
+    };
+
+    // Create smart router if enabled
+    let smart_router = if config.routing.enabled {
+        let routing_config = config.routing.to_routing_config();
+        let mut router = SmartRouter::new(routing_config);
+        router.register_provider(config.llm.backend, Arc::clone(&llm));
+        tracing::info!(
+            "Smart router enabled (strategy: {})",
+            config.routing.strategy
+        );
+        Some(Arc::new(router))
+    } else {
+        None
+    };
 
     // Initialize safety layer
     let safety = Arc::new(SafetyLayer::new(&config.safety));
@@ -1062,6 +1091,10 @@ async fn main() -> anyhow::Result<()> {
         }
         if let Some(ref jm) = container_job_manager {
             gw = gw.with_job_manager(Arc::clone(jm));
+        }
+        gw = gw.with_llm_provider(Arc::clone(&llm));
+        if let Some(ref router) = smart_router {
+            gw = gw.with_smart_router(Arc::clone(router));
         }
         if config.sandbox.enabled {
             gw = gw.with_prompt_queue(Arc::clone(&prompt_queue));
