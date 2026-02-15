@@ -113,11 +113,21 @@ src/
 │   ├── policy.rs       # PolicyRule system with severity/actions
 │   └── leak_detector.rs # Secret detection (API keys, tokens, etc.)
 │
-├── llm/                # LLM integration (NEAR AI only)
+├── llm/                # Multi-provider LLM integration
 │   ├── provider.rs     # LlmProvider trait, message types
-│   ├── nearai.rs       # NEAR AI chat-api implementation
+│   ├── rig_adapter.rs  # rig-core adapter (Anthropic, OpenAI, Ollama, compatible)
 │   ├── reasoning.rs    # Planning, tool selection, evaluation
-│   └── session.rs      # Session token management with auto-renewal
+│   ├── costs.rs        # Per-model cost tables
+│   ├── tracked.rs      # TrackedProvider: retry + cost recording wrapper
+│   ├── failover.rs     # Multi-provider failover chain
+│   ├── retry.rs        # Retry policy with exponential backoff
+│   ├── test_utils.rs   # MockProvider for tests
+│   └── routing/        # Smart routing
+│       ├── mod.rs
+│       ├── analyzer.rs # Query complexity scoring
+│       ├── strategy.rs # Routing strategies (balanced, cost, quality, local_first)
+│       ├── router.rs   # SmartRouter with health tracking
+│       └── quality.rs  # Response quality validation
 │
 ├── tools/              # Extensible tool system
 │   ├── tool.rs         # Tool trait, ToolOutput, ToolError
@@ -263,20 +273,24 @@ LIBSQL_PATH=~/.rustytalon/rustytalon.db    # libSQL local path (default)
 # LIBSQL_URL=libsql://xxx.turso.io    # Turso cloud (optional)
 # LIBSQL_AUTH_TOKEN=xxx                # Required with LIBSQL_URL
 
-# NEAR AI (required)
-NEARAI_SESSION_TOKEN=sess_...
-NEARAI_MODEL=claude-3-5-sonnet-20241022
-NEARAI_BASE_URL=https://private.near.ai
+# LLM Provider (pick one)
+LLM_BACKEND=anthropic  # anthropic (default), openai, ollama, openai_compatible
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
 # Agent settings
 AGENT_NAME=rustytalon
 MAX_PARALLEL_JOBS=5
 
+# Smart routing
+ROUTING_ENABLED=true
+ROUTING_STRATEGY=balanced               # balanced, cost, quality, local_first
+ROUTING_ENABLE_FALLBACK=true
+ROUTING_MAX_RETRIES=3
+
 # Embeddings (for semantic memory search)
 OPENAI_API_KEY=sk-...                   # For OpenAI embeddings
-# Or use NEAR AI embeddings:
-# EMBEDDING_PROVIDER=nearai
-# EMBEDDING_ENABLED=true
+EMBEDDING_ENABLED=true
 EMBEDDING_MODEL=text-embedding-3-small  # or text-embedding-3-large
 
 # Heartbeat (proactive periodic execution)
@@ -310,14 +324,18 @@ ROUTINES_CRON_INTERVAL=60            # Tick interval in seconds
 ROUTINES_MAX_CONCURRENT=3
 ```
 
-### NEAR AI Provider
+### LLM Providers
 
-Uses the NEAR AI chat-api (`https://api.near.ai/v1/responses`) which provides:
-- Unified access to multiple models (OpenAI, Anthropic, etc.)
-- User authentication via session tokens
-- Usage tracking and billing through NEAR AI
+RustyTalon uses [rig-core](https://crates.io/crates/rig-core) for multi-provider LLM support. Supported backends:
 
-Session tokens have the format `sess_xxx` (37 characters). They are authenticated against the NEAR AI auth service.
+| Backend | Env Prefix | Notes |
+|---------|-----------|-------|
+| Anthropic | `ANTHROPIC_` | Default, Claude models |
+| OpenAI | `OPENAI_` | GPT models |
+| Ollama | `OLLAMA_` | Local models, no API key needed |
+| OpenAI-compatible | `OPENAI_COMPATIBLE_` | Any API with OpenAI-compatible format |
+
+The `SmartRouter` (when `ROUTING_ENABLED=true`) selects the best provider per-request based on query complexity, cost, and provider health. `TrackedProvider` wraps providers with retry logic and cost recording via `Database::record_llm_call()`.
 
 ## Database
 
@@ -457,7 +475,7 @@ Key test patterns:
 - ✅ **WASM sandboxing** - Full implementation in `tools/wasm/` with fuel metering, memory limits, capabilities
 - ✅ **Dynamic tool building** - `tools/builder/` has LlmSoftwareBuilder with iterative build loop
 - ✅ **HTTP webhook security** - Secret validation implemented, proper error handling (no panics)
-- ✅ **Embeddings integration** - OpenAI and NEAR AI providers wired to workspace for semantic search
+- ✅ **Embeddings integration** - OpenAI embeddings wired to workspace for semantic search
 - ✅ **Workspace system prompt** - Identity files (AGENTS.md, SOUL.md, USER.md, IDENTITY.md) injected into LLM context
 - ✅ **Heartbeat notifications** - Route through channel manager (broadcast API) instead of logging-only
 - ✅ **Auto-context compaction** - Triggers automatically when context exceeds threshold
