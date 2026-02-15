@@ -18,6 +18,7 @@ use crate::settings::Settings;
 pub struct Config {
     pub database: DatabaseConfig,
     pub llm: LlmConfig,
+    pub routing: LlmRoutingConfig,
     pub embeddings: EmbeddingsConfig,
     pub tunnel: TunnelConfig,
     pub channels: ChannelsConfig,
@@ -76,6 +77,7 @@ impl Config {
         Ok(Self {
             database: DatabaseConfig::resolve()?,
             llm: LlmConfig::resolve(settings)?,
+            routing: LlmRoutingConfig::resolve()?,
             embeddings: EmbeddingsConfig::resolve(settings)?,
             tunnel: TunnelConfig::resolve(settings)?,
             channels: ChannelsConfig::resolve(settings)?,
@@ -253,7 +255,7 @@ pub fn default_libsql_path() -> PathBuf {
 ///
 /// Defaults to `Anthropic` for direct API access without vendor lock-in.
 /// Users can override with `LLM_BACKEND` env var.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum LlmBackend {
     /// Direct Anthropic API (default)
     #[default]
@@ -421,6 +423,134 @@ impl LlmConfig {
             ollama,
             openai_compatible,
         })
+    }
+}
+
+/// Smart routing configuration for multi-provider LLM support.
+#[derive(Debug, Clone)]
+pub struct LlmRoutingConfig {
+    /// Whether smart routing is enabled.
+    pub enabled: bool,
+    /// Routing strategy: "balanced", "cost", "quality", "local_first".
+    pub strategy: String,
+    /// Maximum cost per request in USD (None = unlimited).
+    pub max_cost_per_request: Option<f64>,
+    /// Minimum acceptable quality score (0.0 - 1.0).
+    pub min_quality_score: f32,
+    /// Whether to enable automatic fallback to other providers.
+    pub enable_fallback: bool,
+    /// Maximum retry attempts before failing.
+    pub max_retries: u32,
+    /// Preferred providers in order (comma-separated).
+    pub preferred_providers: Vec<LlmBackend>,
+    /// Providers to exclude from routing (comma-separated).
+    pub excluded_providers: Vec<LlmBackend>,
+}
+
+impl Default for LlmRoutingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            strategy: "balanced".to_string(),
+            max_cost_per_request: None,
+            min_quality_score: 0.5,
+            enable_fallback: true,
+            max_retries: 3,
+            preferred_providers: vec![LlmBackend::Anthropic, LlmBackend::OpenAi],
+            excluded_providers: Vec::new(),
+        }
+    }
+}
+
+impl LlmRoutingConfig {
+    fn resolve() -> Result<Self, ConfigError> {
+        let enabled = optional_env("ROUTING_ENABLED")?
+            .map(|s| s.parse())
+            .transpose()
+            .map_err(|e| ConfigError::InvalidValue {
+                key: "ROUTING_ENABLED".to_string(),
+                message: format!("must be 'true' or 'false': {e}"),
+            })?
+            .unwrap_or(true);
+
+        let strategy = optional_env("ROUTING_STRATEGY")?
+            .unwrap_or_else(|| "balanced".to_string());
+
+        let max_cost_per_request = optional_env("ROUTING_MAX_COST")?
+            .map(|s| s.parse())
+            .transpose()
+            .map_err(|e| ConfigError::InvalidValue {
+                key: "ROUTING_MAX_COST".to_string(),
+                message: format!("must be a valid number: {e}"),
+            })?;
+
+        let min_quality_score = optional_env("ROUTING_MIN_QUALITY")?
+            .map(|s| s.parse::<f32>())
+            .transpose()
+            .map_err(|e| ConfigError::InvalidValue {
+                key: "ROUTING_MIN_QUALITY".to_string(),
+                message: format!("must be a number between 0.0 and 1.0: {e}"),
+            })?
+            .map(|v| v.clamp(0.0, 1.0))
+            .unwrap_or(0.5);
+
+        let enable_fallback = optional_env("ROUTING_ENABLE_FALLBACK")?
+            .map(|s| s.parse())
+            .transpose()
+            .map_err(|e| ConfigError::InvalidValue {
+                key: "ROUTING_ENABLE_FALLBACK".to_string(),
+                message: format!("must be 'true' or 'false': {e}"),
+            })?
+            .unwrap_or(true);
+
+        let max_retries = parse_optional_env("ROUTING_MAX_RETRIES", 3)?;
+
+        let preferred_providers = optional_env("ROUTING_PREFERRED_PROVIDERS")?
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|p| p.trim().parse::<LlmBackend>().ok())
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![LlmBackend::Anthropic, LlmBackend::OpenAi]);
+
+        let excluded_providers = optional_env("ROUTING_EXCLUDED_PROVIDERS")?
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|p| p.trim().parse::<LlmBackend>().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(Self {
+            enabled,
+            strategy,
+            max_cost_per_request,
+            min_quality_score,
+            enable_fallback,
+            max_retries,
+            preferred_providers,
+            excluded_providers,
+        })
+    }
+
+    /// Convert to the routing module's RoutingConfig.
+    pub fn to_routing_config(&self) -> crate::llm::routing::RoutingConfig {
+        use crate::llm::routing::{RoutingConfig, RoutingStrategy};
+
+        let strategy = RoutingStrategy::from_str(&self.strategy)
+            .unwrap_or(RoutingStrategy::Balanced);
+
+        RoutingConfig {
+            strategy,
+            max_cost_per_request: self.max_cost_per_request,
+            min_quality_score: self.min_quality_score,
+            enable_fallback: self.enable_fallback,
+            max_retries: self.max_retries,
+            health_check_timeout_secs: 5,
+            health_refresh_interval_secs: 60,
+            preferred_providers: self.preferred_providers.clone(),
+            excluded_providers: self.excluded_providers.clone(),
+        }
     }
 }
 

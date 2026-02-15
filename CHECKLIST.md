@@ -47,28 +47,41 @@ EMBEDDING_MODEL=text-embedding-3-small
 
 ---
 
-## Week 2: Smart Routing (TODO)
+## Week 2: Smart Routing
 
 ### Complexity Analyzer
-- [ ] Create `src/llm/routing/mod.rs`
-- [ ] Create `src/llm/routing/analyzer.rs` - query complexity scoring
-- [ ] Create `src/llm/routing/strategy.rs` - routing strategies
-- [ ] Implement complexity heuristics:
-  - [ ] Token count estimation
-  - [ ] Code detection
-  - [ ] Multi-step reasoning detection
-  - [ ] Domain classification
+- [x] Create `src/llm/routing/mod.rs`
+- [x] Create `src/llm/routing/analyzer.rs` - query complexity scoring
+- [x] Create `src/llm/routing/strategy.rs` - routing strategies
+- [x] Implement complexity heuristics:
+  - [x] Token count estimation
+  - [x] Code detection
+  - [x] Multi-step reasoning detection
+  - [x] Domain classification
 
 ### Router Implementation
-- [ ] Create `src/llm/routing/router.rs`
-- [ ] Implement `SmartRouter` with strategy selection
-- [ ] Add provider health tracking
-- [ ] Add response quality validation
+- [x] Create `src/llm/routing/router.rs`
+- [x] Implement `SmartRouter` with strategy selection
+- [x] Add provider health tracking
+- [ ] Add response quality validation (deferred to Week 3)
 
 ### Configuration
-- [ ] Add routing config to `src/config.rs`
-- [ ] Environment variables for routing preferences
-- [ ] Cost thresholds and quality metrics
+- [x] Add routing config to `src/config.rs`
+- [x] Environment variables for routing preferences
+- [x] Cost thresholds and quality metrics
+
+### Environment Variables for Routing
+```bash
+# Routing configuration
+ROUTING_ENABLED=true                    # Enable smart routing (default: true)
+ROUTING_STRATEGY=balanced               # balanced, cost, quality, local_first
+ROUTING_MAX_COST=0.05                   # Max USD per request (optional)
+ROUTING_MIN_QUALITY=0.5                 # Min quality score 0.0-1.0
+ROUTING_ENABLE_FALLBACK=true            # Enable fallback providers
+ROUTING_MAX_RETRIES=3                   # Max retry attempts
+ROUTING_PREFERRED_PROVIDERS=anthropic,openai  # Comma-separated
+ROUTING_EXCLUDED_PROVIDERS=             # Providers to exclude
+```
 
 ---
 

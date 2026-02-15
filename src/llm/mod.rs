@@ -5,6 +5,11 @@
 //! - **OpenAI**: Direct API access with your own key
 //! - **Ollama**: Local model inference
 //! - **OpenAI-compatible**: Any endpoint that speaks the OpenAI API
+//!
+//! # Smart Routing
+//!
+//! The `routing` module provides intelligent query routing between providers
+//! based on complexity analysis, cost optimization, and provider health.
 
 mod costs;
 pub mod failover;
@@ -12,6 +17,7 @@ mod provider;
 mod reasoning;
 mod retry;
 mod rig_adapter;
+pub mod routing;
 
 pub use costs::{default_cost, model_cost};
 pub use failover::FailoverProvider;
