@@ -5,52 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> **Note:** RustyTalon v0.1.0+ is derived from [IronClaw](https://github.com/nearai/ironclaw) (Copyright 2024 NEAR AI).
+> Earlier entries in this changelog reflect the history of that project and our enhancements.
+
 ## [Unreleased]
 
-## [0.1.3](https://github.com/nearai/rustytalon/compare/v0.1.2...v0.1.3) - 2026-02-12
+## [0.1.3] - 2026-02-12
 
 ### Other
 
 - Enabled builds caching during CI/CD
 - Disabled npm publishing as the name is already taken
 
-## [0.1.2](https://github.com/nearai/rustytalon/compare/v0.1.1...v0.1.2) - 2026-02-12
+## [0.1.2] - 2026-02-12
 
 ### Other
 
 - Added Installation instructions for the pre-built binaries
 - Disabled Windows ARM64 builds as auto-updater [provided by cargo-dist] does not support this platform yet and it is not a common platform for us to support
 
-## [0.1.1](https://github.com/nearai/rustytalon/compare/v0.1.0...v0.1.1) - 2026-02-12
+## [0.1.1] - 2026-02-12
 
 ### Other
 
 - Renamed the secrets in release-plz.yml to match the configuration
 - Make sure that the binaries release CD it kicking in after release-plz
 
-## [0.1.0](https://github.com/nearai/rustytalon/releases/tag/v0.1.0) - 2026-02-12
+## [0.1.0] - 2026-02-12
 
 ### Added
 
-- Add multi-provider LLM support via rig-core adapter ([#36](https://github.com/nearai/rustytalon/pull/36))
-- Sandbox jobs ([#4](https://github.com/nearai/rustytalon/pull/4))
-- Add Google Suite & Telegram WASM tools ([#9](https://github.com/nearai/rustytalon/pull/9))
-- Improve CLI ([#5](https://github.com/nearai/rustytalon/pull/5))
+- Add multi-provider LLM support via rig-core adapter
+- Sandbox jobs
+- Add Google Suite & Telegram WASM tools
+- Improve CLI
 
 ### Fixed
 
-- resolve runtime panic in Linux keychain integration ([#32](https://github.com/nearai/rustytalon/pull/32))
+- resolve runtime panic in Linux keychain integration
 
 ### Other
 
 - Skip release-plz on forks
 - Upgraded release-plz CD pipeline
-- Added CI/CD and release pipelines ([#45](https://github.com/nearai/rustytalon/pull/45))
-- DM pairing + Telegram channel improvements ([#17](https://github.com/nearai/rustytalon/pull/17))
-- Fixes build, adds missing sse event and correct command ([#11](https://github.com/nearai/rustytalon/pull/11))
-- Codex/feature parity pr hook ([#6](https://github.com/nearai/rustytalon/pull/6))
-- Add WebSocket gateway and control plane ([#8](https://github.com/nearai/rustytalon/pull/8))
-- select bundled Telegram channel and auto-install ([#3](https://github.com/nearai/rustytalon/pull/3))
+- Added CI/CD and release pipelines
+- DM pairing + Telegram channel improvements
+- Fixes build, adds missing sse event and correct command
+- Codex/feature parity pr hook
+- Add WebSocket gateway and control plane
+- select bundled Telegram channel and auto-install
 - Adding skills for reusable work
 - Fix MCP tool calls, approval loop, shutdown, and improve web UI
 - Add auth mode, fix MCP token handling, and parallelize startup loading
