@@ -27,6 +27,7 @@ use crate::history::{
     ConversationMessage, ConversationSummary, JobEventRecord, LlmCallRecord, SandboxJobRecord,
     SandboxJobSummary, SettingRow,
 };
+use crate::llm::tracked::LlmCallStats;
 use crate::workspace::{
     MemoryChunk, MemoryDocument, RankedResult, SearchConfig, SearchResult, WorkspaceEntry,
     reciprocal_rank_fusion,
@@ -882,6 +883,73 @@ impl Database for LibSqlBackend {
             .await
             .map_err(|e| DatabaseError::Query(e.to_string()))?;
         Ok(id)
+    }
+
+    async fn get_llm_call_stats(&self) -> Result<Vec<LlmCallStats>, DatabaseError> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT
+                    provider,
+                    model,
+                    COUNT(*) AS total_calls,
+                    COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
+                    COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
+                    COALESCE(SUM(CAST(cost AS REAL)), 0.0) AS total_cost,
+                    CASE WHEN COUNT(*) > 0
+                        THEN COALESCE(SUM(CAST(cost AS REAL)), 0.0) / COUNT(*)
+                        ELSE 0.0
+                    END AS avg_cost_per_call
+                FROM llm_calls
+                GROUP BY provider, model
+                ORDER BY total_cost DESC
+                "#,
+                (),
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let mut stats = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            let provider: String = row
+                .get(0)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let model: String = row
+                .get(1)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let total_calls: i64 = row
+                .get(2)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let total_input_tokens: i64 = row
+                .get(3)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let total_output_tokens: i64 = row
+                .get(4)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let total_cost_f64: f64 = row
+                .get(5)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let avg_cost_f64: f64 = row
+                .get(6)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+            stats.push(LlmCallStats {
+                provider,
+                model,
+                total_calls,
+                total_input_tokens,
+                total_output_tokens,
+                total_cost: Decimal::from_f64_retain(total_cost_f64).unwrap_or_default(),
+                avg_cost_per_call: Decimal::from_f64_retain(avg_cost_f64).unwrap_or_default(),
+            });
+        }
+
+        Ok(stats)
     }
 
     // ==================== Estimation Snapshots ====================

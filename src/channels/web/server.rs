@@ -139,6 +139,8 @@ pub struct GatewayState {
     pub ws_tracker: Option<Arc<crate::channels::web::ws::WsConnectionTracker>>,
     /// LLM provider for OpenAI-compatible API proxy.
     pub llm_provider: Option<Arc<dyn crate::llm::LlmProvider>>,
+    /// Smart router for provider health dashboard.
+    pub smart_router: Option<Arc<crate::llm::routing::SmartRouter>>,
     /// Rate limiter for chat endpoints (30 messages per 60 seconds).
     pub chat_rate_limiter: RateLimiter,
 }
@@ -237,6 +239,9 @@ pub async fn start_server(
         )
         // Gateway control plane
         .route("/api/gateway/status", get(gateway_status_handler))
+        // Provider health & cost tracking
+        .route("/api/providers/health", get(providers_health_handler))
+        .route("/api/providers/costs", get(providers_costs_handler))
         // OpenAI-compatible API
         .route(
             "/v1/chat/completions",
@@ -2250,6 +2255,43 @@ struct GatewayStatusResponse {
     sse_connections: u64,
     ws_connections: u64,
     total_connections: u64,
+}
+
+// ==================== Provider Health & Costs ====================
+
+async fn providers_health_handler(State(state): State<Arc<GatewayState>>) -> impl IntoResponse {
+    let providers = state
+        .smart_router
+        .as_ref()
+        .map(|r| r.provider_health_summary())
+        .unwrap_or_default();
+
+    Json(ProviderHealthResponse { providers })
+}
+
+async fn providers_costs_handler(State(state): State<Arc<GatewayState>>) -> impl IntoResponse {
+    let db = match state.store.as_ref() {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(LlmCostStatsResponse { stats: vec![] }),
+            )
+                .into_response();
+        }
+    };
+
+    match db.get_llm_call_stats().await {
+        Ok(stats) => Json(LlmCostStatsResponse { stats }).into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch LLM cost stats");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(LlmCostStatsResponse { stats: vec![] }),
+            )
+                .into_response()
+        }
+    }
 }
 
 #[cfg(test)]

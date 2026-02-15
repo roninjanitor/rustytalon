@@ -102,11 +102,13 @@ async fn main() -> anyhow::Result<()> {
                             "text-embedding-3-large" => 3072,
                             _ => 1536,
                         };
-                        Some(Arc::new(rustytalon::workspace::OpenAiEmbeddings::with_model(
-                            api_key,
-                            &config.embeddings.model,
-                            dim,
-                        )))
+                        Some(Arc::new(
+                            rustytalon::workspace::OpenAiEmbeddings::with_model(
+                                api_key,
+                                &config.embeddings.model,
+                                dim,
+                            ),
+                        ))
                     } else {
                         None
                     }

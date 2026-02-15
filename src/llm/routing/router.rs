@@ -11,6 +11,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use rust_decimal::Decimal;
+use serde::Serialize;
 
 use super::analyzer::{ComplexityScore, QueryAnalyzer};
 use super::strategy::{ModelTier, RoutingConfig, RoutingStrategy};
@@ -167,7 +168,11 @@ impl SmartRouter {
 
     /// Get all provider health statuses.
     pub fn all_health(&self) -> HashMap<LlmBackend, ProviderHealth> {
-        self.health.read().ok().map(|g| g.clone()).unwrap_or_default()
+        self.health
+            .read()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     /// Route a query and return the routing decision.
@@ -226,12 +231,14 @@ impl SmartRouter {
     }
 
     /// Execute a completion with automatic routing and fallback.
-    pub async fn complete(&self, query: &str) -> Result<(CompletionResponse, LlmBackend), LlmError> {
+    pub async fn complete(
+        &self,
+        query: &str,
+    ) -> Result<(CompletionResponse, LlmBackend), LlmError> {
         let decision = self.route(query)?;
-        let mut last_error = None;
 
         // Try primary provider
-        match self.try_complete(decision.backend, query).await {
+        let mut last_error = match self.try_complete(decision.backend, query).await {
             Ok(response) => return Ok((response, decision.backend)),
             Err(e) => {
                 tracing::warn!(
@@ -239,9 +246,9 @@ impl SmartRouter {
                     decision.backend,
                     e
                 );
-                last_error = Some(e);
+                e
             }
-        }
+        };
 
         // Try fallbacks
         for fallback in decision.fallbacks {
@@ -249,15 +256,12 @@ impl SmartRouter {
                 Ok(response) => return Ok((response, fallback)),
                 Err(e) => {
                     tracing::warn!("Fallback provider {} failed: {}", fallback, e);
-                    last_error = Some(e);
+                    last_error = e;
                 }
             }
         }
 
-        Err(last_error.unwrap_or_else(|| LlmError::RequestFailed {
-            provider: "router".to_string(),
-            reason: "All providers failed".to_string(),
-        }))
+        Err(last_error)
     }
 
     /// Try to complete with a specific provider, updating health status.
@@ -282,7 +286,10 @@ impl SmartRouter {
             Ok(response) => {
                 let latency_ms = start.elapsed().as_millis() as u64;
                 if let Ok(mut health) = self.health.write() {
-                    health.entry(backend).or_default().record_success(latency_ms);
+                    health
+                        .entry(backend)
+                        .or_default()
+                        .record_success(latency_ms);
                 }
                 Ok(response)
             }
@@ -342,7 +349,10 @@ impl SmartRouter {
     ) -> (LlmBackend, String) {
         // Prefer Ollama (free), then providers with cheaper models
         if available.contains(&LlmBackend::Ollama) {
-            return (LlmBackend::Ollama, "Cost-optimized: using free local model".to_string());
+            return (
+                LlmBackend::Ollama,
+                "Cost-optimized: using free local model".to_string(),
+            );
         }
 
         // TODO: Track actual model costs and select cheapest
@@ -364,7 +374,10 @@ impl SmartRouter {
         }
 
         if available.contains(&LlmBackend::OpenAi) {
-            return (LlmBackend::OpenAi, "Quality-first: using OpenAI".to_string());
+            return (
+                LlmBackend::OpenAi,
+                "Quality-first: using OpenAI".to_string(),
+            );
         }
 
         self.select_by_preference(available, "Quality-first: using available provider")
@@ -382,7 +395,10 @@ impl SmartRouter {
             ComplexityLevel::Simple => {
                 // Use cheaper options for simple queries
                 if available.contains(&LlmBackend::Ollama) {
-                    return (LlmBackend::Ollama, "Balanced: simple query, using local".to_string());
+                    return (
+                        LlmBackend::Ollama,
+                        "Balanced: simple query, using local".to_string(),
+                    );
                 }
             }
             ComplexityLevel::Medium => {
@@ -447,6 +463,72 @@ impl SmartRouter {
             .get(&backend)
             .map(|p: &Arc<dyn LlmProvider>| ModelTier::from_model_id(p.model_name()))
     }
+
+    /// Get a summary of all provider health statuses for dashboard display.
+    pub fn provider_health_summary(&self) -> Vec<ProviderHealthReport> {
+        let health_guard = match self.health.read() {
+            Ok(g) => g,
+            Err(_) => return Vec::new(),
+        };
+
+        self.providers
+            .iter()
+            .map(|(&backend, provider)| {
+                let health = health_guard.get(&backend).cloned().unwrap_or_default();
+                let tier = ModelTier::from_model_id(provider.model_name());
+
+                ProviderHealthReport {
+                    backend: backend.to_string(),
+                    model: provider.model_name().to_string(),
+                    tier: format!("{:?}", tier),
+                    available: health.available,
+                    success_rate: health.success_rate,
+                    avg_latency_ms: health.avg_latency_ms,
+                    total_requests: health.total_requests,
+                    successful_requests: health.successful_requests,
+                    consecutive_failures: health.consecutive_failures,
+                }
+            })
+            .collect()
+    }
+}
+
+/// Response from a routed completion, including metadata about the routing decision.
+#[derive(Debug, Clone)]
+pub struct RoutedResponse {
+    /// The completion response from the provider.
+    pub response: CompletionResponse,
+    /// Which backend actually served the request.
+    pub backend: LlmBackend,
+    /// The routing decision that was made.
+    pub decision: RoutingDecision,
+    /// Actual cost of the request in USD.
+    pub actual_cost: Decimal,
+    /// Total latency including any retries/fallbacks, in milliseconds.
+    pub latency_ms: u64,
+}
+
+/// Health summary for a single provider, suitable for JSON serialization.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderHealthReport {
+    /// Backend identifier (e.g. "anthropic", "openai").
+    pub backend: String,
+    /// Model name (e.g. "claude-sonnet-4-20250514").
+    pub model: String,
+    /// Model tier (e.g. "Economy", "Standard", "Premium").
+    pub tier: String,
+    /// Whether the provider is currently accepting requests.
+    pub available: bool,
+    /// Success rate from 0.0 to 1.0.
+    pub success_rate: f32,
+    /// Average response latency in milliseconds.
+    pub avg_latency_ms: u64,
+    /// Total requests made to this provider.
+    pub total_requests: u64,
+    /// Total successful requests.
+    pub successful_requests: u64,
+    /// Number of consecutive failures.
+    pub consecutive_failures: u32,
 }
 
 #[cfg(test)]

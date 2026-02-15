@@ -35,6 +35,7 @@ use crate::history::{
     ConversationMessage, ConversationSummary, JobEventRecord, LlmCallRecord, SandboxJobRecord,
     SandboxJobSummary, SettingRow,
 };
+use crate::llm::tracked::LlmCallStats;
 use crate::workspace::{MemoryChunk, MemoryDocument, WorkspaceEntry};
 use crate::workspace::{SearchConfig, SearchResult};
 
@@ -223,6 +224,11 @@ pub trait Database: Send + Sync {
 
     /// Record an LLM call.
     async fn record_llm_call(&self, record: &LlmCallRecord<'_>) -> Result<Uuid, DatabaseError>;
+
+    /// Get aggregated LLM call statistics grouped by provider and model.
+    ///
+    /// Returns cost, token, and call count summaries for dashboard display.
+    async fn get_llm_call_stats(&self) -> Result<Vec<LlmCallStats>, DatabaseError>;
 
     // ==================== Estimation Snapshots ====================
 

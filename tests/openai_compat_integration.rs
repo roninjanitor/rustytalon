@@ -113,6 +113,7 @@ async fn start_test_server() -> (SocketAddr, Arc<GatewayState>) {
         shutdown_tx: tokio::sync::RwLock::new(None),
         ws_tracker: Some(Arc::new(WsConnectionTracker::new())),
         llm_provider: Some(Arc::new(MockLlmProvider)),
+        smart_router: None,
         chat_rate_limiter: rustytalon::channels::web::server::RateLimiter::new(30, 60),
     });
 
@@ -433,6 +434,7 @@ async fn test_no_llm_provider_returns_503() {
         shutdown_tx: tokio::sync::RwLock::new(None),
         ws_tracker: Some(Arc::new(WsConnectionTracker::new())),
         llm_provider: None, // No LLM!
+        smart_router: None,
         chat_rate_limiter: rustytalon::channels::web::server::RateLimiter::new(30, 60),
     });
 

@@ -10,9 +10,12 @@
 //! - `SmartRouter`: Routes queries to the best provider
 
 mod analyzer;
+pub mod quality;
 mod router;
 mod strategy;
 
 pub use analyzer::{ComplexityLevel, ComplexityScore, QueryAnalyzer};
-pub use router::{ProviderHealth, RoutingDecision, SmartRouter};
+pub use router::{
+    ProviderHealth, ProviderHealthReport, RoutedResponse, RoutingDecision, SmartRouter,
+};
 pub use strategy::{RoutingConfig, RoutingStrategy};

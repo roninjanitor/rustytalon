@@ -21,6 +21,7 @@ use crate::history::{
     ConversationMessage, ConversationSummary, JobEventRecord, LlmCallRecord, SandboxJobRecord,
     SandboxJobSummary, SettingRow, Store,
 };
+use crate::llm::tracked::LlmCallStats;
 use crate::workspace::{
     MemoryChunk, MemoryDocument, Repository, SearchConfig, SearchResult, WorkspaceEntry,
 };
@@ -218,6 +219,46 @@ impl Database for PgBackend {
 
     async fn record_llm_call(&self, record: &LlmCallRecord<'_>) -> Result<Uuid, DatabaseError> {
         self.store.record_llm_call(record).await
+    }
+
+    async fn get_llm_call_stats(&self) -> Result<Vec<LlmCallStats>, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let rows = conn
+            .query(
+                r#"
+                SELECT
+                    provider,
+                    model,
+                    COUNT(*)::bigint AS total_calls,
+                    COALESCE(SUM(input_tokens), 0)::bigint AS total_input_tokens,
+                    COALESCE(SUM(output_tokens), 0)::bigint AS total_output_tokens,
+                    COALESCE(SUM(cost), 0) AS total_cost,
+                    CASE WHEN COUNT(*) > 0
+                        THEN COALESCE(SUM(cost), 0) / COUNT(*)
+                        ELSE 0
+                    END AS avg_cost_per_call
+                FROM llm_calls
+                GROUP BY provider, model
+                ORDER BY total_cost DESC
+                "#,
+                &[],
+            )
+            .await?;
+
+        let stats = rows
+            .iter()
+            .map(|row| LlmCallStats {
+                provider: row.get("provider"),
+                model: row.get("model"),
+                total_calls: row.get("total_calls"),
+                total_input_tokens: row.get("total_input_tokens"),
+                total_output_tokens: row.get("total_output_tokens"),
+                total_cost: row.get("total_cost"),
+                avg_cost_per_call: row.get("avg_cost_per_call"),
+            })
+            .collect();
+
+        Ok(stats)
     }
 
     // ==================== Estimation Snapshots ====================

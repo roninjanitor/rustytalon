@@ -204,7 +204,8 @@ impl DatabaseConfig {
             })
             .ok_or_else(|| ConfigError::MissingRequired {
                 key: "database_url".to_string(),
-                hint: "Run 'rustytalon onboard' or set DATABASE_URL environment variable".to_string(),
+                hint: "Run 'rustytalon onboard' or set DATABASE_URL environment variable"
+                    .to_string(),
             })?;
 
         let pool_size = parse_optional_env("DATABASE_POOL_SIZE", 10)?;
@@ -473,8 +474,7 @@ impl LlmRoutingConfig {
             })?
             .unwrap_or(true);
 
-        let strategy = optional_env("ROUTING_STRATEGY")?
-            .unwrap_or_else(|| "balanced".to_string());
+        let strategy = optional_env("ROUTING_STRATEGY")?.unwrap_or_else(|| "balanced".to_string());
 
         let max_cost_per_request = optional_env("ROUTING_MAX_COST")?
             .map(|s| s.parse())
@@ -537,8 +537,8 @@ impl LlmRoutingConfig {
     pub fn to_routing_config(&self) -> crate::llm::routing::RoutingConfig {
         use crate::llm::routing::{RoutingConfig, RoutingStrategy};
 
-        let strategy = RoutingStrategy::from_str(&self.strategy)
-            .unwrap_or(RoutingStrategy::Balanced);
+        let strategy =
+            RoutingStrategy::from_str(&self.strategy).unwrap_or(RoutingStrategy::Balanced);
 
         RoutingConfig {
             strategy,

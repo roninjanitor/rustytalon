@@ -18,6 +18,7 @@ mod reasoning;
 mod retry;
 mod rig_adapter;
 pub mod routing;
+pub mod tracked;
 
 pub use costs::{default_cost, model_cost};
 pub use failover::FailoverProvider;
@@ -30,6 +31,7 @@ pub use reasoning::{
     ToolSelection,
 };
 pub use rig_adapter::RigAdapter;
+pub use tracked::{LlmCallStats, TrackedProvider};
 
 use std::sync::Arc;
 

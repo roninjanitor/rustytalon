@@ -85,12 +85,18 @@ ROUTING_EXCLUDED_PROVIDERS=             # Providers to exclude
 
 ---
 
-## Week 3: Configuration & Polish (TODO)
+## Week 3: Configuration & Polish
 
-- [ ] Add fallback provider support
-- [ ] Implement retry logic with exponential backoff
-- [ ] Add cost tracking per request
-- [ ] Create provider health dashboard data
+### Completed
+- [x] Add fallback provider support (`SmartRouter::complete()` with health-aware fallback chain)
+- [x] Implement retry logic with exponential backoff (`TrackedProvider` wraps any `LlmProvider`)
+- [x] Add cost tracking per request (`TrackedProvider` records via `Database::record_llm_call()`)
+- [x] Create provider health dashboard data (`ProviderHealthReport`, `GET /api/providers/health`)
+- [x] Add response quality validation (`ResponseQualityChecker` with heuristic scoring)
+- [x] Add LLM cost stats API endpoint (`GET /api/providers/costs`)
+- [x] Add `get_llm_call_stats()` to Database trait (both postgres and libSQL backends)
+- [ ] Wire `TrackedProvider` into `main.rs` startup (requires runtime integration)
+- [ ] Wire `SmartRouter` into gateway via `with_smart_router()` (requires runtime integration)
 
 ---
 

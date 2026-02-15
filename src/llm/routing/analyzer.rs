@@ -23,10 +23,10 @@ impl ComplexityLevel {
     /// Get the minimum recommended model tier for this complexity level.
     pub fn min_model_tier(&self) -> &'static str {
         match self {
-            Self::Simple => "haiku",      // Fast, cheap models
-            Self::Medium => "sonnet",     // Balanced models
-            Self::Complex => "sonnet",    // Capable models
-            Self::Expert => "opus",       // Most capable models
+            Self::Simple => "haiku",   // Fast, cheap models
+            Self::Medium => "sonnet",  // Balanced models
+            Self::Complex => "sonnet", // Capable models
+            Self::Expert => "opus",    // Most capable models
         }
     }
 
@@ -99,37 +99,100 @@ impl QueryAnalyzer {
     pub fn new() -> Self {
         Self {
             simple_keywords: [
-                "hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye",
-                "what is", "what's", "who is", "when was", "where is",
-                "yes", "no", "ok", "okay", "sure", "help",
+                "hi",
+                "hello",
+                "hey",
+                "thanks",
+                "thank you",
+                "bye",
+                "goodbye",
+                "what is",
+                "what's",
+                "who is",
+                "when was",
+                "where is",
+                "yes",
+                "no",
+                "ok",
+                "okay",
+                "sure",
+                "help",
             ]
             .into_iter()
             .collect(),
 
             complex_keywords: [
-                "implement", "create", "build", "design", "architect",
-                "refactor", "optimize", "debug", "analyze", "compare",
-                "explain how", "step by step", "in detail", "comprehensive",
-                "multiple", "several", "all the", "entire",
+                "implement",
+                "create",
+                "build",
+                "design",
+                "architect",
+                "refactor",
+                "optimize",
+                "debug",
+                "analyze",
+                "compare",
+                "explain how",
+                "step by step",
+                "in detail",
+                "comprehensive",
+                "multiple",
+                "several",
+                "all the",
+                "entire",
             ]
             .into_iter()
             .collect(),
 
             expert_keywords: [
-                "architecture", "distributed", "scalability", "security audit",
-                "performance analysis", "system design", "trade-offs",
-                "microservices", "kubernetes", "concurrent", "async",
-                "research", "state of the art", "best practices",
+                "architecture",
+                "distributed",
+                "scalability",
+                "security audit",
+                "performance analysis",
+                "system design",
+                "trade-offs",
+                "microservices",
+                "kubernetes",
+                "concurrent",
+                "async",
+                "research",
+                "state of the art",
+                "best practices",
             ]
             .into_iter()
             .collect(),
 
             code_indicators: vec![
-                "```", "fn ", "def ", "function ", "class ", "struct ",
-                "impl ", "async ", "await ", "import ", "from ", "use ",
-                "pub ", "private ", "public ", "static ", "const ",
-                "let ", "var ", "val ", "if ", "else ", "for ", "while ",
-                "return ", "yield ", "match ", "switch ", "case ",
+                "```",
+                "fn ",
+                "def ",
+                "function ",
+                "class ",
+                "struct ",
+                "impl ",
+                "async ",
+                "await ",
+                "import ",
+                "from ",
+                "use ",
+                "pub ",
+                "private ",
+                "public ",
+                "static ",
+                "const ",
+                "let ",
+                "var ",
+                "val ",
+                "if ",
+                "else ",
+                "for ",
+                "while ",
+                "return ",
+                "yield ",
+                "match ",
+                "switch ",
+                "case ",
             ],
         }
     }
@@ -256,14 +319,26 @@ impl QueryAnalyzer {
     fn detect_domain(&self, query: &str) -> Option<String> {
         let domains = [
             (vec!["rust", "cargo", "crate", "borrow checker"], "rust"),
-            (vec!["python", "pip", "django", "flask", "pytorch"], "python"),
-            (vec!["javascript", "typescript", "npm", "node", "react", "vue"], "javascript"),
+            (
+                vec!["python", "pip", "django", "flask", "pytorch"],
+                "python",
+            ),
+            (
+                vec!["javascript", "typescript", "npm", "node", "react", "vue"],
+                "javascript",
+            ),
             (vec!["go ", "golang", "goroutine"], "go"),
             (vec!["java ", "jvm", "spring", "maven", "gradle"], "java"),
-            (vec!["sql", "database", "postgres", "mysql", "query"], "database"),
+            (
+                vec!["sql", "database", "postgres", "mysql", "query"],
+                "database",
+            ),
             (vec!["docker", "kubernetes", "k8s", "container"], "devops"),
             (vec!["aws", "gcp", "azure", "cloud"], "cloud"),
-            (vec!["ml", "machine learning", "neural", "model training"], "ml"),
+            (
+                vec!["ml", "machine learning", "neural", "model training"],
+                "ml",
+            ),
             (vec!["api", "rest", "graphql", "endpoint"], "api"),
         ];
 
@@ -288,7 +363,17 @@ impl QueryAnalyzer {
 
         // Very short queries that are just greetings or confirmations
         if word_count <= 3 {
-            let trivial = ["hi", "hello", "hey", "thanks", "thank you", "yes", "no", "ok", "okay"];
+            let trivial = [
+                "hi",
+                "hello",
+                "hey",
+                "thanks",
+                "thank you",
+                "yes",
+                "no",
+                "ok",
+                "okay",
+            ];
             return trivial.iter().any(|&t| lower.starts_with(t));
         }
 

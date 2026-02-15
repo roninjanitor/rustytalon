@@ -83,6 +83,7 @@ impl GatewayChannel {
             shutdown_tx: tokio::sync::RwLock::new(None),
             ws_tracker: Some(Arc::new(ws::WsConnectionTracker::new())),
             llm_provider: None,
+            smart_router: None,
             chat_rate_limiter: server::RateLimiter::new(30, 60),
         });
 
@@ -110,6 +111,7 @@ impl GatewayChannel {
             shutdown_tx: tokio::sync::RwLock::new(None),
             ws_tracker: self.state.ws_tracker.clone(),
             llm_provider: self.state.llm_provider.clone(),
+            smart_router: self.state.smart_router.clone(),
             chat_rate_limiter: server::RateLimiter::new(30, 60),
         };
         mutate(&mut new_state);
@@ -177,6 +179,12 @@ impl GatewayChannel {
     /// Inject the LLM provider for OpenAI-compatible API proxy.
     pub fn with_llm_provider(mut self, llm: Arc<dyn crate::llm::LlmProvider>) -> Self {
         self.rebuild_state(|s| s.llm_provider = Some(llm));
+        self
+    }
+
+    /// Inject the smart router for provider health dashboard.
+    pub fn with_smart_router(mut self, router: Arc<crate::llm::routing::SmartRouter>) -> Self {
+        self.rebuild_state(|s| s.smart_router = Some(router));
         self
     }
 

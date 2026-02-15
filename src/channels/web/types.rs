@@ -882,3 +882,17 @@ mod tests {
         assert_eq!(req.extension_name, "telegram");
     }
 }
+
+// --- Provider Health & Costs ---
+
+/// Response for the provider health summary endpoint.
+#[derive(Debug, Serialize)]
+pub struct ProviderHealthResponse {
+    pub providers: Vec<crate::llm::routing::ProviderHealthReport>,
+}
+
+/// Response for the LLM cost stats endpoint.
+#[derive(Debug, Serialize)]
+pub struct LlmCostStatsResponse {
+    pub stats: Vec<crate::llm::tracked::LlmCallStats>,
+}

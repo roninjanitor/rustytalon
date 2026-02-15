@@ -16,8 +16,7 @@ use tokio_postgres::NoTls;
 
 use crate::settings::{KeySource, Settings};
 use crate::setup::prompts::{
-    confirm, input, optional_input, print_header, print_info, print_step,
-    print_success, select_one,
+    confirm, input, optional_input, print_header, print_info, print_step, print_success, select_one,
 };
 
 /// Setup wizard error.
@@ -199,7 +198,10 @@ impl SetupWizard {
         };
 
         self.settings.secrets_master_key_source = key_source;
-        print_success(&format!("Key storage: {:?}", self.settings.secrets_master_key_source));
+        print_success(&format!(
+            "Key storage: {:?}",
+            self.settings.secrets_master_key_source
+        ));
 
         Ok(())
     }
@@ -220,8 +222,8 @@ impl SetupWizard {
         ];
 
         let options: Vec<&str> = providers.iter().map(|(name, _)| *name).collect();
-        let choice = select_one("Select your primary provider:", &options)
-            .map_err(SetupError::Io)?;
+        let choice =
+            select_one("Select your primary provider:", &options).map_err(SetupError::Io)?;
 
         match choice {
             0 => {
@@ -262,7 +264,10 @@ impl SetupWizard {
         let models: Vec<(&str, &str)> = vec![
             ("claude-sonnet-4-20250514", "Claude Sonnet 4 (recommended)"),
             ("claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet"),
-            ("claude-3-5-haiku-20241022", "Claude 3.5 Haiku (faster, cheaper)"),
+            (
+                "claude-3-5-haiku-20241022",
+                "Claude 3.5 Haiku (faster, cheaper)",
+            ),
             ("gpt-4o", "GPT-4o"),
             ("gpt-4o-mini", "GPT-4o Mini"),
             ("llama3", "Llama 3 (Ollama)"),
@@ -329,8 +334,10 @@ impl SetupWizard {
             self.settings.channels.http_enabled = true;
             let port = optional_input("HTTP port", Some("3000")).map_err(SetupError::Io)?;
             self.settings.channels.http_port = port.and_then(|p| p.parse().ok());
-            print_success(&format!("HTTP API enabled on port {}",
-                self.settings.channels.http_port.unwrap_or(3000)));
+            print_success(&format!(
+                "HTTP API enabled on port {}",
+                self.settings.channels.http_port.unwrap_or(3000)
+            ));
         }
 
         // Ask about Telegram

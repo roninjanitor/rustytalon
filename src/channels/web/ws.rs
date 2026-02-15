@@ -486,6 +486,7 @@ mod tests {
             shutdown_tx: tokio::sync::RwLock::new(None),
             ws_tracker: Some(Arc::new(WsConnectionTracker::new())),
             llm_provider: None,
+            smart_router: None,
             chat_rate_limiter: crate::channels::web::server::RateLimiter::new(30, 60),
         }
     }

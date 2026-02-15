@@ -213,7 +213,6 @@ impl EmbeddingProvider for OpenAiEmbeddings {
     }
 }
 
-
 /// A mock embedding provider for testing.
 ///
 /// Generates deterministic embeddings based on text hash.
