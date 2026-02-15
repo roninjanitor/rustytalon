@@ -1,0 +1,65 @@
+# Production Docker Compose for RustyTalon
+#
+# Usage:
+#   cp .env.example .env    # configure your API keys and secrets
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# This starts RustyTalon with PostgreSQL (pgvector) and optional worker sandbox.
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL with pgvector extension
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rustytalon}
+      POSTGRES_USER: ${POSTGRES_USER:-rustytalon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rustytalon}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # RustyTalon agent
+  # ---------------------------------------------------------------------------
+  rustytalon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-3001}:3001"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-rustytalon}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-rustytalon}
+      GATEWAY_HOST: "0.0.0.0"
+      GATEWAY_PORT: "3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Mount Docker socket if sandbox is enabled
+    # volumes:
+    #   - /var/run/docker.sock:/var/run/docker.sock
+
+  # ---------------------------------------------------------------------------
+  # Worker image (build only, used by orchestrator at runtime)
+  # ---------------------------------------------------------------------------
+  # Uncomment to pre-build the worker image:
+  # worker:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.worker
+  #   image: rustytalon-worker:latest
+  #   profiles: ["build-only"]
+  #   command: ["echo", "Worker image built"]
+
+volumes:
+  pgdata:

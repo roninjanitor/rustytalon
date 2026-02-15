@@ -11,10 +11,12 @@
 <p align="center">
   <a href="#philosophy">Philosophy</a> •
   <a href="#features">Features</a> •
-  <a href="#installation">Installation</a> •
+  <a href="#quick-start">Quick Start</a> •
   <a href="#configuration">Configuration</a> •
   <a href="#security">Security</a> •
-  <a href="#architecture">Architecture</a>
+  <a href="#architecture">Architecture</a> •
+  <a href="#api">API</a> •
+  <a href="#deployment">Deployment</a>
 </p>
 
 ---
@@ -27,12 +29,20 @@ In a world where AI systems are increasingly opaque about data handling and alig
 
 - **Your data stays yours** - All information is stored locally, encrypted, and never leaves your control
 - **Transparency by design** - Open source, auditable, no hidden telemetry or data harvesting
+- **No vendor lock-in** - Smart routing across Anthropic, OpenAI, Ollama, and any OpenAI-compatible provider
 - **Self-expanding capabilities** - Build new tools on the fly without waiting for vendor updates
 - **Defense in depth** - Multiple security layers protect against prompt injection and data exfiltration
 
 RustyTalon is the AI assistant you can actually trust with your personal and professional life.
 
 ## Features
+
+### Multi-Provider LLM Support
+
+- **Smart Routing** - Automatically routes queries to the best provider based on complexity, cost, and quality
+- **Provider Failover** - Automatic fallback when a provider is unhealthy
+- **Cost Tracking** - Per-request cost recording and aggregate statistics
+- **Supported Providers** - Anthropic (Claude), OpenAI (GPT), Ollama (local models), any OpenAI-compatible API
 
 ### Security First
 
@@ -45,7 +55,7 @@ RustyTalon is the AI assistant you can actually trust with your personal and pro
 
 - **Multi-channel** - REPL, HTTP webhooks, WASM channels (Telegram, Slack), and web gateway
 - **Docker Sandbox** - Isolated container execution with per-job tokens and orchestrator/worker pattern
-- **Web Gateway** - Browser UI with real-time SSE/WebSocket streaming
+- **Web Gateway** - Browser UI with real-time SSE/WebSocket streaming and 50+ API endpoints
 - **Routines** - Cron schedules, event triggers, webhook handlers for background automation
 - **Heartbeat System** - Proactive background execution for monitoring and maintenance tasks
 - **Parallel Jobs** - Handle multiple requests concurrently with isolated contexts
@@ -63,84 +73,147 @@ RustyTalon is the AI assistant you can actually trust with your personal and pro
 - **Workspace Filesystem** - Flexible path-based storage for notes, logs, and context
 - **Identity Files** - Maintain consistent personality and preferences across sessions
 
-## Installation
+## Quick Start
 
 ### Prerequisites
 
 - Rust 1.85+
-- PostgreSQL 15+ with [pgvector](https://github.com/pgvector/pgvector) extension
-- NEAR AI account (authentication handled via setup wizard)
+- PostgreSQL 15+ with [pgvector](https://github.com/pgvector/pgvector) extension (or use libSQL for zero-dependency local mode)
+- An API key for at least one LLM provider (Anthropic, OpenAI, or Ollama)
 
-## Download or Build
-
-Visit [Releases page](https://github.com/nearai/rustytalon/releases/) to see the latest updates.
-
-<details>
-  <summary>Install via Windows Installer (Windows)</summary>
-
-Download the [Windows Installer](https://github.com/nearai/rustytalon/releases/latest/download/rustytalon-x86_64-pc-windows-msvc.msi) and run it.
-
-</details>
-
-<details>
-  <summary>Install via powershell script (Windows)</summary>
-
-```sh
-irm https://github.com/nearai/rustytalon/releases/latest/download/rustytalon-installer.ps1 | iex
-```
-
-</details>
-
-<details>
-  <summary>Install via shell script (macOS, Linux, Windows/WSL)</summary>
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/nearai/rustytalon/releases/latest/download/rustytalon-installer.sh | sh
-```
-</details>
-
-<details>
-  <summary>Compile the source code (Cargo on Windows, Linux, macOS)</summary>
-
-Install it with `cargo`, just make sure you have [Rust](https://rustup.rs) installed on your computer.
+### Build from Source
 
 ```bash
-# Clone the repository
-git clone https://github.com/nearai/rustytalon.git
+git clone https://github.com/rustytalon/rustytalon.git
 cd rustytalon
 
-# Build
+# Build with PostgreSQL backend (default)
 cargo build --release
+
+# Or build with embedded libSQL (no external database needed)
+cargo build --release --no-default-features --features libsql
 
 # Run tests
 cargo test
 ```
 
-For **full release** (after modifying channel sources), run `./scripts/build-all.sh` to rebuild channels first.
-
-</details>
-
 ### Database Setup
 
-```bash
-# Create database
-createdb rustytalon
+**Option A: PostgreSQL** (recommended for production)
 
-# Enable pgvector
+```bash
+createdb rustytalon
 psql rustytalon -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+**Option B: libSQL** (zero-dependency, good for development)
+
+No setup needed. RustyTalon creates `~/.rustytalon/rustytalon.db` automatically.
+
+### Docker Quick Start
+
+The fastest way to get a full environment running:
+
+```bash
+# Start PostgreSQL with pgvector
+docker compose up -d
+
+# Configure your LLM provider
+cp .env.example .env
+# Edit .env with your API key (see Configuration below)
+
+# Run
+cargo run
 ```
 
 ## Configuration
 
-Run the setup wizard to configure RustyTalon:
+RustyTalon is configured via environment variables. Copy `.env.example` and set your values:
 
 ```bash
-rustytalon onboard
+cp .env.example .env
 ```
 
-The wizard handles database connection, NEAR AI authentication (via browser OAuth),
-and secrets encryption (using your system keychain). All settings are saved to
-`~/.rustytalon/settings.toml`.
+### LLM Provider (pick one)
+
+```bash
+# Anthropic (default)
+LLM_BACKEND=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-sonnet-4-20250514
+
+# OpenAI
+LLM_BACKEND=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o
+
+# Ollama (local, free)
+LLM_BACKEND=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3
+
+# Any OpenAI-compatible API
+LLM_BACKEND=openai_compatible
+OPENAI_COMPATIBLE_BASE_URL=https://api.example.com/v1
+OPENAI_COMPATIBLE_API_KEY=...
+OPENAI_COMPATIBLE_MODEL=model-name
+```
+
+### Database
+
+```bash
+# PostgreSQL (default)
+DATABASE_BACKEND=postgres
+DATABASE_URL=postgres://user:pass@localhost:5432/rustytalon
+
+# libSQL (embedded)
+DATABASE_BACKEND=libsql
+LIBSQL_PATH=~/.rustytalon/rustytalon.db
+
+# libSQL with Turso cloud sync
+LIBSQL_URL=libsql://your-db.turso.io
+LIBSQL_AUTH_TOKEN=your-token
+```
+
+### Smart Routing
+
+```bash
+ROUTING_ENABLED=true
+ROUTING_STRATEGY=balanced        # balanced, cost, quality, local_first
+ROUTING_MAX_COST=0.05            # Max USD per request
+ROUTING_MIN_QUALITY=0.5          # Min quality score 0.0-1.0
+ROUTING_ENABLE_FALLBACK=true
+ROUTING_MAX_RETRIES=3
+ROUTING_PREFERRED_PROVIDERS=anthropic,openai
+```
+
+### Web Gateway
+
+```bash
+GATEWAY_ENABLED=true
+GATEWAY_HOST=127.0.0.1
+GATEWAY_PORT=3001
+GATEWAY_AUTH_TOKEN=changeme      # Required for API access
+```
+
+### Embeddings (for semantic memory search)
+
+```bash
+OPENAI_API_KEY=sk-...
+EMBEDDING_ENABLED=true
+EMBEDDING_MODEL=text-embedding-3-small
+```
+
+### Docker Sandbox
+
+```bash
+SANDBOX_ENABLED=true
+SANDBOX_IMAGE=rustytalon-worker:latest
+SANDBOX_MEMORY_LIMIT_MB=512
+SANDBOX_TIMEOUT_SECS=1800
+```
+
+See `.env.example` for the complete list of configuration options.
 
 ## Security
 
@@ -173,7 +246,7 @@ External content passes through multiple security layers:
 
 ### Data Protection
 
-- All data stored locally in your PostgreSQL database
+- All data stored locally in your database
 - Secrets encrypted with AES-256-GCM
 - No telemetry, analytics, or data sharing
 - Full audit log of all tool executions
@@ -216,6 +289,11 @@ External content passes through multiple security layers:
 │              │    Tool Registry     │                          │
 │              │  Built-in, MCP, WASM │                          │
 │              └──────────────────────┘                          │
+│                          │                                     │
+│              ┌───────────▼──────────┐                          │
+│              │    Smart Router      │                          │
+│              │ Anthropic│OpenAI│... │                          │
+│              └──────────────────────┘                          │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -224,7 +302,7 @@ External content passes through multiple security layers:
 | Component | Purpose |
 |-----------|---------|
 | **Agent Loop** | Main message handling and job coordination |
-| **Router** | Classifies user intent (command, query, task) |
+| **Smart Router** | Routes queries to optimal LLM provider based on complexity and cost |
 | **Scheduler** | Manages parallel job execution with priorities |
 | **Worker** | Executes jobs with LLM reasoning and tool calls |
 | **Orchestrator** | Container lifecycle, LLM proxying, per-job auth |
@@ -233,17 +311,65 @@ External content passes through multiple security layers:
 | **Workspace** | Persistent memory with hybrid search |
 | **Safety Layer** | Prompt injection defense and content sanitization |
 
-## Usage
+## API
+
+RustyTalon exposes a comprehensive HTTP API via the web gateway. All protected endpoints require a `Bearer` token set via `GATEWAY_AUTH_TOKEN`.
+
+For the full API reference, see [docs/API.md](docs/API.md).
+
+### Key Endpoint Groups
+
+| Group | Endpoints | Description |
+|-------|-----------|-------------|
+| Chat | 9 | Send messages, SSE/WebSocket streaming, conversation history |
+| Memory | 5 | Read, write, search workspace files |
+| Jobs | 9 | List, cancel, restart sandbox jobs; read job files |
+| Extensions | 5 | Install, activate, remove MCP/WASM extensions |
+| Routines | 7 | CRUD for scheduled/reactive tasks |
+| Settings | 6 | User settings management |
+| Providers | 2 | LLM provider health and cost stats |
+| OpenAI-compat | 2 | Drop-in `/v1/chat/completions` endpoint |
+
+### Example: Send a Message
 
 ```bash
-# First-time setup (configures database, auth, etc.)
-rustytalon onboard
+curl -X POST http://localhost:3001/api/chat/send \
+  -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What is the weather today?"}'
+```
 
-# Start interactive REPL
-cargo run
+### Example: Stream Events (SSE)
 
-# With debug logging
-RUST_LOG=rustytalon=debug cargo run
+```bash
+curl -N http://localhost:3001/api/chat/events \
+  -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN"
+```
+
+## Deployment
+
+For production deployment guides, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+### Docker Compose (Recommended)
+
+```bash
+# Full stack: RustyTalon + PostgreSQL
+docker compose -f docker-compose.prod.yml up -d
+```
+
+### Standalone Binary
+
+```bash
+cargo build --release
+./target/release/rustytalon
+```
+
+### With Docker Sandbox
+
+Build the worker image for sandboxed job execution:
+
+```bash
+docker build -f Dockerfile.worker -t rustytalon-worker:latest .
 ```
 
 ## Development
@@ -256,26 +382,14 @@ cargo fmt
 cargo clippy --all --benches --tests --examples --all-features
 
 # Run tests
-createdb rustytalon_test
 cargo test
 
 # Run specific test
 cargo test test_name
+
+# Verbose logging
+RUST_LOG=rustytalon=debug cargo run
 ```
-
-- **Telegram channel**: See [docs/TELEGRAM_SETUP.md](docs/TELEGRAM_SETUP.md) for setup and DM pairing.
-- **Changing channel sources**: Run `./channels-src/telegram/build.sh` before `cargo build` so the updated WASM is bundled.
-
-## OpenClaw Heritage
-
-RustyTalon is a Rust reimplementation inspired by [OpenClaw](https://github.com/openclaw/openclaw). See [FEATURE_PARITY.md](FEATURE_PARITY.md) for the complete tracking matrix.
-
-Key differences:
-
-- **Rust vs TypeScript** - Native performance, memory safety, single binary
-- **WASM sandbox vs Docker** - Lightweight, capability-based security
-- **PostgreSQL vs SQLite** - Production-ready persistence
-- **Security-first design** - Multiple defense layers, credential protection
 
 ## License
 

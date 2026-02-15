@@ -144,9 +144,11 @@ ROUTING_EXCLUDED_PROVIDERS=             # Providers to exclude
 
 ---
 
-## Week 5: Documentation & Launch (TODO)
+## Week 5: Documentation & Launch
 
-- [ ] Update README.md
-- [ ] Docker Compose examples
-- [ ] API documentation
-- [ ] Deployment guide
+### Completed
+- [x] Update README.md (removed NEAR AI references, added multi-provider docs, quick start, API summary)
+- [x] Update `.env.example` (organized by section, multi-provider config, all options documented)
+- [x] Docker Compose production example (`docker-compose.prod.yml`)
+- [x] API documentation (`docs/API.md` — all 56+ gateway endpoints with examples)
+- [x] Deployment guide (`docs/DEPLOYMENT.md` — local, Docker, sandbox, multi-provider, security checklist)
