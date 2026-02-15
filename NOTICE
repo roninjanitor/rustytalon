@@ -1,0 +1,29 @@
+RustyTalon
+Copyright 2026 Nick Lozano
+
+This project is derived from IronClaw (https://github.com/nearai/ironclaw)
+Copyright 2024 NEAR AI
+
+RustyTalon retains substantial portions of IronClaw's architecture, particularly:
+- WASM sandbox implementation (src/tools/wasm/)
+- Safety/security layers (src/safety/)
+- Database abstraction (src/db/)
+- Workspace/memory system
+- Signal channel integration
+
+The following were significantly modified or replaced:
+- LLM provider system: Removed NEAR AI dependency, added multi-provider support
+  (Anthropic, OpenAI, Ollama, OpenAI-compatible)
+- Build scripts and deployment configuration
+- Docker containerization
+- API routing and smart provider selection
+
+This derivative work is licensed under either Apache License 2.0 or MIT License,
+consistent with the original IronClaw project.
+
+---
+
+IronClaw License Notice:
+Licensed under either of Apache License Version 2.0 or MIT license at your option.
+
+For more information about IronClaw, visit: https://github.com/nearai/ironclaw

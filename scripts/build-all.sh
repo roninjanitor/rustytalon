@@ -1,21 +1,29 @@
 #!/usr/bin/env bash
-# Build IronClaw and all bundled channels.
+# Build RustyTalon and all bundled WASM channels.
 #
-# Run this before release or when channel sources have changed.
-# The main binary bundles telegram.wasm via include_bytes!; it must exist.
+# Run this before release or when channel/tool sources have changed.
+# The main binary bundles Telegram WASM module via build.rs; it must exist.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-echo "Building bundled channels..."
-if [ -d "channels-src/telegram" ]; then
-    ./channels-src/telegram/build.sh
+echo "==> Building bundled WASM channels..."
+if [ -d "tools-src/telegram" ]; then
+    echo "    Building Telegram WASM channel..."
+    cargo build --manifest-path tools-src/telegram/Cargo.toml --target wasm32-wasip2 --release
 fi
 
 echo ""
-echo "Building IronClaw..."
+echo "==> Building RustyTalon binary..."
 cargo build --release
 
 echo ""
-echo "Done. Binary: target/release/ironclaw"
+echo "✓ Done. Binaries:"
+echo "  - Main agent: target/release/rustytalon"
+echo ""
+echo "To build Docker images:"
+echo "  docker build -f Dockerfile -t rustytalon:latest ."
+echo "  docker build -f Dockerfile.worker -t rustytalon-worker:latest ."
+echo ""
+echo "Or use: make docker-build-all"

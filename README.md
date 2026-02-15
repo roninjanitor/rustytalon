@@ -112,17 +112,41 @@ No setup needed. RustyTalon creates `~/.rustytalon/rustytalon.db` automatically.
 
 ### Docker Quick Start
 
-The fastest way to get a full environment running:
+**Option 1: Pre-built Images (Fastest)**
+
+Pull pre-built images from GitHub Container Registry:
 
 ```bash
-# Start PostgreSQL with pgvector
-docker compose up -d
-
-# Configure your LLM provider
+# Configure your LLM provider first
 cp .env.example .env
 # Edit .env with your API key (see Configuration below)
 
-# Run
+# Start full stack with pre-built agent image
+docker compose -f docker-compose.prod.yml up -d
+```
+
+**Option 2: Build from Source**
+
+```bash
+# Build all Docker images
+make docker-build-all
+
+# Or build individually
+docker build -f Dockerfile -t rustytalon:latest .
+docker build -f Dockerfile.worker -t rustytalon-worker:latest .
+
+# Start development stack
+docker compose up -d
+```
+
+**Option 3: Local Development (without Docker)**
+
+```bash
+# Start PostgreSQL container only
+docker compose up -d db
+
+# Configure and run locally
+cp .env.example .env
 cargo run
 ```
 
@@ -350,10 +374,47 @@ curl -N http://localhost:3001/api/chat/events \
 
 For production deployment guides, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
-### Docker Compose (Recommended)
+### Docker Images
+
+Pre-built images are automatically published to GitHub Container Registry on every release.
 
 ```bash
-# Full stack: RustyTalon + PostgreSQL
+# Pull agent image
+docker pull ghcr.io/nicklozano/rustytalon:latest
+
+# Pull worker image (for Docker sandbox execution)
+docker pull ghcr.io/nicklozano/rustytalon-worker:latest
+
+# Run agent
+docker run -it \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e DATABASE_URL=postgresql://user:pass@host/rustytalon \
+  ghcr.io/nicklozano/rustytalon:latest
+```
+
+**Image Tags:**
+- `latest` - Latest release (tracking main branch)
+- `vX.Y.Z` - Semantic version releases
+- `sha-<commit>` - Commit-specific builds
+
+**Building Locally:**
+
+```bash
+# Build both images
+make docker-build-all
+
+# Or individual builds
+docker build -f Dockerfile -t rustytalon:latest .
+docker build -f Dockerfile.worker -t rustytalon-worker:latest .
+```
+
+### Docker Compose (Recommended for Full Stack)
+
+```bash
+# Development stack with PostgreSQL
+docker compose up -d
+
+# Production stack with pre-built images
 docker compose -f docker-compose.prod.yml up -d
 ```
 
@@ -366,13 +427,56 @@ cargo build --release
 
 ### With Docker Sandbox
 
-Build the worker image for sandboxed job execution:
+When `SANDBOX_ENABLED=true`, RustyTalon will spawn isolated container jobs using the worker image:
 
 ```bash
+# Ensure worker image is available (auto-pulled if missing)
+docker pull ghcr.io/nicklozano/rustytalon-worker:latest
+
+# Or build locally
 docker build -f Dockerfile.worker -t rustytalon-worker:latest .
 ```
 
 ## Development
+
+We provide a Makefile with convenient commands. Run `make help` to see all targets.
+
+### Code Quality
+
+```bash
+# Format code
+make fmt
+
+# Lint with clippy
+make clippy
+
+# Run all tests
+make test
+
+# Full quality gate (fmt + clippy + test)
+make ship
+```
+
+### Docker Development
+
+```bash
+# Build both agent and worker images
+make docker-build-all
+
+# Start dev stack (PostgreSQL + agent)
+make docker-up
+
+# View logs
+make docker-logs
+
+# Stop containers
+make docker-down
+
+# Clean images and volumes
+make docker-clean
+```
+
+### Manual Commands
 
 ```bash
 # Format code
@@ -391,6 +495,14 @@ cargo test test_name
 RUST_LOG=rustytalon=debug cargo run
 ```
 
+## Attribution
+
+RustyTalon is derived from [IronClaw](https://github.com/nearai/ironclaw) (Copyright 2024 NEAR AI), an excellent open source AI assistant. We've preserved IronClaw's robust architecture (WASM sandbox, safety layers, database abstraction, workspace system) while removing vendor lock-in and adding multi-provider LLM support.
+
+For detailed attribution, see [NOTICE](NOTICE).
+
+**Original Project:** https://github.com/nearai/ironclaw
+
 ## License
 
 Licensed under either of:
@@ -399,3 +511,5 @@ Licensed under either of:
 - MIT License ([LICENSE-MIT](LICENSE-MIT))
 
 at your option.
+
+RustyTalon is released under the same licenses as IronClaw (MIT or Apache 2.0).
