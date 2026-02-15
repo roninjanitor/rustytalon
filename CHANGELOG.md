@@ -10,6 +10,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- GitHub Actions CI/CD workflow for multi-architecture Docker builds (amd64, arm64)
+- Makefile with convenient development commands (docker-build, docker-up, docker-logs, ship quality gate, etc.)
+- Deploy systemd service file for RustyTalon on GCP
+
+### Changed
+
+- Updated deploy scripts to use RustyTalon branding (replace IronClaw references)
+- Enhanced README with three Docker quick-start options (pre-built images, build from source, local dev)
+- Expanded Development section with Makefile command reference
+- Improved build-all.sh script with helpful output and Makefile reference
+
+### Documentation
+
+- Added NOTICE file with detailed attribution to IronClaw (nearai/ironclaw)
+- Updated LICENSE-MIT to credit Nick Lozano and acknowledge IronClaw derivation
+- Added Attribution section to README with link to original IronClaw project
+- Updated PRD to clarify derivation from IronClaw vs. standalone fork
+- Fixed CHANGELOG to remove hardcoded nearai/rustytalon links (now relative for new repo)
+
 ## [0.1.3] - 2026-02-12
 
 ### Other
