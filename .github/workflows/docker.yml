@@ -67,12 +67,13 @@ jobs:
         if: matrix.image-suffix == '-worker'
         id: worker-meta
         run: |
-          # Extract version from tags
-          tags="${{ steps.meta.outputs.tags }}"
-          # For worker images, we want rustytalon-worker:latest instead of rustytalon:latest
-          tags=$(echo "$tags" | sed "s/:latest/:latest-worker/g")
-          tags=$(echo "$tags" | sed "s/$/-worker/g")
-          echo "tags=$tags" >> $GITHUB_OUTPUT
+          # Rewrite image name: rustytalon -> rustytalon-worker (keeps tags unchanged)
+          tags=$(echo "${{ steps.meta.outputs.tags }}" | sed "s|/rustytalon:|/rustytalon-worker:|g")
+          {
+            echo "tags<<EOF"
+            echo "$tags"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -81,8 +82,7 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platforms }}
           push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ steps.meta.outputs.tags }}
+          tags: ${{ matrix.image-suffix == '-worker' && steps.worker-meta.outputs.tags || steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
