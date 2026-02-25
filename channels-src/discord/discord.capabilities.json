@@ -1,0 +1,51 @@
+{
+  "type": "channel",
+  "name": "discord",
+  "description": "Discord DM channel for RustyTalon — polls DM channels for new messages and responds in-DM",
+  "setup": {
+    "required_secrets": [
+      {
+        "name": "discord_bot_token",
+        "prompt": "Enter your Discord bot token (from discord.com/developers → Your App → Bot → Token)",
+        "validation": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+      }
+    ],
+    "validation_endpoint": "https://discord.com/api/v10/users/@me"
+  },
+  "capabilities": {
+    "http": {
+      "allowlist": [
+        { "host": "discord.com", "path_prefix": "/api/" }
+      ],
+      "credentials": {
+        "discord_bot": {
+          "secret_name": "discord_bot_token",
+          "location": { "type": "header", "name": "Authorization", "prefix": "Bot " },
+          "host_patterns": ["discord.com"]
+        }
+      },
+      "rate_limit": {
+        "requests_per_minute": 30,
+        "requests_per_hour": 500
+      }
+    },
+    "secrets": {
+      "allowed_names": ["discord_*"]
+    },
+    "channel": {
+      "allowed_paths": [],
+      "allow_polling": true,
+      "min_poll_interval_ms": 30000,
+      "workspace_prefix": "channels/discord/",
+      "emit_rate_limit": {
+        "messages_per_minute": 100,
+        "messages_per_hour": 5000
+      }
+    }
+  },
+  "config": {
+    "owner_id": null,
+    "dm_policy": "pairing",
+    "allow_from": []
+  }
+}

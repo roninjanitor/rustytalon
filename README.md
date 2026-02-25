@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="rustytalon.png" alt="RustyTalon" width="200"/>
-</p>
-
 <h1 align="center">RustyTalon</h1>
 
 <p align="center">
@@ -53,7 +49,7 @@ RustyTalon is the AI assistant you can actually trust with your personal and pro
 
 ### Always Available
 
-- **Multi-channel** - REPL, HTTP webhooks, WASM channels (Telegram, Slack), and web gateway
+- **Multi-channel** - REPL, HTTP webhooks, WASM channels (Telegram, Slack, Discord), and web gateway
 - **Docker Sandbox** - Isolated container execution with per-job tokens and orchestrator/worker pattern
 - **Web Gateway** - Browser UI with real-time SSE/WebSocket streaming and 50+ API endpoints
 - **Routines** - Cron schedules, event triggers, webhook handlers for background automation

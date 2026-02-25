@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Discord DM channel (`channels-src/discord/`) — polls Discord DMs via REST every 30 s, DM pairing for access control, typing indicator, bot-token credential injection at the host boundary
 - Multi-provider LLM failover and routing from .env configuration
   - All LLM backends with credentials present are now initialized (not just the primary)
   - Automatic failover between providers on transient errors when multiple backends are configured
@@ -29,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Added `docs/DISCORD_SETUP.md` — Discord bot creation, DM pairing flow, and configuration reference
 - Added NOTICE file with detailed attribution to IronClaw (nearai/ironclaw)
 - Updated LICENSE-MIT to credit Nick Lozano and acknowledge IronClaw derivation
 - Added Attribution section to README with link to original IronClaw project

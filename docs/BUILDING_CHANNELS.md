@@ -261,6 +261,15 @@ cargo build --release
 
 Prerequisites: `rustup target add wasm32-wasip2`, `cargo install wasm-tools` (optional; fallback copies raw WASM if unavailable).
 
+### Bundled Channels
+
+| Channel | Source | Transport | Setup Guide |
+|---------|--------|-----------|-------------|
+| Telegram | `channels-src/telegram/` | Webhook or polling | [TELEGRAM_SETUP.md](TELEGRAM_SETUP.md) |
+| Slack | `channels-src/slack/` | Webhook | — |
+| WhatsApp | `channels-src/whatsapp/` | Webhook | — |
+| Discord | `channels-src/discord/` | REST polling (DMs) | [DISCORD_SETUP.md](DISCORD_SETUP.md) |
+
 ### Telegram Channel (Manual Build)
 
 ```bash
@@ -276,6 +285,18 @@ cp channels-src/telegram/telegram.wasm channels-src/telegram/telegram.capabiliti
 ```
 
 **Note**: The main RustyTalon binary bundles `telegram.wasm` via `include_bytes!`. When modifying the Telegram channel source, run `./channels-src/telegram/build.sh` **before** building the main crate, so the updated WASM is included.
+
+### Discord Channel (Manual Build)
+
+```bash
+rustup target add wasm32-wasip2
+./channels-src/discord/build.sh
+
+mkdir -p ~/.rustytalon/channels
+cp channels-src/discord/discord.wasm channels-src/discord/discord.capabilities.json ~/.rustytalon/channels/
+```
+
+See [DISCORD_SETUP.md](DISCORD_SETUP.md) for bot creation, token configuration, and DM pairing.
 
 ### Other Channels
 
