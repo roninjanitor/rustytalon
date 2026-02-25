@@ -20,6 +20,7 @@ COPY Cargo.toml Cargo.lock ./
 
 # Copy source and build artifacts
 COPY src/ src/
+COPY examples/ examples/
 COPY migrations/ migrations/
 COPY wit/ wit/
 
