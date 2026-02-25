@@ -17,6 +17,16 @@
 
 ---
 
+> **Personal Project Notice**
+>
+> This is a personal fork maintained by [@roninjanitor](https://github.com/roninjanitor) to solve specific problems for my own use. Most changes were made with the help of [Claude Code](https://claude.ai/code) (Anthropic's AI coding assistant). The project works for me, but comes with no guarantees of stability or support.
+>
+> Contributions and issues are welcome — I'm happy to review PRs. Just know this is a nights-and-weekends project, not a product.
+>
+> **Original project:** [IronClaw](https://github.com/nearai/ironclaw) by [NEAR AI](https://near.ai) — all credit for the core architecture goes to the original maintainers.
+
+---
+
 ## Philosophy
 
 RustyTalon is built on a simple principle: **your AI assistant should work for you, not against you**.
