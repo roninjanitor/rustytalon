@@ -9,7 +9,7 @@ jobs:
 
   # Release unpublished packages.
   release-plz-release:
-    if: ${{ github.repository_owner == 'nearai' }}
+    if: ${{ github.repository_owner == 'nicklozano' }}
     name: Release-plz release
     runs-on: ubuntu-latest
     permissions:
@@ -17,7 +17,7 @@ jobs:
     steps:
       - &checkout
         name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -45,7 +45,7 @@ jobs:
 
   # Create a PR with the new versions and changelog, preparing the next release.
   release-plz-pr:
-    if: ${{ github.repository_owner == 'nearai' }}
+    if: ${{ github.repository_owner == 'nicklozano' }}
     name: Release-plz PR
     runs-on: ubuntu-latest
     permissions:

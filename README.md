@@ -90,7 +90,7 @@ RustyTalon is the AI assistant you can actually trust with your personal and pro
 ### Build from Source
 
 ```bash
-git clone https://github.com/rustytalon/rustytalon.git
+git clone https://github.com/nicklozano/rustytalon.git
 cd rustytalon
 
 # Build with PostgreSQL backend (default)

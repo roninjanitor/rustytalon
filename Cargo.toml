@@ -1,13 +1,13 @@
 [package]
 name = "rustytalon"
-version = "1.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Secure multi-provider AI assistant with smart routing and no vendor lock-in"
 authors = ["RustyTalon Contributors"]
 license = "MIT OR Apache-2.0"
-homepage = "https://github.com/rustytalon/rustytalon"
-repository = "https://github.com/rustytalon/rustytalon"
+homepage = "https://github.com/nicklozano/rustytalon"
+repository = "https://github.com/nicklozano/rustytalon"
 
 [package.metadata.wix]
 upgrade-guid = "D0156E61-BA37-451E-8AB9-1A2ECCCFA48F"
