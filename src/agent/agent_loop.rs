@@ -1033,8 +1033,54 @@ impl Agent {
             None
         };
 
+        // Detect first-ever interaction: first turn in this thread AND no workspace identity.
+        // No workspace identity means the user hasn't been onboarded yet (USER.md, AGENTS.md, etc. are all empty).
+        // On first interaction we skip the LLM entirely and return a direct welcome — this is
+        // more reliable than injecting onboarding instructions that the LLM may ignore.
+        let is_first_interaction = initial_messages.len() == 1
+            && system_prompt.is_none()
+            && self.workspace().is_some();
+
+        if is_first_interaction {
+            let welcome = "\
+Hey, glad you're here! I'm RustyTalon — think of me as a capable friend who lives in your terminal (and browser, and Telegram, and wherever else you want me).
+
+**What should I call you?**
+
+While you think about that, here's a taste of what I can do:
+
+- *\"Remind me every morning at 9am to review my tasks\"*
+- *\"Remember that I prefer Python for scripting\"*
+- *\"Watch my Downloads folder and tell me when new files show up\"*
+- *\"Help me write a script to back up my Documents folder weekly\"*
+
+Just tell me your name and we'll get started — or skip straight to whatever you need."
+                .to_string();
+            return Ok(AgenticLoopResult::Response(welcome));
+        }
+
+        // If we have a workspace but no identity yet AND this is the second turn (len == 3:
+        // welcome assistant msg + user reply = user now telling us their name), prompt the LLM
+        // to save it to USER.md so future sessions are personal.
+        let name_capture_prompt = if self.workspace().is_some()
+            && system_prompt.is_none()
+            && initial_messages.len() == 3
+        {
+            Some(
+                "## Capturing user's name\n\n\
+                The previous assistant message asked the user what to call them. \
+                The user's latest message is likely their name or how they want to be addressed. \
+                Extract it and immediately call the memory_write tool to save it to USER.md \
+                with content like \"Name: Alex\" so you remember it in all future sessions. \
+                Then greet them by name and ask what they'd like to work on."
+                    .to_string(),
+            )
+        } else {
+            system_prompt
+        };
+
         let mut reasoning = Reasoning::new(self.llm().clone(), self.safety().clone());
-        if let Some(prompt) = system_prompt {
+        if let Some(prompt) = name_capture_prompt {
             reasoning = reasoning.with_system_prompt(prompt);
         }
 
@@ -1096,22 +1142,9 @@ impl Agent {
 
             match output.result {
                 RespondResult::Text(text) => {
-                    // If no tools have been executed yet, prompt the LLM to use tools
-                    // This handles the case where the model explains what it will do
-                    // instead of actually calling tools
-                    if !tools_executed && iteration < 3 {
-                        tracing::debug!(
-                            "No tools executed yet (iteration {}), prompting for tool use",
-                            iteration
-                        );
-                        context_messages.push(ChatMessage::assistant(&text));
-                        context_messages.push(ChatMessage::user(
-                            "Please proceed and use the available tools to complete this task.",
-                        ));
-                        continue;
-                    }
-
-                    // Tools have been executed or we've tried multiple times, return response
+                    // Return the response directly — the system prompt instructs the model
+                    // to call tools when useful. Injecting a "please use tools" follow-up
+                    // caused the model to misinterpret conversational messages as pending tasks.
                     return Ok(AgenticLoopResult::Response(text));
                 }
                 RespondResult::ToolCalls {
