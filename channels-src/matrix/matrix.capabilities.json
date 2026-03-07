@@ -1,0 +1,52 @@
+{
+  "type": "channel",
+  "name": "matrix",
+  "description": "Matrix Client-Server API channel for RustyTalon — polls any homeserver for new messages and responds in-room",
+  "setup": {
+    "required_secrets": [
+      {
+        "name": "matrix_access_token",
+        "prompt": "Enter your Matrix access token (generate in Element: Settings → Help & About → Access Token, or via /login)",
+        "validation": "^[A-Za-z0-9_\\-\\.]+$"
+      }
+    ]
+  },
+  "capabilities": {
+    "http": {
+      "allowlist": [
+        { "host": "*", "path_prefix": "/_matrix/" }
+      ],
+      "credentials": {
+        "matrix_bot": {
+          "secret_name": "matrix_access_token",
+          "location": { "type": "bearer" },
+          "host_patterns": ["*"]
+        }
+      },
+      "rate_limit": {
+        "requests_per_minute": 30,
+        "requests_per_hour": 1000
+      }
+    },
+    "secrets": {
+      "allowed_names": ["matrix_*"]
+    },
+    "channel": {
+      "allowed_paths": [],
+      "allow_polling": true,
+      "min_poll_interval_ms": 30000,
+      "workspace_prefix": "channels/matrix/",
+      "callback_timeout_secs": 90,
+      "emit_rate_limit": {
+        "messages_per_minute": 100,
+        "messages_per_hour": 5000
+      }
+    }
+  },
+  "config": {
+    "homeserver": "https://matrix.org",
+    "owner_id": null,
+    "dm_policy": "pairing",
+    "allow_from": []
+  }
+}
