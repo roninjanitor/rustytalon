@@ -6,19 +6,38 @@
 # Run:
 #   docker run --env-file .env -p 3000:3000 rustytalon:latest
 
-# Stage 1: Build
-FROM rust:1.92-slim-bookworm AS builder
+# Stage 1: Install cargo-chef
+FROM rust:1.92-slim-bookworm AS chef
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev cmake gcc g++ \
     && rm -rf /var/lib/apt/lists/*
 
+RUN cargo install cargo-chef --locked
+
 WORKDIR /app
 
-# Copy manifests first for layer caching
-COPY Cargo.toml Cargo.lock ./
+# Stage 2: Compute the dependency recipe
+FROM chef AS planner
 
-# Copy source and build artifacts
+COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
+COPY examples/ examples/
+COPY migrations/ migrations/
+COPY wit/ wit/
+
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Stage 3: Build dependencies (cached layer)
+FROM chef AS builder
+
+COPY --from=planner /app/recipe.json recipe.json
+
+# Build only dependencies — this layer is cached unless Cargo.toml/Cargo.lock changes
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Copy source and build the binary
+COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
 COPY examples/ examples/
 COPY migrations/ migrations/
@@ -26,7 +45,7 @@ COPY wit/ wit/
 
 RUN cargo build --release --bin rustytalon
 
-# Stage 2: Runtime
+# Stage 4: Runtime
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

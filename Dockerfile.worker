@@ -9,12 +9,39 @@
 # The image includes common development tools so workers can build software,
 # run tests, and execute shell commands.
 
-FROM rust:1.92-bookworm AS builder
+# Stage 1: Install cargo-chef
+FROM rust:1.92-bookworm AS chef
+
+RUN cargo install cargo-chef --locked
 
 WORKDIR /build
-COPY . .
 
-# Build only the rustytalon binary (release mode)
+# Stage 2: Compute the dependency recipe
+FROM chef AS planner
+
+COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
+COPY examples/ examples/
+COPY migrations/ migrations/
+COPY wit/ wit/
+
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Stage 3: Build dependencies (cached layer)
+FROM chef AS builder
+
+COPY --from=planner /build/recipe.json recipe.json
+
+# Build only dependencies — this layer is cached unless Cargo.toml/Cargo.lock changes
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Copy source and build the binary
+COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
+COPY examples/ examples/
+COPY migrations/ migrations/
+COPY wit/ wit/
+
 RUN cargo build --release --bin rustytalon
 
 # ---
