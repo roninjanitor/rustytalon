@@ -12,7 +12,8 @@ use rustytalon::{
         WebhookServerConfig,
         wasm::{
             RegisteredEndpoint, SharedWasmChannel, WasmChannelLoader, WasmChannelRouter,
-            WasmChannelRuntime, WasmChannelRuntimeConfig, create_wasm_channel_router,
+            WasmChannelRuntime, WasmChannelRuntimeConfig, bundled_channel_names,
+            create_wasm_channel_router,
         },
         web::log_layer::{LogBroadcaster, WebLogLayer},
     },
@@ -1126,7 +1127,7 @@ async fn main() -> anyhow::Result<()> {
 
         if loaded_wasm_channel_names.is_empty() {
             lines.push(
-                "\n\n## WASM channels\n\nNo WASM channels are currently installed. Install one with `rustytalon tool install`.".to_string()
+                "\n\n## WASM channels\n\nNo WASM channels are currently installed. Install one with `rustytalon channel install <name>`.".to_string()
             );
         } else {
             lines.push("\n\n## WASM channels\n".to_string());
@@ -1136,6 +1137,16 @@ async fn main() -> anyhow::Result<()> {
                     None => lines.push(format!("\n- **{}**", name)),
                 }
             }
+        }
+
+        // Always list the bundled channels that can be installed.
+        let installable = bundled_channel_names();
+        lines.push("\n\n## Installable channels\n".to_string());
+        lines.push(
+            "\nThese channels are bundled and can be installed with `rustytalon channel install <name>`:\n".to_string()
+        );
+        for name in &installable {
+            lines.push(format!("\n- **{}**", name));
         }
 
         let content = lines.join("");

@@ -1037,9 +1037,8 @@ impl Agent {
         // No workspace identity means the user hasn't been onboarded yet (USER.md, AGENTS.md, etc. are all empty).
         // On first interaction we skip the LLM entirely and return a direct welcome — this is
         // more reliable than injecting onboarding instructions that the LLM may ignore.
-        let is_first_interaction = initial_messages.len() == 1
-            && system_prompt.is_none()
-            && self.workspace().is_some();
+        let is_first_interaction =
+            initial_messages.len() == 1 && system_prompt.is_none() && self.workspace().is_some();
 
         if is_first_interaction {
             let welcome = "\
@@ -1062,22 +1061,21 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
         // If we have a workspace but no identity yet AND this is the second turn (len == 3:
         // welcome assistant msg + user reply = user now telling us their name), prompt the LLM
         // to save it to USER.md so future sessions are personal.
-        let name_capture_prompt = if self.workspace().is_some()
-            && system_prompt.is_none()
-            && initial_messages.len() == 3
-        {
-            Some(
-                "## Capturing user's name\n\n\
+        let name_capture_prompt =
+            if self.workspace().is_some() && system_prompt.is_none() && initial_messages.len() == 3
+            {
+                Some(
+                    "## Capturing user's name\n\n\
                 The previous assistant message asked the user what to call them. \
                 The user's latest message is likely their name or how they want to be addressed. \
                 Extract it and immediately call the memory_write tool to save it to USER.md \
                 with content like \"Name: Alex\" so you remember it in all future sessions. \
                 Then greet them by name and ask what they'd like to work on."
-                    .to_string(),
-            )
-        } else {
-            system_prompt
-        };
+                        .to_string(),
+                )
+            } else {
+                system_prompt
+            };
 
         let mut reasoning = Reasoning::new(self.llm().clone(), self.safety().clone());
         if let Some(prompt) = name_capture_prompt {
