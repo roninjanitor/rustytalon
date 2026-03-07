@@ -177,14 +177,14 @@ pub async fn migrate_disk_to_db(
         }
     }
 
-    // 4. Migrate session.json if it exists
+    // 4. Migrate session.json if it exists (legacy from original fork)
     let session_path = rustytalon_dir.join("session.json");
     if session_path.exists() {
         match std::fs::read_to_string(&session_path) {
             Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
                 Ok(value) => {
                     store
-                        .set_setting(user_id, "nearai.session", &value)
+                        .set_setting(user_id, "legacy.session", &value)
                         .await
                         .map_err(|e| {
                             MigrationError::Database(format!(

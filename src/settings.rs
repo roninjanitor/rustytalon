@@ -40,8 +40,7 @@ pub struct Settings {
     #[serde(default)]
     pub secrets_master_key_source: KeySource,
 
-    // === Step 3: NEAR AI Auth ===
-    // Session stored separately in session.json
+    // === Step 3: Auth (legacy session.json migrated to DB) ===
 
     // === Step 4: Model Selection ===
     /// Currently selected model.
@@ -109,7 +108,7 @@ pub struct EmbeddingsSettings {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Provider to use: "openai" or "nearai".
+    /// Provider to use: "openai".
     #[serde(default = "default_embeddings_provider")]
     pub provider: String,
 
@@ -119,7 +118,7 @@ pub struct EmbeddingsSettings {
 }
 
 fn default_embeddings_provider() -> String {
-    "nearai".to_string()
+    "openai".to_string()
 }
 
 fn default_embeddings_model() -> String {
@@ -411,7 +410,7 @@ fn default_sandbox_cpu_shares() -> u32 {
 }
 
 fn default_sandbox_image() -> String {
-    "ghcr.io/nearai/sandbox:latest".to_string()
+    "rustytalon-worker:latest".to_string()
 }
 
 impl Default for SandboxSettings {
@@ -830,7 +829,7 @@ mod tests {
     fn test_embeddings_defaults() {
         let settings = Settings::default();
         assert!(!settings.embeddings.enabled);
-        assert_eq!(settings.embeddings.provider, "nearai");
+        assert_eq!(settings.embeddings.provider, "openai");
         assert_eq!(settings.embeddings.model, "text-embedding-3-small");
     }
 

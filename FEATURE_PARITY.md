@@ -158,9 +158,8 @@ This document tracks feature parity between RustyTalon (Rust implementation) and
 
 | Provider | OpenClaw | RustyTalon | Priority | Notes |
 |----------|----------|----------|----------|-------|
-| NEAR AI | ✅ | ✅ | - | Primary provider |
-| Anthropic (Claude) | ✅ | 🚧 | - | Via NEAR AI proxy |
-| OpenAI | ✅ | 🚧 | - | Via NEAR AI proxy |
+| Anthropic (Claude) | ✅ | ✅ | - | Default provider |
+| OpenAI | ✅ | ✅ | - | Direct API |
 | AWS Bedrock | ✅ | ❌ | P3 | |
 | Google Gemini | ✅ | ❌ | P3 | |
 | OpenRouter | ✅ | ❌ | P3 | |
@@ -349,7 +348,7 @@ This document tracks feature parity between RustyTalon (Rust implementation) and
 | Gateway token auth | ✅ | ✅ | Bearer token auth on web gateway |
 | Device pairing | ✅ | ❌ | |
 | Tailscale identity | ✅ | ❌ | |
-| OAuth flows | ✅ | 🚧 | NEAR AI OAuth |
+| OAuth flows | ✅ | 🚧 | Tool auth OAuth |
 | DM pairing verification | ✅ | ✅ | rustytalon pairing approve, host APIs |
 | Allowlist/blocklist | ✅ | 🚧 | allow_from + pairing store |
 | Per-group tool policies | ✅ | ❌ | |
@@ -466,7 +465,7 @@ RustyTalon intentionally differs from OpenClaw in these ways:
 1. **Rust vs TypeScript**: Native performance, memory safety, single binary distribution
 2. **WASM sandbox vs Docker**: Lighter weight, faster startup, capability-based security
 3. **PostgreSQL vs SQLite**: Better suited for production deployments
-4. **NEAR AI focus**: Primary provider with session-based auth
+4. **Multi-provider LLM**: Anthropic, OpenAI, Ollama, OpenAI-compatible via rig-core
 5. **No mobile/desktop apps**: Focus on server-side and CLI initially
 6. **WASM channels**: Novel extension mechanism not in OpenClaw
 

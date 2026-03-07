@@ -1,4 +1,4 @@
-//! NEAR AI Marketplace tool.
+//! Marketplace tool (stub).
 
 use async_trait::async_trait;
 use rust_decimal::Decimal;
@@ -6,7 +6,7 @@ use rust_decimal::Decimal;
 use crate::context::JobContext;
 use crate::tools::tool::{Tool, ToolError, ToolOutput};
 
-/// Tool for interacting with the NEAR AI marketplace.
+/// Tool for interacting with a freelance marketplace.
 pub struct MarketplaceTool {
     // TODO: Add marketplace client
 }
@@ -31,7 +31,7 @@ impl Tool for MarketplaceTool {
     }
 
     fn description(&self) -> &str {
-        "Interact with the NEAR AI marketplace: search jobs, submit bids, deliver work."
+        "Interact with a freelance marketplace: search jobs, submit bids, deliver work."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -57,7 +57,7 @@ impl Tool for MarketplaceTool {
                 },
                 "bid_amount": {
                     "type": "number",
-                    "description": "Bid amount in NEAR (for submit_bid)"
+                    "description": "Bid amount (for submit_bid)"
                 },
                 "work_url": {
                     "type": "string",
@@ -148,7 +148,7 @@ impl Tool for MarketplaceTool {
     fn estimated_cost(&self, params: &serde_json::Value) -> Option<Decimal> {
         // Bidding has a cost
         if params.get("action").and_then(|v| v.as_str()) == Some("submit_bid") {
-            Some(Decimal::new(1, 2)) // 0.01 NEAR gas cost
+            Some(Decimal::new(1, 2)) // estimated bid cost
         } else {
             None
         }

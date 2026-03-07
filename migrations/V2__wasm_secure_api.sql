@@ -170,8 +170,8 @@ INSERT INTO leak_detection_patterns (name, pattern, severity, action) VALUES
     -- Stripe keys (sk_live_... or sk_test_...)
     ('stripe_api_key', 'sk_(?:live|test)_[a-zA-Z0-9]{24,}', 'critical', 'block'),
 
-    -- NEAR AI session tokens
-    ('nearai_session', 'sess_[a-zA-Z0-9]{32,}', 'critical', 'block'),
+    -- Generic session tokens (sess_ prefix)
+    ('generic_session_token', 'sess_[a-zA-Z0-9]{32,}', 'critical', 'block'),
 
     -- Generic Bearer tokens in headers
     ('bearer_token', 'Bearer\s+[a-zA-Z0-9_-]{20,}', 'high', 'redact'),

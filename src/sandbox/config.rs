@@ -34,7 +34,7 @@ impl Default for SandboxConfig {
             memory_limit_mb: 2048,
             cpu_shares: 1024,
             network_allowlist: default_allowlist(),
-            image: "ghcr.io/nearai/sandbox:latest".to_string(),
+            image: "rustytalon-worker:latest".to_string(),
             auto_pull_image: true,
             proxy_port: 0,
         }
@@ -155,7 +155,6 @@ pub fn default_allowlist() -> Vec<String> {
         // Common APIs (credentials will be injected by proxy)
         "api.openai.com".to_string(),
         "api.anthropic.com".to_string(),
-        "api.near.ai".to_string(),
     ]
 }
 
@@ -203,11 +202,6 @@ pub fn default_credential_mappings() -> Vec<CredentialMapping> {
             domain: "api.anthropic.com".to_string(),
             secret_name: "ANTHROPIC_API_KEY".to_string(),
             location: CredentialLocation::Header("x-api-key".to_string()),
-        },
-        CredentialMapping {
-            domain: "api.near.ai".to_string(),
-            secret_name: "NEARAI_API_KEY".to_string(),
-            location: CredentialLocation::AuthorizationBearer,
         },
     ]
 }

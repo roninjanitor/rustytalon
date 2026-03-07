@@ -278,8 +278,8 @@ pub fn print_header(text: &str) {
 /// # Example
 ///
 /// ```ignore
-/// print_step(1, 3, "NEAR AI Authentication");
-/// // Output: Step 1/3: NEAR AI Authentication
+/// print_step(1, 3, "LLM Configuration");
+/// // Output: Step 1/3: LLM Configuration
 /// //         ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 /// ```
 pub fn print_step(current: usize, total: usize, name: &str) {

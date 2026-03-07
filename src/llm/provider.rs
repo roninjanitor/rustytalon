@@ -144,7 +144,7 @@ pub struct CompletionResponse {
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub finish_reason: FinishReason,
-    /// Provider-specific response ID (e.g. for NEAR AI response chaining).
+    /// Provider-specific response ID (e.g. for response chaining).
     pub response_id: Option<String>,
 }
 
@@ -238,7 +238,7 @@ pub struct ToolCompletionResponse {
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub finish_reason: FinishReason,
-    /// Provider-specific response ID (e.g. for NEAR AI response chaining).
+    /// Provider-specific response ID (e.g. for response chaining).
     pub response_id: Option<String>,
 }
 
@@ -301,8 +301,8 @@ pub trait LlmProvider: Send + Sync {
 
     /// Seed a response chain for a thread (e.g. restoring from DB).
     ///
-    /// Providers that support response chaining (e.g. NEAR AI `previous_response_id`)
-    /// store this so subsequent calls send only delta messages.
+    /// Providers that support response chaining store this so subsequent calls
+    /// send only delta messages.
     fn seed_response_chain(&self, _thread_id: &str, _response_id: String) {}
 
     /// Get the last response chain ID for a thread.

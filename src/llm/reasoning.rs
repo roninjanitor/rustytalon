@@ -476,7 +476,7 @@ Respond with a JSON plan in this format:
         };
 
         format!(
-            r#"You are NEAR AI Agent, an autonomous assistant.
+            r#"You are RustyTalon, an autonomous assistant.
 
 ## Response Format
 

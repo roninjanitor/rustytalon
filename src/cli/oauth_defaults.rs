@@ -1,6 +1,6 @@
 //! Shared OAuth infrastructure: built-in credentials, callback server, landing pages.
 //!
-//! Every OAuth flow in the codebase (WASM tool auth, MCP server auth, NEAR AI login)
+//! Every OAuth flow in the codebase (WASM tool auth, MCP server auth)
 //! uses the same callback port, landing page, and listener logic from this module.
 //!
 //! # Built-in Credentials
@@ -59,7 +59,7 @@ pub fn builtin_credentials(secret_name: &str) -> Option<OAuthCredentials> {
 /// Fixed port for all OAuth callbacks.
 ///
 /// Every redirect URI registered with providers must use this port:
-/// `http://localhost:9876/callback` (or `/auth/callback` for NEAR AI).
+/// `http://localhost:9876/callback`.
 pub const OAUTH_CALLBACK_PORT: u16 = 9876;
 
 /// Error from the OAuth callback listener.
@@ -114,7 +114,7 @@ pub async fn bind_callback_listener() -> Result<TcpListener, OAuthCallbackError>
 ///
 /// Listens for a GET request matching `path_prefix` (e.g., "/callback" or "/auth/callback"),
 /// extracts the value of `param_name` (e.g., "code" or "token"), and shows a branded
-/// landing page using `display_name` (e.g., "Google", "Notion", "NEAR AI").
+/// landing page using `display_name` (e.g., "Google", "Notion", "Slack").
 ///
 /// Times out after 5 minutes.
 pub async fn wait_for_callback(
