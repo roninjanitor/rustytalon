@@ -879,6 +879,10 @@ async fn main() -> anyhow::Result<()> {
     // Collect webhook route fragments; a single WebhookServer hosts them all.
     let mut webhook_routes: Vec<axum::Router> = Vec::new();
 
+    // Names (and optional descriptions) of successfully loaded WASM channels,
+    // collected here so we can write channels/installed.md to the workspace later.
+    let mut loaded_wasm_channel_names: Vec<(String, Option<String>)> = Vec::new();
+
     // Load WASM channels and register their webhook routes.
     if config.channels.wasm_channels_enabled && config.channels.wasm_channels_dir.exists() {
         match WasmChannelRuntime::new(WasmChannelRuntimeConfig::default()) {
@@ -897,6 +901,10 @@ async fn main() -> anyhow::Result<()> {
 
                         for loaded in results.loaded {
                             let channel_name = loaded.name().to_string();
+                            let channel_description = loaded
+                                .capabilities_file
+                                .as_ref()
+                                .and_then(|f| f.description.clone());
                             tracing::info!("Loaded WASM channel: {}", channel_name);
 
                             let secret_name = loaded.webhook_secret_name();
@@ -921,6 +929,9 @@ async fn main() -> anyhow::Result<()> {
                                 methods: vec!["POST".to_string()],
                                 require_secret: webhook_secret.is_some(),
                             }];
+
+                            loaded_wasm_channel_names
+                                .push((channel_name.clone(), channel_description));
 
                             let channel_arc = Arc::new(loaded.channel);
 
@@ -1094,6 +1105,46 @@ async fn main() -> anyhow::Result<()> {
             Err(e) => {
                 tracing::warn!("Failed to seed workspace: {}", e);
             }
+        }
+    }
+
+    // Write channels/installed.md so the agent knows what channels are available.
+    // This is refreshed on every boot (not just "if missing") so it always reflects reality.
+    if let Some(ref ws) = workspace {
+        let mut lines = vec![
+            "# Installed Channels\n".to_string(),
+            "\nChannels are how you receive messages. This file is auto-generated on every boot.\n"
+                .to_string(),
+            "\n## Built-in channels\n".to_string(),
+            "\n- **TUI** (terminal) — interactive chat in the terminal (`cargo run` or `rustytalon run`)"
+                .to_string(),
+            "\n- **Web UI** — browser dashboard at `http://localhost:3001` (when `GATEWAY_ENABLED=true`)"
+                .to_string(),
+            "\n- **HTTP webhook** — POST messages to the webhook endpoint (when configured)"
+                .to_string(),
+        ];
+
+        if loaded_wasm_channel_names.is_empty() {
+            lines.push(
+                "\n\n## WASM channels\n\nNo WASM channels are currently installed. Install one with `rustytalon tool install`.".to_string()
+            );
+        } else {
+            lines.push("\n\n## WASM channels\n".to_string());
+            for (name, description) in &loaded_wasm_channel_names {
+                match description {
+                    Some(desc) => lines.push(format!("\n- **{}** — {}", name, desc)),
+                    None => lines.push(format!("\n- **{}**", name)),
+                }
+            }
+        }
+
+        let content = lines.join("");
+        match ws
+            .write(rustytalon::workspace::paths::CHANNELS_INSTALLED, &content)
+            .await
+        {
+            Ok(_) => tracing::debug!("Wrote channels/installed.md to workspace"),
+            Err(e) => tracing::warn!("Failed to write channels/installed.md: {}", e),
         }
     }
 

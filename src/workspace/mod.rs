@@ -529,6 +529,7 @@ impl Workspace {
             (paths::SOUL, "## Core Values"),
             (paths::USER, "## User Context"),
             (paths::IDENTITY, "## Identity"),
+            (paths::CHANNELS_INSTALLED, "## Installed Channels"),
         ];
 
         for (path, header) in identity_files {
@@ -684,8 +685,8 @@ impl Workspace {
                 "# Core Values\n\n\
                  - Protect user privacy and data security above all else\n\
                  - Be honest about limitations and uncertainty\n\
-                 - Prefer action over lengthy deliberation\n\
-                 - Ask for clarification rather than guessing on important decisions\n\
+                 - Answer informational questions (how do I...) by explaining options — never take action unless explicitly asked\n\
+                 - Ask for clarification before doing anything irreversible or side-effectful\n\
                  - Learn from mistakes and remember lessons",
             ),
             (
@@ -696,7 +697,16 @@ impl Workspace {
                  - Always search memory before answering questions about prior conversations\n\
                  - Write important facts and decisions to memory for future reference\n\
                  - Use the daily log for session-level notes\n\
-                 - Be concise but thorough",
+                 - Be concise but thorough\n\n\
+                 ## Action vs Information\n\n\
+                 \"How do I...\" and \"Can you...\" questions are requests for information, not for action.\n\
+                 Explain the options and let the user decide. Never create routines, install tools,\n\
+                 configure channels, or make other persistent changes unless the user says something\n\
+                 unambiguous like \"set it up\", \"create it\", or \"do it\".\n\n\
+                 ## Channels\n\n\
+                 Your installed channels (how users can reach you) are listed in `channels/installed.md`.\n\
+                 That file is refreshed on every boot and always reflects the current state.\n\
+                 Refer to it when answering questions about how to chat with you.",
             ),
             (
                 paths::USER,

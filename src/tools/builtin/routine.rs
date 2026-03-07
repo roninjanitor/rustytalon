@@ -44,7 +44,11 @@ impl Tool for RoutineCreateTool {
     fn description(&self) -> &str {
         "Create a new routine (scheduled or event-driven task). \
          Supports cron schedules, event pattern matching, webhooks, and manual triggers. \
-         Use this when the user wants something to happen periodically or reactively."
+         Only call this when the user has explicitly asked you to create a routine."
+    }
+
+    fn requires_approval(&self) -> bool {
+        true
     }
 
     fn parameters_schema(&self) -> serde_json::Value {

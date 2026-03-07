@@ -27,6 +27,8 @@ pub mod paths {
     pub const DAILY_DIR: &str = "daily/";
     /// Context directory (for identity-related docs).
     pub const CONTEXT_DIR: &str = "context/";
+    /// Auto-generated list of installed channels (refreshed on every boot).
+    pub const CHANNELS_INSTALLED: &str = "channels/installed.md";
 }
 
 /// A memory document stored in the database.
