@@ -31,9 +31,7 @@ services:
   # RustyTalon agent
   # ---------------------------------------------------------------------------
   rustytalon:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/roninjanitor/rustytalon:latest
     restart: unless-stopped
     ports:
       - "${GATEWAY_PORT:-3001}:3001"
@@ -54,12 +52,9 @@ services:
   # ---------------------------------------------------------------------------
   # Uncomment to pre-build the worker image:
   # worker:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.worker
-  #   image: rustytalon-worker:latest
+  #   image: ghcr.io/roninjanitor/rustytalon-worker:latest
   #   profiles: ["build-only"]
-  #   command: ["echo", "Worker image built"]
+  #   command: ["echo", "Worker image pulled"]
 
 volumes:
   pgdata:

@@ -90,7 +90,7 @@ RustyTalon is the AI assistant you can actually trust with your personal and pro
 ### Build from Source
 
 ```bash
-git clone https://github.com/nicklozano/rustytalon.git
+git clone https://github.com/roninjanitor/rustytalon.git
 cd rustytalon
 
 # Build with PostgreSQL backend (default)
@@ -386,16 +386,16 @@ Pre-built images are automatically published to GitHub Container Registry on eve
 
 ```bash
 # Pull agent image
-docker pull ghcr.io/nicklozano/rustytalon:latest
+docker pull ghcr.io/roninjanitor/rustytalon:latest
 
 # Pull worker image (for Docker sandbox execution)
-docker pull ghcr.io/nicklozano/rustytalon-worker:latest
+docker pull ghcr.io/roninjanitor/rustytalon-worker:latest
 
 # Run agent
 docker run -it \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   -e DATABASE_URL=postgresql://user:pass@host/rustytalon \
-  ghcr.io/nicklozano/rustytalon:latest
+  ghcr.io/roninjanitor/rustytalon:latest
 ```
 
 **Image Tags:**
@@ -437,7 +437,7 @@ When `SANDBOX_ENABLED=true`, RustyTalon will spawn isolated container jobs using
 
 ```bash
 # Ensure worker image is available (auto-pulled if missing)
-docker pull ghcr.io/nicklozano/rustytalon-worker:latest
+docker pull ghcr.io/roninjanitor/rustytalon-worker:latest
 
 # Or build locally
 docker build -f Dockerfile.worker -t rustytalon-worker:latest .
