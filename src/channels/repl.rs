@@ -349,9 +349,9 @@ impl Channel for ReplChannel {
                         }
                     }
                     Err(ReadlineError::Eof) => {
-                        // Ctrl+D: send /quit so the agent loop runs graceful shutdown
-                        let msg = IncomingMessage::new("repl", "default", "/quit");
-                        let _ = tx.blocking_send(msg);
+                        // Ctrl+D (or no TTY in Docker): close the REPL stream cleanly.
+                        // The agent will shut down only if all other channel streams also close.
+                        // This prevents an immediate crash loop in non-interactive containers.
                         break;
                     }
                     Err(e) => {
