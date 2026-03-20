@@ -15,6 +15,16 @@
   <a href="#deployment">Deployment</a>
 </p>
 
+<p align="center">
+  <strong>User Guides:</strong>
+  <a href="docs/GETTING_STARTED.md">Getting Started</a> •
+  <a href="docs/WEB_UI.md">Web UI</a> •
+  <a href="docs/MEMORY.md">Memory</a> •
+  <a href="docs/ROUTINES.md">Routines</a> •
+  <a href="docs/TOOLS_AND_EXTENSIONS.md">Tools & Extensions</a> •
+  <a href="docs/CONFIGURATION.md">Configuration</a>
+</p>
+
 ---
 
 > **Personal Project Notice**

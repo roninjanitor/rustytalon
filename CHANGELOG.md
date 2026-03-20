@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-03-19
+
 ### Added
 
 - Discord DM channel (`channels-src/discord/`) — polls Discord DMs via REST every 30 s, DM pairing for access control, typing indicator, bot-token credential injection at the host boundary
@@ -30,10 +32,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Added `docs/GETTING_STARTED.md` — first-run guide covering Docker, local binary, and PostgreSQL setup options
+- Added `docs/WEB_UI.md` — full walkthrough of the browser UI (chat, slash commands, memory, jobs, routines, extensions, logs)
+- Added `docs/MEMORY.md` — workspace/memory system guide covering well-known files, search, heartbeat, and usage tips
+- Added `docs/ROUTINES.md` — creating and managing automated tasks with cron, event, webhook, and manual triggers
+- Added `docs/TOOLS_AND_EXTENSIONS.md` — built-in tools reference, tool approval, installing WASM/MCP extensions, dynamic tool building
+- Added `docs/CONFIGURATION.md` — complete environment variable reference organized by category
 - Added `docs/DISCORD_SETUP.md` — Discord bot creation, DM pairing flow, and configuration reference
 - Added NOTICE file with detailed attribution to IronClaw (nearai/ironclaw)
 - Updated LICENSE-MIT to credit Nick Lozano and acknowledge IronClaw derivation
 - Added Attribution section to README with link to original IronClaw project
+- Updated README nav bar with links to all user guides
 - Updated PRD to clarify derivation from IronClaw vs. standalone fork
 - Fixed CHANGELOG to remove hardcoded nearai/rustytalon links (now relative for new repo)
 
