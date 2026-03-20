@@ -255,7 +255,10 @@ fn create_openai_compatible_provider(config: &LlmConfig) -> Result<Arc<dyn LlmPr
         reason: format!("Failed to create OpenAI-compatible client: {e}"),
     })?;
 
-    let model = client.completion_model(&compat.model);
+    // Use the Chat Completions API (/v1/chat/completions), not the newer Responses API.
+    // Most OpenAI-compatible endpoints (CF Workers AI, LiteLLM, etc.) implement the
+    // completions API; the Responses API is OpenAI-specific and will panic or error on others.
+    let model = client.completions_api().completion_model(&compat.model);
     tracing::info!(
         "Using OpenAI-compatible endpoint (base_url: {}, model: {})",
         compat.base_url,

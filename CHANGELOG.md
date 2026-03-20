@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-03-20
+
+### Added
+- Debug logging in `clean_response` when LLM output is fully stripped to empty string — shows raw content preview to aid diagnosis
+- Warning log when an empty LLM response is silently discarded — previously this happened with no trace in logs
+
+### Fixed
+- `openai_compatible` provider now uses the Chat Completions API (`/v1/chat/completions`) instead of the OpenAI Responses API — prevents panic from rig-core when endpoints (e.g. Cloudflare Workers AI) don't implement the Responses API
+- HTTP 400 errors from LLM providers now fail over immediately to the next provider instead of retrying 3x — 400s are client errors that will never succeed on retry; mapped to `ModelNotAvailable` so `FailoverProvider` handles them correctly while `TrackedProvider` skips the retry loop
+- Upgraded rig-core 0.30 → 0.33
+
 ## [0.1.7] - 2026-03-20
 
 ### Added

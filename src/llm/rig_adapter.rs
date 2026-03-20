@@ -25,6 +25,28 @@ use crate::llm::provider::{
     ToolDefinition as IronToolDefinition,
 };
 
+/// Map a rig completion error to the appropriate `LlmError` variant.
+///
+/// HTTP 400 responses are mapped to `ModelNotAvailable` so that:
+/// - `TrackedProvider` does **not** retry them (400s won't succeed on retry)
+/// - `FailoverProvider` **does** fail over to the next provider immediately
+///
+/// All other errors map to `RequestFailed` and follow the normal retry path.
+fn map_rig_error(model_name: &str, err: impl std::fmt::Display) -> LlmError {
+    let msg = err.to_string();
+    if msg.contains("status code 400") || msg.contains("400 Bad Request") {
+        LlmError::ModelNotAvailable {
+            provider: model_name.to_string(),
+            model: model_name.to_string(),
+        }
+    } else {
+        LlmError::RequestFailed {
+            provider: model_name.to_string(),
+            reason: msg,
+        }
+    }
+}
+
 /// Adapter that wraps a rig-core `CompletionModel` and implements `LlmProvider`.
 pub struct RigAdapter<M: CompletionModel> {
     model: M,
@@ -213,6 +235,8 @@ fn build_rig_request(
         max_tokens: max_tokens.map(|t| t as u64),
         tool_choice,
         additional_params: None,
+        model: None,
+        output_schema: None,
     })
 }
 
@@ -242,14 +266,11 @@ where
             request.max_tokens,
         )?;
 
-        let response =
-            self.model
-                .completion(rig_req)
-                .await
-                .map_err(|e| LlmError::RequestFailed {
-                    provider: self.model_name.clone(),
-                    reason: e.to_string(),
-                })?;
+        let response = self
+            .model
+            .completion(rig_req)
+            .await
+            .map_err(|e| map_rig_error(&self.model_name, e))?;
 
         let (text, _tool_calls, finish) = extract_response(&response.choice, &response.usage);
 
@@ -279,14 +300,11 @@ where
             request.max_tokens,
         )?;
 
-        let response =
-            self.model
-                .completion(rig_req)
-                .await
-                .map_err(|e| LlmError::RequestFailed {
-                    provider: self.model_name.clone(),
-                    reason: e.to_string(),
-                })?;
+        let response = self
+            .model
+            .completion(rig_req)
+            .await
+            .map_err(|e| map_rig_error(&self.model_name, e))?;
 
         let (text, tool_calls, finish) = extract_response(&response.choice, &response.usage);
 

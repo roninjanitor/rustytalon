@@ -641,8 +641,16 @@ fn recover_tool_calls_from_content(
 /// instead of using the standard OpenAI tool_calls array. We strip all of
 /// these before the response reaches channels/users.
 fn clean_response(text: &str) -> String {
-    let text = strip_internal_tags(text);
-    strip_reasoning_patterns(&text)
+    let stripped = strip_internal_tags(text);
+    let result = strip_reasoning_patterns(&stripped);
+    if result.is_empty() && !text.is_empty() {
+        tracing::debug!(
+            raw_len = text.len(),
+            raw_preview = %&text[..text.len().min(200)],
+            "clean_response produced empty string from non-empty LLM output"
+        );
+    }
+    result
 }
 
 /// Tags that are model-internal and should never reach users.

@@ -423,7 +423,13 @@ impl Agent {
                         .await;
                 }
                 Ok(Some(_)) => {
-                    // Empty response, nothing to send (e.g. approval handled via send_status)
+                    // Empty response after cleaning (model returned only internal tags like
+                    // <thinking>). Log a warning so it's visible in traces.
+                    tracing::warn!(
+                        "LLM returned an empty response after cleaning (model likely \
+                         responded with only internal tags). Check RUST_LOG=rustytalon=debug \
+                         for raw LLM output."
+                    );
                 }
                 Ok(None) => {
                     // Shutdown signal received (/quit, /exit, /shutdown)
