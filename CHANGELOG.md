@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-03-20
+
+### Added
+- Discord WASM tool (`tools-src/discord/`) — bot-mode integration via Discord REST API v10; supports send message (with reply), list channels, get message history, add reaction, get user info, list/get guilds, and create threads; bot token auth with OAuth support
+- Matrix WASM tool (`tools-src/matrix/`) — federated messaging via Matrix Client-Server API v3; supports any homeserver (matrix.org, Element, self-hosted); homeserver URL configurable via workspace at `matrix/homeserver`; actions: send message (plain text + HTML), list rooms, get messages, join/leave rooms, get profile, get room info, send read receipt, add reaction
+- Unit test suites for both new tools: 13 tests for Discord (url encoding, action deserialization), 15 tests for Matrix (Matrix-specific sigil encoding for `!`, `@`, `$`, `:`, action deserialization with pagination and HTML formatting)
+
+### Fixed
+- `tools-src/*/Cargo.toml` files now include `[workspace]` table to opt out of the root Cargo workspace — fixes `cargo test` and `cargo fmt` being broken for all WASM tool crates (latent issue also affecting Slack, Telegram, and Google tool crates)
+
 ## [0.1.5] - 2026-03-20
 
 ### Added
