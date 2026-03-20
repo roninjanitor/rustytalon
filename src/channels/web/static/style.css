@@ -1770,6 +1770,93 @@ body {
   background: rgba(248, 81, 73, 0.15);
 }
 
+/* Config gear in card header — right-aligned, separate from action buttons */
+.ext-header {
+  position: relative;
+}
+
+.btn-ext-config-header {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 5px;
+  flex-shrink: 0;
+}
+
+.btn-ext-config-header:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(88, 166, 255, 0.1);
+}
+
+.ext-config-panel {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 4px;
+}
+
+.ext-config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ext-config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ext-config-field label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-transform: capitalize;
+  letter-spacing: 0.2px;
+}
+
+.ext-config-field input[type="text"],
+.ext-config-field input[type="number"],
+.ext-config-field select {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.ext-config-field input[type="text"]:focus,
+.ext-config-field input[type="number"]:focus,
+.ext-config-field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.ext-config-field input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.ext-config-hint {
+  font-size: 10px;
+  color: var(--text-secondary);
+  line-height: 1.3;
+}
+
+.ext-config-save {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
 /* Sub-tabs */
 .ext-setup-banner {
   display: flex;

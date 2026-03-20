@@ -223,6 +223,14 @@ pub async fn start_server(
             "/api/extensions/{name}/remove",
             post(extensions_remove_handler),
         )
+        .route(
+            "/api/extensions/{name}/config",
+            get(extension_config_get_handler),
+        )
+        .route(
+            "/api/extensions/{name}/config",
+            axum::routing::put(extension_config_put_handler),
+        )
         // Routines
         .route("/api/routines", get(routines_list_handler))
         .route("/api/routines/summary", get(routines_summary_handler))
@@ -1667,6 +1675,7 @@ async fn extensions_list_handler(
             url: ext.url,
             authenticated: ext.authenticated,
             active: ext.active,
+            installed: true, // everything in the installed list is, by definition, installed
             status: ext.status.to_string(),
             error: ext.error,
             tools: ext.tools,
@@ -1987,6 +1996,113 @@ async fn extensions_remove_handler(
         Ok(message) => Ok(Json(ActionResponse::ok(message))),
         Err(e) => Ok(Json(ActionResponse::fail(e.to_string()))),
     }
+}
+
+// --- Extension config handlers ---
+
+async fn extension_config_get_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(name): Path<String>,
+) -> Result<Json<ExtensionConfigResponse>, (StatusCode, String)> {
+    let schema = read_extension_config_schema(&state, &name).await;
+
+    // Load current values from settings, filtering to this extension's namespace.
+    let prefix = format!("extensions.{}.", name);
+    let values = match state.store.as_ref() {
+        Some(store) => {
+            let rows = store
+                .list_settings(&state.user_id)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            rows.into_iter()
+                .filter_map(|row| {
+                    row.key
+                        .strip_prefix(&prefix)
+                        .map(|field| (field.to_string(), row.value))
+                })
+                .collect()
+        }
+        None => std::collections::HashMap::new(),
+    };
+
+    Ok(Json(ExtensionConfigResponse {
+        name,
+        schema,
+        values,
+    }))
+}
+
+async fn extension_config_put_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(name): Path<String>,
+    Json(body): Json<ExtensionConfigWriteRequest>,
+) -> Result<Json<ActionResponse>, (StatusCode, String)> {
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
+
+    // Load allowed field names from the schema to prevent unknown key writes.
+    // This also defends against path-traversal in the settings key namespace.
+    let schema = read_extension_config_schema(&state, &name).await;
+    let allowed_fields: Option<std::collections::HashSet<String>> = schema
+        .as_ref()
+        .and_then(|s| s.get("properties"))
+        .and_then(|p| p.as_object())
+        .map(|obj| obj.keys().cloned().collect());
+
+    for (field, value) in &body.values {
+        // Field names must be alphanumeric + underscore only — no path traversal.
+        if !field.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "Invalid field name '{}': only alphanumeric and underscore characters allowed",
+                    field
+                ),
+            ));
+        }
+        // Reject fields not declared in the schema.
+        if let Some(ref allowed) = allowed_fields {
+            if !allowed.contains(field.as_str()) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("Unknown config field '{}' for extension '{}'", field, name),
+                ));
+            }
+        }
+
+        let key = format!("extensions.{}.{}", name, field);
+        if value.is_null() {
+            store
+                .delete_setting(&state.user_id, &key)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        } else {
+            store
+                .set_setting(&state.user_id, &key, value)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        }
+    }
+
+    Ok(Json(ActionResponse::ok(format!(
+        "Config saved for '{}'",
+        name
+    ))))
+}
+
+/// Read `config_schema` from the capabilities.json for a named extension.
+/// Delegates to the extension manager which checks both the channels and tools dirs.
+async fn read_extension_config_schema(
+    state: &GatewayState,
+    name: &str,
+) -> Option<serde_json::Value> {
+    state
+        .extension_manager
+        .as_ref()?
+        .get_config_schema(name)
+        .await
 }
 
 // --- Routines handlers ---

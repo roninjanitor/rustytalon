@@ -1408,6 +1408,18 @@ function renderExtensionCard(ext) {
   authDot.title = statusLabel(ext.status || (ext.authenticated ? 'active' : 'needs_auth'));
   header.appendChild(authDot);
 
+  // Gear button in the header, right-aligned — keeps it away from action buttons
+  const configBtn = document.createElement('button');
+  configBtn.type = 'button';
+  configBtn.className = 'btn-ext-config-header';
+  configBtn.title = 'Configure';
+  configBtn.textContent = '\u2699'; // ⚙
+  configBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleExtensionConfig(ext.name, card);
+  });
+  header.appendChild(configBtn);
+
   card.appendChild(header);
 
   if (ext.description) {
@@ -1508,6 +1520,170 @@ function removeExtension(name) {
       loadCatalog();
     })
     .catch((err) => showToast('Remove failed: ' + err.message, 'error'));
+}
+
+// --- Extension inline config panel ---
+
+// Name of the extension whose config panel is currently open (or null).
+let openConfigName = null;
+
+function toggleExtensionConfig(name, card) {
+  // Close the panel if this card is already open.
+  const existing = card.querySelector('.ext-config-panel');
+  if (existing) {
+    existing.remove();
+    openConfigName = null;
+    return;
+  }
+
+  // Close any panel open on a different card.
+  if (openConfigName) {
+    const otherPanel = document.querySelector('.ext-config-panel');
+    if (otherPanel) otherPanel.remove();
+    openConfigName = null;
+  }
+
+  const panel = document.createElement('div');
+  panel.className = 'ext-config-panel';
+  panel.innerHTML = '<div class="empty-state">Loading\u2026</div>';
+  card.appendChild(panel);
+  openConfigName = name;
+
+  apiFetch('/api/extensions/' + encodeURIComponent(name) + '/config')
+    .then((data) => {
+      panel.innerHTML = '';
+      renderExtensionConfigForm(name, data, panel);
+    })
+    .catch((err) => {
+      panel.innerHTML =
+        '<div class="ext-desc" style="color:var(--danger)">Failed to load config: ' +
+        escapeHtml(err.message) +
+        '</div>';
+    });
+}
+
+function renderExtensionConfigForm(name, data, container) {
+  if (!data.schema || !data.schema.properties) {
+    container.innerHTML = '<div class="empty-state">No configurable fields for this extension.</div>';
+    return;
+  }
+
+  const props = data.schema.properties;
+  const form = document.createElement('form');
+  form.className = 'ext-config-form';
+
+  for (const [field, prop] of Object.entries(props)) {
+    const group = document.createElement('div');
+    group.className = 'ext-config-field';
+
+    const label = document.createElement('label');
+    label.textContent = field.replace(/_/g, ' ');
+    group.appendChild(label);
+
+    const currentVal = Object.prototype.hasOwnProperty.call(data.values, field)
+      ? data.values[field]
+      : undefined;
+
+    if (prop.type === 'boolean') {
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.name = field;
+      input.checked =
+        currentVal !== undefined ? Boolean(currentVal) : Boolean(prop.default);
+      group.appendChild(input);
+    } else if (Array.isArray(prop.enum)) {
+      const select = document.createElement('select');
+      select.name = field;
+      const selected = currentVal !== undefined ? currentVal : prop.default;
+      for (const opt of prop.enum) {
+        const option = document.createElement('option');
+        option.value = opt;
+        option.textContent = opt;
+        if (selected === opt) option.selected = true;
+        select.appendChild(option);
+      }
+      group.appendChild(select);
+    } else if (prop.type === 'array') {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.name = field;
+      const arrVal =
+        currentVal !== undefined ? currentVal : (prop.default || []);
+      input.value = Array.isArray(arrVal) ? arrVal.join(', ') : String(arrVal);
+      input.placeholder = 'Comma-separated values';
+      group.appendChild(input);
+    } else {
+      const input = document.createElement('input');
+      input.type =
+        prop.type === 'integer' || prop.type === 'number' ? 'number' : 'text';
+      input.name = field;
+      const sv =
+        currentVal !== undefined
+          ? currentVal
+          : prop.default !== undefined
+          ? prop.default
+          : '';
+      input.value = sv !== null && sv !== undefined ? String(sv) : '';
+      if (prop.nullable) input.placeholder = 'Optional';
+      if (prop.minimum !== undefined) input.min = String(prop.minimum);
+      group.appendChild(input);
+    }
+
+    if (prop.description) {
+      const hint = document.createElement('small');
+      hint.className = 'ext-config-hint';
+      hint.textContent = prop.description;
+      group.appendChild(hint);
+    }
+
+    form.appendChild(group);
+  }
+
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'submit';
+  saveBtn.className = 'btn-ext activate ext-config-save';
+  saveBtn.textContent = 'Save';
+  form.appendChild(saveBtn);
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    saveExtensionConfig(name, form, props);
+  });
+
+  container.appendChild(form);
+}
+
+function saveExtensionConfig(name, form, schemaProps) {
+  const values = {};
+  for (const [field, prop] of Object.entries(schemaProps)) {
+    const el = form.elements[field];
+    if (!el) continue;
+
+    if (prop.type === 'boolean') {
+      values[field] = el.checked;
+    } else if (prop.type === 'array') {
+      const raw = el.value.trim();
+      values[field] = raw
+        ? raw
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [];
+    } else if (prop.type === 'integer') {
+      values[field] = el.value !== '' ? parseInt(el.value, 10) : null;
+    } else if (prop.type === 'number') {
+      values[field] = el.value !== '' ? parseFloat(el.value) : null;
+    } else {
+      values[field] = el.value !== '' ? el.value : null;
+    }
+  }
+
+  apiFetch('/api/extensions/' + encodeURIComponent(name) + '/config', {
+    method: 'PUT',
+    body: { values },
+  })
+    .then(() => showToast('Config saved for ' + name, 'success'))
+    .catch((err) => showToast('Save failed: ' + err.message, 'error'));
 }
 
 // --- Setup Guide Modal ---
@@ -1716,7 +1892,11 @@ function renderWizardStep(stepName, entry, authInfo) {
           if (res.success) {
             wizardState.entry.installed = true;
             wizardState.steps = buildWizardSteps(wizardState.entry, wizardState.authInfo);
-            wizardAdvance();
+            // Reset to step 1 (first step after overview) rather than incrementing
+            // the old index — the steps array has been rebuilt so the old index
+            // would skip the newly-inserted auth/activate step.
+            wizardState.step = 1;
+            renderWizard();
           } else {
             showToast('Install failed: ' + res.message, 'error');
             installBtn.disabled = false;
@@ -1771,7 +1951,8 @@ function renderWizardStep(stepName, entry, authInfo) {
               wizardState.entry.authenticated = true;
               wizardState.entry.active = true;
               wizardState.steps = buildWizardSteps(wizardState.entry, wizardState.authInfo);
-              wizardAdvance();
+              wizardState.step = 1;
+              renderWizard();
             } else {
               showToast(res.message, 'error');
               oauthBtn.disabled = false;
@@ -1789,19 +1970,19 @@ function renderWizardStep(stepName, entry, authInfo) {
         const label = document.createElement('label');
         label.className = 'wizard-step-label';
         label.textContent = 'API Token';
-        div.insertBefore(label, actions);
+        div.appendChild(label);
 
         const tokenInput = document.createElement('input');
         tokenInput.type = 'password';
         tokenInput.className = 'wizard-token-input';
         tokenInput.placeholder = (authInfo && authInfo.token_hint) || 'Paste your API token';
-        div.insertBefore(tokenInput, actions);
+        div.appendChild(tokenInput);
 
         if (authInfo && authInfo.token_hint) {
           const hint = document.createElement('div');
           hint.className = 'wizard-hint';
           hint.textContent = authInfo.token_hint;
-          div.insertBefore(hint, actions);
+          div.appendChild(hint);
         }
 
         const submitBtn = document.createElement('button');
@@ -1820,7 +2001,8 @@ function renderWizardStep(stepName, entry, authInfo) {
             if (res.success || res.status === 'authenticated') {
               wizardState.entry.authenticated = true;
               wizardState.steps = buildWizardSteps(wizardState.entry, wizardState.authInfo);
-              wizardAdvance();
+              wizardState.step = 1;
+              renderWizard();
             } else {
               showToast((res.message) || 'Auth failed', 'error');
               submitBtn.disabled = false;

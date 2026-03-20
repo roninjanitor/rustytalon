@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-03-20
+
+### Added
+- Inline config editor in the extensions tab — each installed extension now has a gear button (⚙) that opens a form panel rendered from `config_schema` in the extension's capabilities.json; values are saved to the settings table under `extensions.<name>.<field>` keys
+- `config_schema` JSON Schema block in discord, telegram, and matrix channel capabilities files — describes non-secret configurable fields (owner_id, dm_policy, allow_from, homeserver, polling settings, etc.)
+- `GET /api/extensions/{name}/config` — returns the config schema plus current saved values for a named extension
+- `PUT /api/extensions/{name}/config` — saves config field values; validates field names against the schema (alphanumeric/underscore only) and rejects unknown fields to prevent key injection
+- `installed: true` field on `InstalledExtension` responses — lets the web UI setup wizard distinguish installed extensions from catalog entries without a separate lookup
+- `get_auth_info` now checks installed `McpServerConfig` first — remote servers without a pre-configured OAuth client correctly show a manual token entry form instead of a broken OAuth button
+
 ## [0.1.6] - 2026-03-20
 
 ### Added

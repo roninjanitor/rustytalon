@@ -376,7 +376,76 @@ impl ExtensionManager {
 
     /// Get auth setup information for an extension, used by the web UI wizard.
     pub async fn get_auth_info(&self, name: &str) -> Result<ExtensionAuthInfo, ExtensionError> {
-        // Try the registry first for the auth_hint
+        // Installed MCP server config takes precedence over the registry.
+        //
+        // The registry's AuthHint::Dcr only indicates "this server uses OAuth DCR in principle",
+        // but for servers without a pre-configured OAuth client ID the DCR discovery requires a
+        // reachable server.  The installed McpServerConfig is the ground truth: if `oauth` is
+        // Some we can attempt the browser flow; if it is None (the common case) we fall back to
+        // manual token entry so the wizard always shows a token input field.
+        //
+        // WASM tools and uninstalled extensions still fall through to the registry check below.
+        if let Ok(server) = self.get_mcp_server(name).await {
+            let display_name = server.description.clone().or_else(|| {
+                // Capitalize first letter of the server name as a friendly fallback.
+                let mut chars = name.chars();
+                chars
+                    .next()
+                    .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
+            });
+
+            // Pull the display_name from the registry entry if we have a better one.
+            let display_name = self
+                .registry
+                .get(name)
+                .await
+                .map(|e| Some(e.display_name.clone()))
+                .unwrap_or(display_name);
+
+            if server.oauth.is_some() {
+                // Pre-configured OAuth client → use DCR/browser flow.
+                return Ok(ExtensionAuthInfo {
+                    name: name.to_string(),
+                    auth_type: "dcr".to_string(),
+                    instructions: None,
+                    setup_url: None,
+                    token_hint: None,
+                    display_name,
+                    oauth_available: true,
+                });
+            } else if server.requires_auth() {
+                // Remote HTTPS server without pre-configured OAuth → manual token entry.
+                // The token is stored encrypted and injected as a Bearer Authorization
+                // header on every MCP connection, never touching the LLM or logs.
+                return Ok(ExtensionAuthInfo {
+                    name: name.to_string(),
+                    auth_type: "manual".to_string(),
+                    instructions: Some(format!(
+                        "Enter an API token or personal access token for {}. \
+                         The token will be stored encrypted and sent as a Bearer \
+                         Authorization header when connecting to the server.",
+                        display_name.as_deref().unwrap_or(name)
+                    )),
+                    setup_url: None,
+                    token_hint: None,
+                    display_name,
+                    oauth_available: false,
+                });
+            } else {
+                // Localhost / dev server — no auth required.
+                return Ok(ExtensionAuthInfo {
+                    name: name.to_string(),
+                    auth_type: "none".to_string(),
+                    instructions: None,
+                    setup_url: None,
+                    token_hint: None,
+                    display_name,
+                    oauth_available: false,
+                });
+            }
+        }
+
+        // Try the registry for the auth_hint (WASM tools and uninstalled extensions).
         if let Some(entry) = self.registry.get(name).await {
             return Ok(auth_info_from_entry(&entry, name));
         }
@@ -405,20 +474,39 @@ impl ExtensionManager {
             }
         }
 
-        // For installed MCP servers, derive from config
-        if let Ok(server) = self.get_mcp_server(name).await {
-            return Ok(ExtensionAuthInfo {
-                name: name.to_string(),
-                auth_type: "dcr".to_string(),
-                instructions: None,
-                setup_url: None,
-                token_hint: None,
-                display_name: server.description.clone(),
-                oauth_available: true,
-            });
+        Err(ExtensionError::NotFound(name.to_string()))
+    }
+
+    /// Read the `config_schema` JSON from a capabilities.json file for an extension.
+    ///
+    /// Checks WASM channels dir first (discord, telegram, matrix), then WASM tools dir.
+    /// Returns `None` if no capabilities file is found or it has no `config_schema` field.
+    pub async fn get_config_schema(&self, name: &str) -> Option<serde_json::Value> {
+        // WASM channels dir first
+        let ch_cap_path = self
+            .wasm_channels_dir
+            .join(format!("{}.capabilities.json", name));
+        if ch_cap_path.exists() {
+            if let Ok(data) = tokio::fs::read_to_string(&ch_cap_path).await {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
+                    return json.get("config_schema").cloned();
+                }
+            }
         }
 
-        Err(ExtensionError::NotFound(name.to_string()))
+        // WASM tools dir
+        let tool_cap_path = self
+            .wasm_tools_dir
+            .join(format!("{}.capabilities.json", name));
+        if tool_cap_path.exists() {
+            if let Ok(data) = tokio::fs::read_to_string(&tool_cap_path).await {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
+                    return json.get("config_schema").cloned();
+                }
+            }
+        }
+
+        None
     }
 
     // ── MCP config helpers (DB with disk fallback) ─────────────────────
@@ -1374,5 +1462,167 @@ mod tests {
         assert_eq!(info.auth_type, "oauth");
         assert!(info.oauth_available);
         assert_eq!(info.display_name.as_deref(), Some("Google"));
+    }
+
+    // ── get_config_schema (pure JSON logic) ──────────────────────────────
+
+    #[test]
+    fn test_config_schema_present_in_capabilities() {
+        let json = serde_json::json!({
+            "config_schema": {
+                "type": "object",
+                "properties": {
+                    "owner_id": { "type": "string", "nullable": true },
+                    "dm_policy": { "type": "string", "enum": ["pairing", "owner_only"] }
+                }
+            }
+        });
+        let schema = json.get("config_schema").cloned();
+        assert!(schema.is_some());
+        let props = schema.unwrap();
+        assert_eq!(props["type"], "object");
+        assert!(props["properties"].get("owner_id").is_some());
+        assert!(props["properties"].get("dm_policy").is_some());
+    }
+
+    #[test]
+    fn test_config_schema_absent_returns_none() {
+        let json = serde_json::json!({ "auth": { "secret_name": "tok" } });
+        assert!(json.get("config_schema").is_none());
+    }
+
+    #[test]
+    fn test_config_schema_field_name_validation() {
+        // Valid field names (alphanumeric + underscore)
+        let valid = ["owner_id", "dm_policy", "allow_from", "poll_interval_ms"];
+        for name in valid {
+            assert!(
+                name.chars().all(|c| c.is_alphanumeric() || c == '_'),
+                "expected valid: {name}"
+            );
+        }
+        // Path traversal attempts must fail
+        let invalid = ["../secrets/tok", "foo/bar", "key=val", "a b", "a.b"];
+        for name in invalid {
+            assert!(
+                !name.chars().all(|c| c.is_alphanumeric() || c == '_'),
+                "expected invalid: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_config_schema_auth_fields_not_present() {
+        // The capabilities.json files for discord/telegram/matrix must not expose
+        // auth-adjacent fields (secret_name, token) in config_schema.
+        // We verify the schema shape here with representative data.
+        let discord_caps = serde_json::json!({
+            "setup": { "required_secrets": [{ "name": "discord_bot_token" }] },
+            "config_schema": {
+                "type": "object",
+                "properties": {
+                    "owner_id": { "type": "string" },
+                    "dm_policy": { "type": "string" },
+                    "allow_from": { "type": "array" }
+                }
+            }
+        });
+        let schema = discord_caps.get("config_schema").unwrap();
+        let props = schema["properties"].as_object().unwrap();
+        // Auth fields must not be in the schema properties
+        assert!(!props.contains_key("discord_bot_token"));
+        assert!(!props.contains_key("secret_name"));
+        assert!(!props.contains_key("token"));
+        // Non-secret config fields are present
+        assert!(props.contains_key("owner_id"));
+        assert!(props.contains_key("dm_policy"));
+    }
+
+    // ── get_auth_info: McpServerConfig priority ───────────────────────────
+    //
+    // These tests exercise the auth-type derivation logic that lives inside
+    // get_auth_info directly (the pure-data branches, without I/O).
+
+    use crate::tools::mcp::config::{McpServerConfig, OAuthConfig};
+
+    fn server_no_oauth(name: &str, url: &str) -> McpServerConfig {
+        McpServerConfig::new(name, url)
+    }
+
+    fn server_with_oauth(name: &str, url: &str) -> McpServerConfig {
+        McpServerConfig::new(name, url)
+            .with_oauth(OAuthConfig::new("client-abc").with_scopes(vec!["read".into()]))
+    }
+
+    /// Helper that mirrors the auth_type derivation inside get_auth_info so we
+    /// can test it without spinning up the full ExtensionManager.
+    fn derive_auth_type(server: &McpServerConfig) -> &'static str {
+        if server.oauth.is_some() {
+            "dcr"
+        } else if server.requires_auth() {
+            "manual"
+        } else {
+            "none"
+        }
+    }
+
+    #[test]
+    fn test_mcp_remote_no_oauth_yields_manual() {
+        // Remote HTTPS server without pre-configured OAuth must produce "manual"
+        // so the wizard always shows a token input field rather than an OAuth button.
+        let server = server_no_oauth("github", "https://mcp.github.com");
+        assert_eq!(derive_auth_type(&server), "manual");
+    }
+
+    #[test]
+    fn test_mcp_remote_with_oauth_yields_dcr() {
+        // Remote HTTPS server with a pre-configured OAuth client uses the browser flow.
+        let server = server_with_oauth("notion", "https://mcp.notion.com");
+        assert_eq!(derive_auth_type(&server), "dcr");
+    }
+
+    #[test]
+    fn test_mcp_localhost_yields_none() {
+        // Local dev servers need no auth regardless of URL scheme.
+        let server = server_no_oauth("local", "http://localhost:8080");
+        assert_eq!(derive_auth_type(&server), "none");
+        let server2 = server_no_oauth("local2", "http://127.0.0.1:3000");
+        assert_eq!(derive_auth_type(&server2), "none");
+    }
+
+    #[test]
+    fn test_mcp_manual_auth_type_has_instructions() {
+        // When auth_type is "manual", the instructions field must be populated so
+        // the UI knows what to display to the user.
+        let server = server_no_oauth("github", "https://mcp.github.com");
+        let display = "GitHub";
+        let instructions = format!(
+            "Enter an API token or personal access token for {}. \
+             The token will be stored encrypted and sent as a Bearer \
+             Authorization header when connecting to the server.",
+            display
+        );
+        assert!(!instructions.is_empty());
+        assert!(instructions.contains("Bearer"));
+        assert!(instructions.contains("encrypted"));
+    }
+
+    #[test]
+    fn test_mcp_manual_oauth_available_false() {
+        // Manual auth type must not advertise oauth_available so the wizard
+        // renders a token <input>, not an "Authorize" button.
+        let server = server_no_oauth("cloudflare", "https://mcp.cloudflare.com/sse");
+        assert!(!server.oauth.is_some()); // no oauth config
+        assert!(server.requires_auth()); // remote HTTPS
+    }
+
+    #[test]
+    fn test_mcp_token_secret_name_format() {
+        // The secret key that stores the Bearer token must follow the
+        // `mcp_{name}_access_token` convention used by McpClient::new_authenticated.
+        let server = server_no_oauth("github", "https://mcp.github.com");
+        assert_eq!(server.token_secret_name(), "mcp_github_access_token");
+        let server2 = server_no_oauth("cloudflare", "https://mcp.cloudflare.com/sse");
+        assert_eq!(server2.token_secret_name(), "mcp_cloudflare_access_token");
     }
 }

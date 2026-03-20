@@ -48,5 +48,32 @@
     "owner_id": null,
     "dm_policy": "pairing",
     "allow_from": []
+  },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "homeserver": {
+        "type": "string",
+        "default": "https://matrix.org",
+        "description": "Matrix homeserver URL (e.g. https://matrix.org or your self-hosted server)."
+      },
+      "owner_id": {
+        "type": "string",
+        "nullable": true,
+        "description": "Your Matrix user ID (e.g. @user:matrix.org). Only messages from this user will be processed."
+      },
+      "dm_policy": {
+        "type": "string",
+        "enum": ["pairing", "owner_only", "anyone"],
+        "default": "pairing",
+        "description": "Who can send DMs to the bot."
+      },
+      "allow_from": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": [],
+        "description": "Additional Matrix user IDs allowed to send messages (comma-separated)."
+      }
+    }
   }
 }
