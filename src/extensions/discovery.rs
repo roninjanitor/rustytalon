@@ -101,6 +101,7 @@ impl OnlineDiscovery {
                             kind: ExtensionKind::McpServer,
                             description: format!("MCP server discovered at {}", url),
                             keywords: vec![],
+                            category: None,
                             source: ExtensionSource::McpUrl {
                                 url: url.to_string(),
                             },
@@ -177,6 +178,7 @@ impl OnlineDiscovery {
                         .description
                         .unwrap_or_else(|| format!("MCP server from GitHub: {}", item.full_name)),
                     keywords: item.topics,
+                    category: None,
                     source: ExtensionSource::Discovered { url },
                     auth_hint: AuthHint::Dcr,
                 })

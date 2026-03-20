@@ -1090,7 +1090,7 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
 
         const MAX_TOOL_ITERATIONS: usize = 10;
         let mut iteration = 0;
-        let mut tools_executed = resume_after_tool;
+        let mut _tools_executed = resume_after_tool;
 
         loop {
             iteration += 1;
@@ -1149,7 +1149,7 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                     tool_calls,
                     content,
                 } => {
-                    tools_executed = true;
+                    _tools_executed = true;
 
                     // Add the assistant message with tool_calls to context.
                     // OpenAI protocol requires this before tool-result messages.

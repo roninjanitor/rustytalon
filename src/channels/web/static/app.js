@@ -169,8 +169,22 @@ function connectSSE() {
   eventSource.addEventListener('auth_completed', (e) => {
     const data = JSON.parse(e.data);
     removeAuthCard(data.extension_name);
-    showToast(data.message, 'success');
+    if (data.success) {
+      showToast(data.message, 'success');
+    } else {
+      showToast(data.message, 'error');
+    }
     enableChatInput();
+    // Advance wizard if it's waiting for OAuth completion
+    if (wizardState && wizardState.name === data.extension_name && wizardState.waitingForAuth) {
+      wizardState.waitingForAuth = false;
+      if (data.success) {
+        wizardState.entry.authenticated = true;
+        wizardState.entry.active = true;
+        wizardState.steps = buildWizardSteps(wizardState.entry, wizardState.authInfo);
+        wizardAdvance();
+      }
+    }
   });
 
   eventSource.addEventListener('error', (e) => {
@@ -813,7 +827,11 @@ function switchTab(tab) {
   if (tab === 'jobs') loadJobs();
   if (tab === 'routines') loadRoutines();
   if (tab === 'logs') applyLogFilters();
-  if (tab === 'extensions') loadExtensions();
+  if (tab === 'extensions') {
+    initExtSubTabs();
+    initCatalogSearch();
+    checkExtensionManagerAvailable().then(() => loadCatalog());
+  }
 }
 
 // --- Memory (filesystem tree) ---
@@ -1159,37 +1177,212 @@ function applyLogFilters() {
 
 // --- Extensions ---
 
-function loadExtensions() {
+let extSubTabsInit = false;
+let catalogSearchInit = false;
+let extManagerAvailable = true; // assume available until status check says otherwise
+let catalogKindFilter = 'all';
+let wizardState = null;
+
+async function checkExtensionManagerAvailable() {
+  try {
+    const data = await apiFetch('/api/gateway/status');
+    extManagerAvailable = data.extension_manager_available !== false;
+    const banner = document.getElementById('ext-setup-banner');
+    if (banner) {
+      banner.style.display = extManagerAvailable ? 'none' : 'flex';
+    }
+  } catch (_) {
+    // If status check fails, leave banner hidden and assume available
+  }
+}
+
+function initExtSubTabs() {
+  if (extSubTabsInit) return;
+  extSubTabsInit = true;
+
+  document.querySelectorAll('.ext-sub-tab').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.ext-sub-tab').forEach((b) => b.classList.remove('active'));
+      document.querySelectorAll('.ext-panel').forEach((p) => p.classList.remove('active'));
+      btn.classList.add('active');
+      const sub = btn.dataset.subtab;
+      document.getElementById('ext-panel-' + sub).classList.add('active');
+      if (sub === 'catalog') loadCatalog();
+      if (sub === 'installed') loadInstalledExtensions();
+      if (sub === 'tools') loadExtensionTools();
+    });
+  });
+
+  const closeBtn = document.getElementById('wizard-close-btn');
+  if (closeBtn) closeBtn.addEventListener('click', closeWizard);
+
+  document.getElementById('wizard-overlay').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('wizard-overlay')) closeWizard();
+  });
+}
+
+function initCatalogSearch() {
+  if (catalogSearchInit) return;
+  catalogSearchInit = true;
+
+  const input = document.getElementById('ext-catalog-search');
+  let timer;
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const q = input.value.trim();
+      if (!q) { loadCatalog(); return; }
+      const body = { query: q, kind: catalogKindFilter !== 'all' ? catalogKindFilter : undefined };
+      apiFetch('/api/extensions/catalog/search', { method: 'POST', body })
+        .then((data) => renderCatalogGrid(data.entries || []))
+        .catch(() => {});
+    }, 300);
+  });
+
+  document.querySelectorAll('.ext-kind-filter').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.ext-kind-filter').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      catalogKindFilter = btn.dataset.kind;
+      document.getElementById('ext-catalog-search').value = '';
+      loadCatalog();
+    });
+  });
+}
+
+function loadCatalog() {
+  const grid = document.getElementById('catalog-grid');
+  grid.innerHTML = '<div class="empty-state">Loading...</div>';
+  const qs = catalogKindFilter !== 'all' ? '?kind=' + catalogKindFilter : '';
+  apiFetch('/api/extensions/catalog' + qs)
+    .then((data) => renderCatalogGrid(data.entries || []))
+    .catch(() => { grid.innerHTML = '<div class="empty-state">Failed to load catalog</div>'; });
+}
+
+function renderCatalogGrid(entries) {
+  const grid = document.getElementById('catalog-grid');
+  if (entries.length === 0) {
+    grid.innerHTML = '<div class="empty-state">No extensions found</div>';
+    return;
+  }
+  grid.innerHTML = '';
+  for (const entry of entries) {
+    grid.appendChild(renderCatalogCard(entry));
+  }
+}
+
+function renderCatalogCard(entry) {
+  const card = document.createElement('div');
+  card.className = 'catalog-card';
+
+  const header = document.createElement('div');
+  header.className = 'catalog-card-header';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'catalog-card-name';
+  nameEl.textContent = entry.display_name || entry.name;
+  header.appendChild(nameEl);
+
+  const kindBadge = document.createElement('span');
+  kindBadge.className = 'ext-kind kind-' + entry.kind;
+  kindBadge.textContent = kindLabel(entry.kind);
+  header.appendChild(kindBadge);
+  card.appendChild(header);
+
+  const desc = document.createElement('div');
+  desc.className = 'catalog-card-desc';
+  desc.textContent = entry.description || '';
+  card.appendChild(desc);
+
+  const footer = document.createElement('div');
+  footer.className = 'catalog-card-footer';
+
+  if (entry.installed && entry.status !== 'not_installed') {
+    const badge = document.createElement('span');
+    badge.className = 'catalog-status-badge status-' + (entry.status || '').replace('_', '-');
+    badge.textContent = statusLabel(entry.status);
+    footer.appendChild(badge);
+
+    if (entry.status !== 'active') {
+      const manageBtn = document.createElement('button');
+      manageBtn.className = 'catalog-card-manage-btn';
+      manageBtn.textContent = entry.status === 'needs_auth' ? 'Set Up' : 'Manage';
+      manageBtn.addEventListener('click', () => openWizard(entry));
+      footer.appendChild(manageBtn);
+    }
+  } else if (entry.installable === false) {
+    const badge = document.createElement('span');
+    badge.className = 'catalog-status-badge status-build-required';
+    badge.textContent = 'Setup guide \u2192';
+    badge.title = 'Click to view setup instructions';
+    badge.addEventListener('click', () => openSetupGuide(entry));
+    footer.appendChild(badge);
+  } else {
+    const installBtn = document.createElement('button');
+    installBtn.className = 'catalog-card-install-btn';
+    installBtn.textContent = 'Install';
+    if (!extManagerAvailable) {
+      installBtn.disabled = true;
+      installBtn.title = 'Set SECRETS_MASTER_KEY in .env to enable installation';
+    } else {
+      installBtn.addEventListener('click', () => openWizard(entry));
+    }
+    footer.appendChild(installBtn);
+  }
+
+  card.appendChild(footer);
+  return card;
+}
+
+function kindLabel(kind) {
+  return { mcp_server: 'MCP', wasm_tool: 'WASM', wasm_channel: 'Channel' }[kind] || kind;
+}
+
+function statusLabel(status) {
+  return {
+    active: 'Active',
+    needs_auth: 'Needs Auth',
+    inactive: 'Inactive',
+    error: 'Error',
+    not_installed: 'Not Installed',
+  }[status] || status;
+}
+
+// --- Installed extensions list ---
+
+function loadInstalledExtensions() {
   const extList = document.getElementById('extensions-list');
+  extList.innerHTML = '<div class="empty-state">Loading...</div>';
+  apiFetch('/api/extensions')
+    .then((data) => {
+      if (!data.extensions || data.extensions.length === 0) {
+        extList.innerHTML = '<div class="empty-state">No extensions installed</div>';
+      } else {
+        extList.innerHTML = '';
+        for (const ext of data.extensions) {
+          extList.appendChild(renderExtensionCard(ext));
+        }
+      }
+    })
+    .catch(() => { extList.innerHTML = '<div class="empty-state">Failed to load extensions</div>'; });
+}
+
+function loadExtensionTools() {
   const toolsTbody = document.getElementById('tools-tbody');
   const toolsEmpty = document.getElementById('tools-empty');
-
-  // Fetch both in parallel
-  Promise.all([
-    apiFetch('/api/extensions').catch(() => ({ extensions: [] })),
-    apiFetch('/api/extensions/tools').catch(() => ({ tools: [] })),
-  ]).then(([extData, toolData]) => {
-    // Render extensions
-    if (extData.extensions.length === 0) {
-      extList.innerHTML = '<div class="empty-state">No extensions installed</div>';
-    } else {
-      extList.innerHTML = '';
-      for (const ext of extData.extensions) {
-        extList.appendChild(renderExtensionCard(ext));
+  apiFetch('/api/extensions/tools')
+    .then((data) => {
+      if (!data.tools || data.tools.length === 0) {
+        toolsTbody.innerHTML = '';
+        toolsEmpty.style.display = 'block';
+      } else {
+        toolsEmpty.style.display = 'none';
+        toolsTbody.innerHTML = data.tools.map((t) =>
+          '<tr><td>' + escapeHtml(t.name) + '</td><td>' + escapeHtml(t.description) + '</td></tr>'
+        ).join('');
       }
-    }
-
-    // Render tools
-    if (toolData.tools.length === 0) {
-      toolsTbody.innerHTML = '';
-      toolsEmpty.style.display = 'block';
-    } else {
-      toolsEmpty.style.display = 'none';
-      toolsTbody.innerHTML = toolData.tools.map((t) =>
-        '<tr><td>' + escapeHtml(t.name) + '</td><td>' + escapeHtml(t.description) + '</td></tr>'
-      ).join('');
-    }
-  });
+    })
+    .catch(() => {});
 }
 
 function renderExtensionCard(ext) {
@@ -1206,12 +1399,13 @@ function renderExtensionCard(ext) {
 
   const kind = document.createElement('span');
   kind.className = 'ext-kind kind-' + ext.kind;
-  kind.textContent = ext.kind;
+  kind.textContent = kindLabel(ext.kind);
   header.appendChild(kind);
 
+  const statusClass = { active: 'authed', needs_auth: 'unauthed', error: 'unauthed', inactive: 'unauthed' }[ext.status] || 'unauthed';
   const authDot = document.createElement('span');
-  authDot.className = 'ext-auth-dot ' + (ext.authenticated ? 'authed' : 'unauthed');
-  authDot.title = ext.authenticated ? 'Authenticated' : 'Not authenticated';
+  authDot.className = 'ext-auth-dot ' + statusClass;
+  authDot.title = statusLabel(ext.status || (ext.authenticated ? 'active' : 'needs_auth'));
   header.appendChild(authDot);
 
   card.appendChild(header);
@@ -1223,6 +1417,14 @@ function renderExtensionCard(ext) {
     card.appendChild(desc);
   }
 
+  if (ext.error) {
+    const errEl = document.createElement('div');
+    errEl.className = 'ext-desc';
+    errEl.style.color = 'var(--danger)';
+    errEl.textContent = ext.error;
+    card.appendChild(errEl);
+  }
+
   if (ext.url) {
     const url = document.createElement('div');
     url.className = 'ext-url';
@@ -1231,7 +1433,7 @@ function renderExtensionCard(ext) {
     card.appendChild(url);
   }
 
-  if (ext.tools.length > 0) {
+  if (ext.tools && ext.tools.length > 0) {
     const tools = document.createElement('div');
     tools.className = 'ext-tools';
     tools.textContent = 'Tools: ' + ext.tools.join(', ');
@@ -1241,7 +1443,13 @@ function renderExtensionCard(ext) {
   const actions = document.createElement('div');
   actions.className = 'ext-actions';
 
-  if (!ext.active) {
+  if (ext.status === 'needs_auth' || ext.status === 'error') {
+    const setupBtn = document.createElement('button');
+    setupBtn.className = 'btn-ext activate';
+    setupBtn.textContent = 'Set Up';
+    setupBtn.addEventListener('click', () => openWizard(ext));
+    actions.appendChild(setupBtn);
+  } else if (!ext.active) {
     const activateBtn = document.createElement('button');
     activateBtn.className = 'btn-ext activate';
     activateBtn.textContent = 'Activate';
@@ -1268,10 +1476,12 @@ function activateExtension(name) {
   apiFetch('/api/extensions/' + encodeURIComponent(name) + '/activate', { method: 'POST' })
     .then((res) => {
       if (res.success) {
-        loadExtensions();
+        loadInstalledExtensions();
+        if (document.getElementById('ext-panel-catalog').classList.contains('active')) {
+          loadCatalog();
+        }
         return;
       }
-
       if (res.auth_url) {
         showToast('Opening authentication for ' + name, 'info');
         window.open(res.auth_url, '_blank');
@@ -1280,7 +1490,7 @@ function activateExtension(name) {
       } else {
         showToast('Activate failed: ' + res.message, 'error');
       }
-      loadExtensions();
+      loadInstalledExtensions();
     })
     .catch((err) => showToast('Activate failed: ' + err.message, 'error'));
 }
@@ -1294,9 +1504,421 @@ function removeExtension(name) {
       } else {
         showToast('Removed ' + name, 'success');
       }
-      loadExtensions();
+      loadInstalledExtensions();
+      loadCatalog();
     })
     .catch((err) => showToast('Remove failed: ' + err.message, 'error'));
+}
+
+// --- Setup Guide Modal ---
+
+async function openSetupGuide(entry) {
+  const overlay = document.getElementById('setup-guide-overlay');
+  const title = document.getElementById('setup-guide-title');
+  const body = document.getElementById('setup-guide-body');
+  const closeBtn = document.getElementById('setup-guide-close');
+
+  title.textContent = (entry.display_name || entry.name) + ' — Setup Guide';
+  body.innerHTML = '<div class="empty-state">Loading…</div>';
+  overlay.style.display = 'flex';
+
+  closeBtn.onclick = () => { overlay.style.display = 'none'; };
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.style.display = 'none'; };
+
+  if (entry.docs_file) {
+    try {
+      const res = await fetch('/api/docs/' + entry.docs_file, {
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+      if (res.ok) {
+        const md = await res.text();
+        body.innerHTML = marked.parse(md);
+        // Make all links open in new tab
+        body.querySelectorAll('a').forEach(a => a.setAttribute('target', '_blank'));
+        return;
+      }
+    } catch (_) {}
+  }
+
+  // Fallback: show generic build instructions
+  const dir = entry.build_dir || 'channels-src/' + entry.name;
+  const outDir = entry.kind === 'wasm_channel' ? '~/.rustytalon/channels' : '~/.rustytalon/tools';
+  body.innerHTML = marked.parse([
+    '# ' + (entry.display_name || entry.name) + ' Setup',
+    '',
+    entry.description || '',
+    '',
+    '## Build from Source',
+    '',
+    'This extension must be compiled from source before it can be installed.',
+    '',
+    '**Prerequisites:**',
+    '',
+    '```bash',
+    '# Install the WASM target (one-time)',
+    'rustup target add wasm32-wasip2',
+    'cargo install wasm-tools',
+    '```',
+    '',
+    '**Build and install:**',
+    '',
+    '```bash',
+    'cd ' + dir,
+    './build.sh',
+    '',
+    '# Copy to RustyTalon',
+    'mkdir -p ' + outDir,
+    'cp ' + entry.name + '.wasm ' + entry.name + '.capabilities.json ' + outDir + '/',
+    '```',
+    '',
+    'Then restart RustyTalon — the extension will appear in the **Installed** tab.',
+  ].join('\n'));
+}
+
+// --- Wizard ---
+
+async function openWizard(entry) {
+  wizardState = { name: entry.name, entry: Object.assign({}, entry), step: 0, steps: [], authInfo: null, activateError: null, waitingForAuth: false };
+  document.getElementById('wizard-overlay').style.display = 'flex';
+
+  try {
+    const info = await apiFetch('/api/extensions/' + encodeURIComponent(entry.name) + '/auth-info');
+    wizardState.authInfo = info.info || info;
+  } catch (_) { /* proceed without auth info */ }
+
+  wizardState.steps = buildWizardSteps(wizardState.entry, wizardState.authInfo);
+  renderWizard();
+}
+
+function closeWizard() {
+  document.getElementById('wizard-overlay').style.display = 'none';
+  wizardState = null;
+}
+
+function buildWizardSteps(entry, authInfo) {
+  const steps = ['overview'];
+  if (!entry.installed) steps.push('install');
+  const needsAuth = authInfo && authInfo.auth_type !== 'none' && authInfo.auth_type !== 'dcr' && !entry.authenticated;
+  if (needsAuth) steps.push('auth');
+  if (entry.installed && !entry.active && !needsAuth) steps.push('activate');
+  steps.push('done');
+  return steps;
+}
+
+function renderWizard() {
+  if (!wizardState) return;
+  const { entry, authInfo, steps, step } = wizardState;
+  const container = document.getElementById('wizard-steps');
+  container.innerHTML = '';
+
+  // Progress dots
+  const progress = document.createElement('div');
+  progress.className = 'wizard-progress';
+  steps.forEach((_, i) => {
+    const dot = document.createElement('div');
+    dot.className = 'wizard-progress-dot' + (i < step ? ' done' : i === step ? ' current' : '');
+    progress.appendChild(dot);
+  });
+  container.appendChild(progress);
+
+  // Current step content
+  const stepName = steps[step];
+  container.appendChild(renderWizardStep(stepName, entry, authInfo));
+}
+
+function renderWizardStep(stepName, entry, authInfo) {
+  const div = document.createElement('div');
+
+  switch (stepName) {
+    case 'overview': {
+      const title = document.createElement('div');
+      title.className = 'wizard-step-title';
+      title.textContent = entry.display_name || entry.name;
+      div.appendChild(title);
+
+      const desc = document.createElement('div');
+      desc.className = 'wizard-step-desc';
+      desc.textContent = entry.description || '';
+      div.appendChild(desc);
+
+      if (authInfo && authInfo.auth_type !== 'none') {
+        const credHeader = document.createElement('div');
+        credHeader.className = 'wizard-step-label';
+        credHeader.textContent = "What you'll need:";
+        div.appendChild(credHeader);
+
+        const credList = document.createElement('ul');
+        credList.className = 'wizard-credential-list';
+        const li = document.createElement('li');
+        li.textContent = authInfo.display_name ? authInfo.display_name + ' credentials' : 'API credentials';
+        if (authInfo.setup_url) {
+          const link = document.createElement('a');
+          link.className = 'wizard-link';
+          link.href = authInfo.setup_url;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = 'Get credentials';
+          li.appendChild(link);
+        }
+        credList.appendChild(li);
+        div.appendChild(credList);
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'wizard-actions';
+      const cancelBtn = document.createElement('button');
+      cancelBtn.className = 'wizard-btn-secondary';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.onclick = closeWizard;
+      actions.appendChild(cancelBtn);
+
+      const nextBtn = document.createElement('button');
+      nextBtn.className = 'wizard-btn-primary';
+      if (!entry.installed) nextBtn.textContent = 'Install';
+      else if (!entry.authenticated && authInfo && authInfo.auth_type !== 'none') nextBtn.textContent = 'Set Up Auth';
+      else nextBtn.textContent = 'Continue';
+      nextBtn.onclick = () => wizardAdvance();
+      actions.appendChild(nextBtn);
+      div.appendChild(actions);
+      break;
+    }
+
+    case 'install': {
+      const title = document.createElement('div');
+      title.className = 'wizard-step-title';
+      title.textContent = 'Installing ' + (entry.display_name || entry.name);
+      div.appendChild(title);
+
+      const desc = document.createElement('div');
+      desc.className = 'wizard-step-desc';
+      desc.textContent = 'Click Install to add this extension.';
+      div.appendChild(desc);
+
+      const actions = document.createElement('div');
+      actions.className = 'wizard-actions';
+      const backBtn = document.createElement('button');
+      backBtn.className = 'wizard-btn-secondary';
+      backBtn.textContent = 'Back';
+      backBtn.onclick = () => wizardBack();
+      actions.appendChild(backBtn);
+
+      const installBtn = document.createElement('button');
+      installBtn.className = 'wizard-btn-primary';
+      installBtn.textContent = 'Install';
+      installBtn.onclick = async () => {
+        installBtn.disabled = true;
+        installBtn.textContent = 'Installing...';
+        try {
+          const res = await apiFetch('/api/extensions/install', {
+            method: 'POST',
+            body: { name: entry.name, kind: entry.kind },
+          });
+          if (res.success) {
+            wizardState.entry.installed = true;
+            wizardState.steps = buildWizardSteps(wizardState.entry, wizardState.authInfo);
+            wizardAdvance();
+          } else {
+            showToast('Install failed: ' + res.message, 'error');
+            installBtn.disabled = false;
+            installBtn.textContent = 'Retry';
+          }
+        } catch (e) {
+          showToast('Install failed: ' + e.message, 'error');
+          installBtn.disabled = false;
+          installBtn.textContent = 'Retry';
+        }
+      };
+      actions.appendChild(installBtn);
+      div.appendChild(actions);
+      break;
+    }
+
+    case 'auth': {
+      const title = document.createElement('div');
+      title.className = 'wizard-step-title';
+      title.textContent = 'Connect ' + ((authInfo && authInfo.display_name) || entry.display_name || entry.name);
+      div.appendChild(title);
+
+      if (authInfo && authInfo.instructions) {
+        const instr = document.createElement('div');
+        instr.className = 'wizard-step-desc';
+        instr.textContent = authInfo.instructions;
+        div.appendChild(instr);
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'wizard-actions';
+      const backBtn = document.createElement('button');
+      backBtn.className = 'wizard-btn-secondary';
+      backBtn.textContent = 'Back';
+      backBtn.onclick = () => wizardBack();
+      actions.appendChild(backBtn);
+
+      if (authInfo && authInfo.oauth_available) {
+        const oauthBtn = document.createElement('button');
+        oauthBtn.className = 'wizard-btn-primary';
+        oauthBtn.textContent = 'Authorize with ' + ((authInfo && authInfo.display_name) || entry.name);
+        oauthBtn.onclick = async () => {
+          oauthBtn.disabled = true;
+          oauthBtn.textContent = 'Opening...';
+          try {
+            const res = await apiFetch('/api/extensions/' + encodeURIComponent(entry.name) + '/activate', { method: 'POST' });
+            if (res.auth_url) {
+              window.open(res.auth_url, '_blank');
+              wizardState.waitingForAuth = true;
+              oauthBtn.textContent = 'Waiting for authorization...';
+            } else if (res.success) {
+              wizardState.entry.authenticated = true;
+              wizardState.entry.active = true;
+              wizardState.steps = buildWizardSteps(wizardState.entry, wizardState.authInfo);
+              wizardAdvance();
+            } else {
+              showToast(res.message, 'error');
+              oauthBtn.disabled = false;
+              oauthBtn.textContent = 'Retry';
+            }
+          } catch (e) {
+            showToast(e.message, 'error');
+            oauthBtn.disabled = false;
+            oauthBtn.textContent = 'Retry';
+          }
+        };
+        actions.appendChild(oauthBtn);
+      } else {
+        // Manual token entry
+        const label = document.createElement('label');
+        label.className = 'wizard-step-label';
+        label.textContent = 'API Token';
+        div.insertBefore(label, actions);
+
+        const tokenInput = document.createElement('input');
+        tokenInput.type = 'password';
+        tokenInput.className = 'wizard-token-input';
+        tokenInput.placeholder = (authInfo && authInfo.token_hint) || 'Paste your API token';
+        div.insertBefore(tokenInput, actions);
+
+        if (authInfo && authInfo.token_hint) {
+          const hint = document.createElement('div');
+          hint.className = 'wizard-hint';
+          hint.textContent = authInfo.token_hint;
+          div.insertBefore(hint, actions);
+        }
+
+        const submitBtn = document.createElement('button');
+        submitBtn.className = 'wizard-btn-primary';
+        submitBtn.textContent = 'Connect';
+        submitBtn.onclick = async () => {
+          const token = tokenInput.value.trim();
+          if (!token) { showToast('Token is required', 'error'); return; }
+          submitBtn.disabled = true;
+          submitBtn.textContent = 'Connecting...';
+          try {
+            const res = await apiFetch('/api/chat/auth-token', {
+              method: 'POST',
+              body: { extension_name: entry.name, token },
+            });
+            if (res.success || res.status === 'authenticated') {
+              wizardState.entry.authenticated = true;
+              wizardState.steps = buildWizardSteps(wizardState.entry, wizardState.authInfo);
+              wizardAdvance();
+            } else {
+              showToast((res.message) || 'Auth failed', 'error');
+              submitBtn.disabled = false;
+              submitBtn.textContent = 'Retry';
+            }
+          } catch (e) {
+            showToast(e.message, 'error');
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Retry';
+          }
+        };
+        actions.appendChild(submitBtn);
+      }
+
+      div.appendChild(actions);
+      break;
+    }
+
+    case 'activate': {
+      const title = document.createElement('div');
+      title.className = 'wizard-step-title';
+      title.textContent = 'Activating...';
+      div.appendChild(title);
+
+      // Auto-activate when this step is entered
+      setTimeout(async () => {
+        try {
+          const res = await apiFetch('/api/extensions/' + encodeURIComponent(entry.name) + '/activate', { method: 'POST' });
+          if (res.success) {
+            wizardState.entry.active = true;
+          } else {
+            wizardState.activateError = res.message;
+          }
+        } catch (e) {
+          wizardState.activateError = e.message;
+        }
+        wizardAdvance();
+      }, 0);
+      break;
+    }
+
+    case 'done': {
+      const title = document.createElement('div');
+      title.className = 'wizard-step-title';
+      if (wizardState.activateError) {
+        title.textContent = 'Setup encountered an issue';
+      } else if (entry.active) {
+        title.textContent = (entry.display_name || entry.name) + ' is ready';
+      } else {
+        title.textContent = 'Setup complete';
+      }
+      div.appendChild(title);
+
+      const desc = document.createElement('div');
+      desc.className = 'wizard-step-desc';
+      if (wizardState.activateError) {
+        desc.textContent = wizardState.activateError;
+      } else if (entry.active) {
+        desc.textContent = 'The extension is installed and active. You can now use it.';
+      } else if (entry.kind === 'wasm_channel') {
+        desc.textContent = 'Channel installed. Restart RustyTalon to activate the channel.';
+      } else {
+        desc.textContent = 'Extension is set up. You can activate it from the Installed tab.';
+      }
+      div.appendChild(desc);
+
+      const actions = document.createElement('div');
+      actions.className = 'wizard-actions';
+      const doneBtn = document.createElement('button');
+      doneBtn.className = 'wizard-btn-primary';
+      doneBtn.textContent = 'Done';
+      doneBtn.onclick = () => {
+        closeWizard();
+        loadCatalog();
+        loadInstalledExtensions();
+      };
+      actions.appendChild(doneBtn);
+      div.appendChild(actions);
+      break;
+    }
+
+    default:
+      break;
+  }
+
+  return div;
+}
+
+function wizardAdvance() {
+  if (!wizardState) return;
+  wizardState.step = Math.min(wizardState.step + 1, wizardState.steps.length - 1);
+  renderWizard();
+}
+
+function wizardBack() {
+  if (!wizardState) return;
+  wizardState.step = Math.max(wizardState.step - 1, 0);
+  renderWizard();
 }
 
 // --- Jobs ---
@@ -2055,34 +2677,6 @@ document.getElementById('gateway-status-trigger').addEventListener('mouseenter',
 document.getElementById('gateway-status-trigger').addEventListener('mouseleave', () => {
   document.getElementById('gateway-popover').classList.remove('visible');
 });
-
-// --- Extension install ---
-
-function installExtension() {
-  const name = document.getElementById('ext-install-name').value.trim();
-  if (!name) {
-    showToast('Extension name is required', 'error');
-    return;
-  }
-  const url = document.getElementById('ext-install-url').value.trim();
-  const kind = document.getElementById('ext-install-kind').value;
-
-  apiFetch('/api/extensions/install', {
-    method: 'POST',
-    body: { name, url: url || undefined, kind },
-  }).then((res) => {
-    if (res.success) {
-      showToast('Installed ' + name, 'success');
-      document.getElementById('ext-install-name').value = '';
-      document.getElementById('ext-install-url').value = '';
-      loadExtensions();
-    } else {
-      showToast('Install failed: ' + (res.message || 'unknown error'), 'error');
-    }
-  }).catch((err) => {
-    showToast('Install failed: ' + err.message, 'error');
-  });
-}
 
 // --- Keyboard shortcuts ---
 

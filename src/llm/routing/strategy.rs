@@ -27,7 +27,7 @@ pub enum RoutingStrategy {
 
 impl RoutingStrategy {
     /// Parse a strategy from a string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "cost" | "cost_optimized" | "cheap" => Some(Self::CostOptimized),
             "quality" | "quality_first" | "best" => Some(Self::QualityFirst),
@@ -130,7 +130,7 @@ impl RoutingConfig {
         let mut config = Self::default();
 
         if let Ok(strategy) = std::env::var("ROUTING_STRATEGY") {
-            if let Some(s) = RoutingStrategy::from_str(&strategy) {
+            if let Some(s) = RoutingStrategy::parse(&strategy) {
                 config.strategy = s;
             }
         }
@@ -225,19 +225,19 @@ mod tests {
     #[test]
     fn test_strategy_parsing() {
         assert_eq!(
-            RoutingStrategy::from_str("cost"),
+            RoutingStrategy::parse("cost"),
             Some(RoutingStrategy::CostOptimized)
         );
         assert_eq!(
-            RoutingStrategy::from_str("quality"),
+            RoutingStrategy::parse("quality"),
             Some(RoutingStrategy::QualityFirst)
         );
         assert_eq!(
-            RoutingStrategy::from_str("balanced"),
+            RoutingStrategy::parse("balanced"),
             Some(RoutingStrategy::Balanced)
         );
         assert_eq!(
-            RoutingStrategy::from_str("anthropic"),
+            RoutingStrategy::parse("anthropic"),
             Some(RoutingStrategy::Fixed(LlmBackend::Anthropic))
         );
     }

@@ -343,7 +343,67 @@ pub struct ExtensionInfo {
     pub url: Option<String>,
     pub authenticated: bool,
     pub active: bool,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     pub tools: Vec<String>,
+}
+
+/// One entry in the extension catalog (registry entry + installed status).
+#[derive(Debug, Serialize)]
+pub struct CatalogEntry {
+    pub name: String,
+    pub display_name: String,
+    pub kind: String,
+    pub description: String,
+    pub keywords: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// "dcr" | "oauth" | "manual" | "none"
+    pub auth_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup_url: Option<String>,
+    pub installed: bool,
+    pub authenticated: bool,
+    pub active: bool,
+    pub status: String,
+    /// Whether this extension can be installed via one-click (has a downloadable binary or URL).
+    /// False for WasmBuildable entries that require building from source.
+    pub installable: bool,
+    /// For buildable extensions: the source subdirectory (e.g. "channels-src/discord").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_dir: Option<String>,
+    /// Name of the setup guide doc served at /api/docs/{docs_file} (e.g. "DISCORD_SETUP").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docs_file: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CatalogResponse {
+    pub entries: Vec<CatalogEntry>,
+    pub total: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CatalogFilterParams {
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CatalogSearchRequest {
+    pub query: Option<String>,
+    pub kind: Option<String>,
+    pub discover: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExtensionAuthInfoResponse {
+    pub info: crate::extensions::ExtensionAuthInfo,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KindFilterParams {
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

@@ -47,6 +47,10 @@ ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
 # A secret token to protect your web UI
 GATEWAY_AUTH_TOKEN=choose-a-strong-password-here
+
+# Required to install extensions (Telegram, Discord, Google tools, etc.)
+# Generate with: openssl rand -base64 32
+SECRETS_MASTER_KEY=your-generated-key-here
 ```
 
 > **Where do I get an API key?**
@@ -96,6 +100,10 @@ LLM_BACKEND=anthropic
 ANTHROPIC_API_KEY=sk-ant-your-key-here
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
 GATEWAY_AUTH_TOKEN=choose-a-strong-password-here
+
+# Required to install extensions (Telegram, Discord, Google tools, etc.)
+# Generate with: openssl rand -base64 32
+SECRETS_MASTER_KEY=your-generated-key-here
 ```
 
 ### 3. Run
@@ -147,6 +155,10 @@ LLM_BACKEND=anthropic
 ANTHROPIC_API_KEY=sk-ant-your-key-here
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
 GATEWAY_AUTH_TOKEN=choose-a-strong-password-here
+
+# Required to install extensions (Telegram, Discord, Google tools, etc.)
+# Generate with: openssl rand -base64 32
+SECRETS_MASTER_KEY=your-generated-key-here
 
 # Optional: enable semantic memory search
 EMBEDDING_ENABLED=true
@@ -204,6 +216,16 @@ You can chat with RustyTalon through messaging apps instead of (or alongside) th
 
 - Run `docker compose -f docker-compose.prod.yml logs rustytalon` to see the error
 - Usually caused by a missing or invalid API key
+
+### "Extension installation requires a master key" banner
+
+Set `SECRETS_MASTER_KEY` in `.env` and restart. Generate the key with:
+
+```bash
+openssl rand -base64 32
+```
+
+See [TOOLS_AND_EXTENSIONS.md](TOOLS_AND_EXTENSIONS.md#prerequisites) for details.
 
 ### More help
 

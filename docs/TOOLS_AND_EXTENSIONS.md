@@ -100,14 +100,29 @@ MCP (Model Context Protocol) servers are external processes that expose tools vi
 
 ## Installing Extensions
 
+### Prerequisites
+
+Extension installation requires a **secrets master key** to encrypt stored credentials (API tokens, OAuth secrets). Without it, the catalog is still browsable but installation is disabled.
+
+Set `SECRETS_MASTER_KEY` in your `.env` file before trying to install anything:
+
+```bash
+# Generate a random key
+openssl rand -base64 32
+
+# Add to .env
+SECRETS_MASTER_KEY=<paste the output here>
+```
+
+Restart RustyTalon after adding the key. The web UI will show a setup banner if this key is missing.
+
 ### Via the Web UI
 
 1. Open the **Extensions** tab
-2. Click **Install Extension**
-3. Select the type: **WASM** or **MCP**
-4. For WASM: provide the path to the `.wasm` file
-5. For MCP: provide the server URL
-6. Click **Install**
+2. Browse or search the **Catalog**
+3. Click **Install** on any extension
+4. Follow the setup wizard (it guides you through credentials if needed)
+5. The extension is activated automatically once authentication is complete
 
 ### Via the Agent
 

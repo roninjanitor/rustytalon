@@ -205,6 +205,16 @@ pub async fn start_server(
         .route("/api/extensions", get(extensions_list_handler))
         .route("/api/extensions/tools", get(extensions_tools_handler))
         .route("/api/extensions/install", post(extensions_install_handler))
+        // Catalog routes must come before /{name}/... to avoid the path param capturing "catalog"
+        .route("/api/extensions/catalog", get(extensions_catalog_handler))
+        .route(
+            "/api/extensions/catalog/search",
+            post(extensions_catalog_search_handler),
+        )
+        .route(
+            "/api/extensions/{name}/auth-info",
+            get(extension_auth_info_handler),
+        )
         .route(
             "/api/extensions/{name}/activate",
             post(extensions_activate_handler),
@@ -239,6 +249,7 @@ pub async fn start_server(
         )
         // Gateway control plane
         .route("/api/gateway/status", get(gateway_status_handler))
+        .route("/api/docs/{name}", get(docs_handler))
         // Provider health & cost tracking
         .route("/api/providers/health", get(providers_health_handler))
         .route("/api/providers/costs", get(providers_costs_handler))
@@ -1584,18 +1595,66 @@ async fn logs_events_handler(
     ))
 }
 
+// --- Extension helpers ---
+
+fn parse_extension_kind(s: &str) -> Option<crate::extensions::ExtensionKind> {
+    match s {
+        "mcp_server" => Some(crate::extensions::ExtensionKind::McpServer),
+        "wasm_tool" => Some(crate::extensions::ExtensionKind::WasmTool),
+        "wasm_channel" => Some(crate::extensions::ExtensionKind::WasmChannel),
+        _ => None,
+    }
+}
+
+fn docs_file_for(name: &str) -> Option<String> {
+    match name {
+        "telegram" | "telegram-tool" => Some("TELEGRAM_SETUP".to_string()),
+        "discord" => Some("DISCORD_SETUP".to_string()),
+        "matrix" => Some("MATRIX_SETUP".to_string()),
+        _ => None,
+    }
+}
+
+fn build_dir_for(source: &crate::extensions::ExtensionSource) -> Option<String> {
+    if let crate::extensions::ExtensionSource::WasmBuildable { build_dir, .. } = source {
+        build_dir.clone()
+    } else {
+        None
+    }
+}
+
+fn source_is_installable(source: &crate::extensions::ExtensionSource) -> bool {
+    matches!(
+        source,
+        crate::extensions::ExtensionSource::McpUrl { .. }
+            | crate::extensions::ExtensionSource::Discovered { .. }
+            | crate::extensions::ExtensionSource::WasmDownload { .. }
+    )
+}
+
+fn auth_hint_to_type(hint: &crate::extensions::AuthHint) -> String {
+    match hint {
+        crate::extensions::AuthHint::Dcr => "dcr".to_string(),
+        crate::extensions::AuthHint::OAuthPreConfigured { .. } => "oauth".to_string(),
+        crate::extensions::AuthHint::CapabilitiesAuth => "manual".to_string(),
+        crate::extensions::AuthHint::None => "none".to_string(),
+    }
+}
+
 // --- Extension handlers ---
 
 async fn extensions_list_handler(
     State(state): State<Arc<GatewayState>>,
+    Query(params): Query<KindFilterParams>,
 ) -> Result<Json<ExtensionListResponse>, (StatusCode, String)> {
-    let ext_mgr = state.extension_manager.as_ref().ok_or((
-        StatusCode::NOT_IMPLEMENTED,
-        "Extension manager not available (secrets store required)".to_string(),
-    ))?;
+    let Some(ext_mgr) = state.extension_manager.as_ref() else {
+        return Ok(Json(ExtensionListResponse { extensions: vec![] }));
+    };
+
+    let kind_filter = params.kind.as_deref().and_then(parse_extension_kind);
 
     let installed = ext_mgr
-        .list(None)
+        .list(kind_filter)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -1608,6 +1667,8 @@ async fn extensions_list_handler(
             url: ext.url,
             authenticated: ext.authenticated,
             active: ext.active,
+            status: ext.status.to_string(),
+            error: ext.error,
             tools: ext.tools,
         })
         .collect();
@@ -1615,13 +1676,150 @@ async fn extensions_list_handler(
     Ok(Json(ExtensionListResponse { extensions }))
 }
 
+async fn extensions_catalog_handler(
+    State(state): State<Arc<GatewayState>>,
+    Query(params): Query<CatalogFilterParams>,
+) -> Result<Json<CatalogResponse>, (StatusCode, String)> {
+    let kind_filter = params.kind.as_deref().and_then(parse_extension_kind);
+
+    // Registry is always available — create one if the extension manager isn't running.
+    let (results, installed) = if let Some(ext_mgr) = state.extension_manager.as_ref() {
+        let results = ext_mgr.search("", false).await.unwrap_or_default();
+        let installed = ext_mgr.list(None).await.unwrap_or_default();
+        (results, installed)
+    } else {
+        let registry = crate::extensions::ExtensionRegistry::new();
+        let results = registry.search("").await;
+        (results, vec![])
+    };
+
+    let installed_map: std::collections::HashMap<&str, &crate::extensions::InstalledExtension> =
+        installed.iter().map(|e| (e.name.as_str(), e)).collect();
+
+    let entries: Vec<CatalogEntry> = results
+        .into_iter()
+        .filter(|r| kind_filter.is_none_or(|k| r.entry.kind == k))
+        .map(|r| {
+            let inst = installed_map.get(r.entry.name.as_str()).copied();
+            CatalogEntry {
+                name: r.entry.name.clone(),
+                display_name: r.entry.display_name.clone(),
+                kind: r.entry.kind.to_string(),
+                description: r.entry.description.clone(),
+                keywords: r.entry.keywords.clone(),
+                category: r.entry.category.clone(),
+                auth_type: auth_hint_to_type(&r.entry.auth_hint),
+                setup_url: match &r.entry.auth_hint {
+                    crate::extensions::AuthHint::OAuthPreConfigured { setup_url } => {
+                        Some(setup_url.clone())
+                    }
+                    _ => None,
+                },
+                installed: inst.is_some(),
+                authenticated: inst.is_some_and(|e| e.authenticated),
+                active: inst.is_some_and(|e| e.active),
+                status: inst
+                    .map(|e| e.status.to_string())
+                    .unwrap_or_else(|| "not_installed".to_string()),
+                installable: source_is_installable(&r.entry.source),
+                build_dir: build_dir_for(&r.entry.source),
+                docs_file: docs_file_for(&r.entry.name),
+            }
+        })
+        .collect();
+
+    let total = entries.len();
+    Ok(Json(CatalogResponse { entries, total }))
+}
+
+async fn extensions_catalog_search_handler(
+    State(state): State<Arc<GatewayState>>,
+    Json(req): Json<CatalogSearchRequest>,
+) -> Result<Json<CatalogResponse>, (StatusCode, String)> {
+    let query = req.query.as_deref().unwrap_or("");
+    let discover = req.discover.unwrap_or(false);
+
+    let (results, installed) = if let Some(ext_mgr) = state.extension_manager.as_ref() {
+        let results = ext_mgr.search(query, discover).await.unwrap_or_default();
+        let installed = ext_mgr.list(None).await.unwrap_or_default();
+        (results, installed)
+    } else {
+        let registry = crate::extensions::ExtensionRegistry::new();
+        let results = registry.search(query).await;
+        (results, vec![])
+    };
+    let installed_map: std::collections::HashMap<&str, &crate::extensions::InstalledExtension> =
+        installed.iter().map(|e| (e.name.as_str(), e)).collect();
+
+    let kind_filter = req.kind.as_deref().and_then(parse_extension_kind);
+
+    let entries: Vec<CatalogEntry> = results
+        .into_iter()
+        .filter(|r| kind_filter.is_none_or(|k| r.entry.kind == k))
+        .map(|r| {
+            let inst = installed_map.get(r.entry.name.as_str()).copied();
+            CatalogEntry {
+                name: r.entry.name.clone(),
+                display_name: r.entry.display_name.clone(),
+                kind: r.entry.kind.to_string(),
+                description: r.entry.description.clone(),
+                keywords: r.entry.keywords.clone(),
+                category: r.entry.category.clone(),
+                auth_type: auth_hint_to_type(&r.entry.auth_hint),
+                setup_url: match &r.entry.auth_hint {
+                    crate::extensions::AuthHint::OAuthPreConfigured { setup_url } => {
+                        Some(setup_url.clone())
+                    }
+                    _ => None,
+                },
+                installed: inst.is_some(),
+                authenticated: inst.is_some_and(|e| e.authenticated),
+                active: inst.is_some_and(|e| e.active),
+                status: inst
+                    .map(|e| e.status.to_string())
+                    .unwrap_or_else(|| "not_installed".to_string()),
+                installable: source_is_installable(&r.entry.source),
+                build_dir: build_dir_for(&r.entry.source),
+                docs_file: docs_file_for(&r.entry.name),
+            }
+        })
+        .collect();
+
+    let total = entries.len();
+    Ok(Json(CatalogResponse { entries, total }))
+}
+
+async fn extension_auth_info_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(name): Path<String>,
+) -> Result<Json<ExtensionAuthInfoResponse>, (StatusCode, String)> {
+    // Try the full manager first (can read installed capabilities files too).
+    if let Some(ext_mgr) = state.extension_manager.as_ref() {
+        if let Ok(info) = ext_mgr.get_auth_info(&name).await {
+            return Ok(Json(ExtensionAuthInfoResponse { info }));
+        }
+    }
+
+    // Fall back to registry-only lookup so the wizard still works when the
+    // extension manager isn't running.
+    let registry = crate::extensions::ExtensionRegistry::new();
+    if let Some(entry) = registry.get(&name).await {
+        let info = crate::extensions::manager::auth_info_from_entry_pub(&entry, &name);
+        return Ok(Json(ExtensionAuthInfoResponse { info }));
+    }
+
+    Err((
+        StatusCode::NOT_FOUND,
+        format!("Extension '{}' not found in registry", name),
+    ))
+}
+
 async fn extensions_tools_handler(
     State(state): State<Arc<GatewayState>>,
 ) -> Result<Json<ToolListResponse>, (StatusCode, String)> {
-    let registry = state.tool_registry.as_ref().ok_or((
-        StatusCode::SERVICE_UNAVAILABLE,
-        "Tool registry not available".to_string(),
-    ))?;
+    let Some(registry) = state.tool_registry.as_ref() else {
+        return Ok(Json(ToolListResponse { tools: vec![] }));
+    };
 
     let definitions = registry.tool_definitions().await;
     let tools = definitions
@@ -1639,17 +1837,13 @@ async fn extensions_install_handler(
     State(state): State<Arc<GatewayState>>,
     Json(req): Json<InstallExtensionRequest>,
 ) -> Result<Json<ActionResponse>, (StatusCode, String)> {
-    let ext_mgr = state.extension_manager.as_ref().ok_or((
-        StatusCode::NOT_IMPLEMENTED,
-        "Extension manager not available (secrets store required)".to_string(),
-    ))?;
+    let Some(ext_mgr) = state.extension_manager.as_ref() else {
+        return Ok(Json(ActionResponse::fail(
+            "Extension manager is not available. A secrets store (database) is required to install extensions.".to_string(),
+        )));
+    };
 
-    let kind_hint = req.kind.as_deref().and_then(|k| match k {
-        "mcp_server" => Some(crate::extensions::ExtensionKind::McpServer),
-        "wasm_tool" => Some(crate::extensions::ExtensionKind::WasmTool),
-        "wasm_channel" => Some(crate::extensions::ExtensionKind::WasmChannel),
-        _ => None,
-    });
+    let kind_hint = req.kind.as_deref().and_then(parse_extension_kind);
 
     match ext_mgr
         .install(&req.name, req.url.as_deref(), kind_hint)
@@ -1664,10 +1858,12 @@ async fn extensions_activate_handler(
     State(state): State<Arc<GatewayState>>,
     Path(name): Path<String>,
 ) -> Result<Json<ActionResponse>, (StatusCode, String)> {
-    let ext_mgr = state.extension_manager.as_ref().ok_or((
-        StatusCode::NOT_IMPLEMENTED,
-        "Extension manager not available (secrets store required)".to_string(),
-    ))?;
+    let Some(ext_mgr) = state.extension_manager.as_ref() else {
+        return Ok(Json(ActionResponse::fail(
+            "Extension manager is not available. A secrets store (database) is required."
+                .to_string(),
+        )));
+    };
 
     match ext_mgr.activate(&name).await {
         Ok(result) => Ok(Json(ActionResponse::ok(result.message))),
@@ -1780,10 +1976,12 @@ async fn extensions_remove_handler(
     State(state): State<Arc<GatewayState>>,
     Path(name): Path<String>,
 ) -> Result<Json<ActionResponse>, (StatusCode, String)> {
-    let ext_mgr = state.extension_manager.as_ref().ok_or((
-        StatusCode::NOT_IMPLEMENTED,
-        "Extension manager not available (secrets store required)".to_string(),
-    ))?;
+    let Some(ext_mgr) = state.extension_manager.as_ref() else {
+        return Ok(Json(ActionResponse::fail(
+            "Extension manager is not available. A secrets store (database) is required."
+                .to_string(),
+        )));
+    };
 
     match ext_mgr.remove(&name).await {
         Ok(message) => Ok(Json(ActionResponse::ok(message))),
@@ -2247,6 +2445,7 @@ async fn gateway_status_handler(
         sse_connections,
         ws_connections,
         total_connections: sse_connections + ws_connections,
+        extension_manager_available: state.extension_manager.is_some(),
     })
 }
 
@@ -2255,6 +2454,54 @@ struct GatewayStatusResponse {
     sse_connections: u64,
     ws_connections: u64,
     total_connections: u64,
+    extension_manager_available: bool,
+}
+
+// ==================== Docs ====================
+
+/// Allowed docs filenames (no path traversal).
+const ALLOWED_DOCS: &[&str] = &[
+    "TELEGRAM_SETUP",
+    "DISCORD_SETUP",
+    "MATRIX_SETUP",
+    "GETTING_STARTED",
+    "TOOLS_AND_EXTENSIONS",
+    "CONFIGURATION",
+    "BUILDING_CHANNELS",
+    "ROUTINES",
+    "MEMORY",
+    "WEB_UI",
+    "DEPLOYMENT",
+    "API",
+];
+
+async fn docs_handler(axum::extract::Path(name): axum::extract::Path<String>) -> impl IntoResponse {
+    // Strip any extension the caller may have included
+    let stem = name.trim_end_matches(".md");
+
+    if !ALLOWED_DOCS.contains(&stem) {
+        return (StatusCode::NOT_FOUND, "Doc not found".to_string()).into_response();
+    }
+
+    // Resolve relative to the binary's working directory (project root in dev,
+    // or next to the binary in production deploys that ship a docs/ folder).
+    let path = std::path::Path::new("docs").join(format!("{}.md", stem));
+    match tokio::fs::read_to_string(&path).await {
+        Ok(content) => (
+            StatusCode::OK,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
+            content,
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            format!("Doc '{}' not found on disk", stem),
+        )
+            .into_response(),
+    }
 }
 
 // ==================== Provider Health & Costs ====================
@@ -2297,6 +2544,122 @@ async fn providers_costs_handler(State(state): State<Arc<GatewayState>>) -> impl
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── parse_extension_kind ─────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_extension_kind_known_values() {
+        assert_eq!(
+            parse_extension_kind("mcp_server"),
+            Some(crate::extensions::ExtensionKind::McpServer)
+        );
+        assert_eq!(
+            parse_extension_kind("wasm_tool"),
+            Some(crate::extensions::ExtensionKind::WasmTool)
+        );
+        assert_eq!(
+            parse_extension_kind("wasm_channel"),
+            Some(crate::extensions::ExtensionKind::WasmChannel)
+        );
+    }
+
+    #[test]
+    fn test_parse_extension_kind_unknown() {
+        assert!(parse_extension_kind("unknown").is_none());
+        assert!(parse_extension_kind("").is_none());
+    }
+
+    // ── docs_file_for ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_docs_file_for_known_extensions() {
+        assert_eq!(
+            docs_file_for("telegram"),
+            Some("TELEGRAM_SETUP".to_string())
+        );
+        assert_eq!(
+            docs_file_for("telegram-tool"),
+            Some("TELEGRAM_SETUP".to_string())
+        );
+        assert_eq!(docs_file_for("discord"), Some("DISCORD_SETUP".to_string()));
+        assert_eq!(docs_file_for("matrix"), Some("MATRIX_SETUP".to_string()));
+    }
+
+    #[test]
+    fn test_docs_file_for_unknown() {
+        assert!(docs_file_for("notion").is_none());
+        assert!(docs_file_for("gmail").is_none());
+    }
+
+    // ── build_dir_for ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_build_dir_for_wasm_buildable() {
+        let source = crate::extensions::ExtensionSource::WasmBuildable {
+            repo_url: "https://github.com/example/repo".to_string(),
+            build_dir: Some("tools-src/gmail".to_string()),
+        };
+        assert_eq!(build_dir_for(&source), Some("tools-src/gmail".to_string()));
+    }
+
+    #[test]
+    fn test_build_dir_for_wasm_buildable_no_dir() {
+        let source = crate::extensions::ExtensionSource::WasmBuildable {
+            repo_url: "https://github.com/example/repo".to_string(),
+            build_dir: None,
+        };
+        assert!(build_dir_for(&source).is_none());
+    }
+
+    #[test]
+    fn test_build_dir_for_non_buildable() {
+        let source = crate::extensions::ExtensionSource::McpUrl {
+            url: "https://mcp.example.com".to_string(),
+        };
+        assert!(build_dir_for(&source).is_none());
+    }
+
+    // ── source_is_installable ────────────────────────────────────────────
+
+    #[test]
+    fn test_source_is_installable_mcp_url() {
+        let source = crate::extensions::ExtensionSource::McpUrl {
+            url: "https://mcp.example.com".to_string(),
+        };
+        assert!(source_is_installable(&source));
+    }
+
+    #[test]
+    fn test_source_is_installable_wasm_buildable_is_not() {
+        let source = crate::extensions::ExtensionSource::WasmBuildable {
+            repo_url: "https://github.com/example/repo".to_string(),
+            build_dir: None,
+        };
+        assert!(!source_is_installable(&source));
+    }
+
+    // ── auth_hint_to_type ────────────────────────────────────────────────
+
+    #[test]
+    fn test_auth_hint_to_type() {
+        assert_eq!(auth_hint_to_type(&crate::extensions::AuthHint::Dcr), "dcr");
+        assert_eq!(
+            auth_hint_to_type(&crate::extensions::AuthHint::OAuthPreConfigured {
+                setup_url: "https://example.com".to_string()
+            }),
+            "oauth"
+        );
+        assert_eq!(
+            auth_hint_to_type(&crate::extensions::AuthHint::CapabilitiesAuth),
+            "manual"
+        );
+        assert_eq!(
+            auth_hint_to_type(&crate::extensions::AuthHint::None),
+            "none"
+        );
+    }
+
+    // ── build_turns_from_db_messages ─────────────────────────────────────
 
     #[test]
     fn test_build_turns_from_db_messages_complete() {

@@ -506,6 +506,7 @@ pub fn generate_webhook_secret() -> String {
 
 /// Result of WASM channel setup.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct WasmChannelSetupResult {
     pub enabled: bool,
     pub channel_name: String,
@@ -515,6 +516,7 @@ pub struct WasmChannelSetupResult {
 ///
 /// Reads setup requirements from the channel's capabilities file and
 /// prompts the user for each required secret.
+#[allow(dead_code)]
 pub async fn setup_wasm_channel(
     secrets: &SecretsContext,
     channel_name: &str,
@@ -610,6 +612,7 @@ pub async fn setup_wasm_channel(
 }
 
 /// Generate a random secret of specified length (in bytes).
+#[allow(dead_code)]
 fn generate_secret_with_length(length: usize) -> String {
     use rand::RngCore;
     let mut rng = rand::thread_rng();

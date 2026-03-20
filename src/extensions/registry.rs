@@ -156,6 +156,202 @@ fn score_entry(entry: &RegistryEntry, tokens: &[String]) -> u32 {
 /// Well-known extensions that ship with rustytalon.
 fn builtin_entries() -> Vec<RegistryEntry> {
     vec![
+        // -- WASM Channels --
+        RegistryEntry {
+            name: "telegram".to_string(),
+            display_name: "Telegram".to_string(),
+            kind: ExtensionKind::WasmChannel,
+            description: "Receive messages and send replies via a Telegram bot. Lets you interact with RustyTalon from your phone.".to_string(),
+            keywords: vec!["bot".into(), "mobile".into(), "messaging".into(), "chat".into()],
+            category: Some("communication".into()),
+            source: ExtensionSource::WasmBuildable {
+                repo_url: "https://github.com/rustytalon/rustytalon".to_string(),
+                build_dir: Some("channels-src/telegram".into()),
+            },
+            auth_hint: AuthHint::CapabilitiesAuth,
+        },
+        RegistryEntry {
+            name: "slack-channel".to_string(),
+            display_name: "Slack Channel".to_string(),
+            kind: ExtensionKind::WasmChannel,
+            description: "Receive Slack messages and respond inline. Lets you chat with RustyTalon from any Slack workspace.".to_string(),
+            keywords: vec!["team".into(), "messaging".into(), "workspace".into(), "chat".into()],
+            category: Some("communication".into()),
+            source: ExtensionSource::WasmBuildable {
+                repo_url: "https://github.com/rustytalon/rustytalon".to_string(),
+                build_dir: Some("channels-src/slack".into()),
+            },
+            auth_hint: AuthHint::CapabilitiesAuth,
+        },
+        RegistryEntry {
+            name: "discord".to_string(),
+            display_name: "Discord".to_string(),
+            kind: ExtensionKind::WasmChannel,
+            description: "Connect RustyTalon to a Discord server as a bot. Respond to messages in any channel.".to_string(),
+            keywords: vec!["gaming".into(), "community".into(), "bot".into(), "messaging".into()],
+            category: Some("communication".into()),
+            source: ExtensionSource::WasmBuildable {
+                repo_url: "https://github.com/rustytalon/rustytalon".to_string(),
+                build_dir: Some("channels-src/discord".into()),
+            },
+            auth_hint: AuthHint::CapabilitiesAuth,
+        },
+        RegistryEntry {
+            name: "whatsapp".to_string(),
+            display_name: "WhatsApp".to_string(),
+            kind: ExtensionKind::WasmChannel,
+            description: "Receive and respond to WhatsApp messages via the WhatsApp Business API.".to_string(),
+            keywords: vec!["mobile".into(), "messaging".into(), "sms".into()],
+            category: Some("communication".into()),
+            source: ExtensionSource::WasmBuildable {
+                repo_url: "https://github.com/rustytalon/rustytalon".to_string(),
+                build_dir: Some("channels-src/whatsapp".into()),
+            },
+            auth_hint: AuthHint::CapabilitiesAuth,
+        },
+        RegistryEntry {
+            name: "matrix".to_string(),
+            display_name: "Matrix".to_string(),
+            kind: ExtensionKind::WasmChannel,
+            description: "Join Matrix rooms and respond to messages. Works with Element and any Matrix-compatible client.".to_string(),
+            keywords: vec!["decentralized".into(), "open-source".into(), "messaging".into()],
+            category: Some("communication".into()),
+            source: ExtensionSource::WasmBuildable {
+                repo_url: "https://github.com/rustytalon/rustytalon".to_string(),
+                build_dir: Some("channels-src/matrix".into()),
+            },
+            auth_hint: AuthHint::CapabilitiesAuth,
+        },
+        // -- WASM Tools --
+        RegistryEntry {
+            name: "gmail".to_string(),
+            display_name: "Gmail".to_string(),
+            kind: ExtensionKind::WasmTool,
+            description: "Read, send, and manage Gmail messages. Search your inbox, draft replies, and handle attachments.".to_string(),
+            keywords: vec!["email".into(), "google".into(), "inbox".into(), "mail".into()],
+            category: Some("productivity".into()),
+            source: ExtensionSource::WasmBuildable {
+                repo_url: "https://github.com/rustytalon/rustytalon".to_string(),
+                build_dir: Some("tools-src/gmail".into()),
+            },
+            auth_hint: AuthHint::OAuthPreConfigured {
+                setup_url: "https://console.cloud.google.com/apis/credentials".to_string(),
+            },
+        },
+        RegistryEntry {
+            name: "google-calendar-tool".to_string(),
+            display_name: "Google Calendar".to_string(),
+            kind: ExtensionKind::WasmTool,
+            description: "Create, read, and update Google Calendar events. Schedule meetings and manage your schedule.".to_string(),
+            keywords: vec!["calendar".into(), "events".into(), "schedule".into(), "google".into(), "meetings".into()],
+            category: Some("productivity".into()),
+            source: ExtensionSource::WasmBuildable {
+                repo_url: "https://github.com/rustytalon/rustytalon".to_string(),
+                build_dir: Some("tools-src/google-calendar".into()),
+            },
+            auth_hint: AuthHint::OAuthPreConfigured {
+                setup_url: "https://console.cloud.google.com/apis/credentials".to_string(),
+            },
+        },
+        RegistryEntry {
+            name: "google-docs".to_string(),
+            display_name: "Google Docs".to_string(),
+            kind: ExtensionKind::WasmTool,
+            description: "Read and write Google Docs. Create documents, insert text, and export content.".to_string(),
+            keywords: vec!["docs".into(), "writing".into(), "documents".into(), "google".into()],
+            category: Some("productivity".into()),
+            source: ExtensionSource::WasmBuildable {
+                repo_url: "https://github.com/rustytalon/rustytalon".to_string(),
+                build_dir: Some("tools-src/google-docs".into()),
+            },
+            auth_hint: AuthHint::OAuthPreConfigured {
+                setup_url: "https://console.cloud.google.com/apis/credentials".to_string(),
+            },
+        },
+        RegistryEntry {
+            name: "google-drive".to_string(),
+            display_name: "Google Drive".to_string(),
+            kind: ExtensionKind::WasmTool,
+            description: "Browse, upload, and manage Google Drive files. Search across documents, sheets, and folders.".to_string(),
+            keywords: vec!["drive".into(), "files".into(), "storage".into(), "google".into(), "documents".into()],
+            category: Some("productivity".into()),
+            source: ExtensionSource::WasmBuildable {
+                repo_url: "https://github.com/rustytalon/rustytalon".to_string(),
+                build_dir: Some("tools-src/google-drive".into()),
+            },
+            auth_hint: AuthHint::OAuthPreConfigured {
+                setup_url: "https://console.cloud.google.com/apis/credentials".to_string(),
+            },
+        },
+        RegistryEntry {
+            name: "google-sheets".to_string(),
+            display_name: "Google Sheets".to_string(),
+            kind: ExtensionKind::WasmTool,
+            description: "Read, write, and analyze Google Sheets data. Query cells, update ranges, and run formulas.".to_string(),
+            keywords: vec!["spreadsheet".into(), "excel".into(), "data".into(), "google".into(), "sheets".into()],
+            category: Some("productivity".into()),
+            source: ExtensionSource::WasmBuildable {
+                repo_url: "https://github.com/rustytalon/rustytalon".to_string(),
+                build_dir: Some("tools-src/google-sheets".into()),
+            },
+            auth_hint: AuthHint::OAuthPreConfigured {
+                setup_url: "https://console.cloud.google.com/apis/credentials".to_string(),
+            },
+        },
+        RegistryEntry {
+            name: "google-slides".to_string(),
+            display_name: "Google Slides".to_string(),
+            kind: ExtensionKind::WasmTool,
+            description: "Create and update Google Slides presentations. Add slides, text, and images programmatically.".to_string(),
+            keywords: vec!["presentations".into(), "slides".into(), "powerpoint".into(), "google".into()],
+            category: Some("productivity".into()),
+            source: ExtensionSource::WasmBuildable {
+                repo_url: "https://github.com/rustytalon/rustytalon".to_string(),
+                build_dir: Some("tools-src/google-slides".into()),
+            },
+            auth_hint: AuthHint::OAuthPreConfigured {
+                setup_url: "https://console.cloud.google.com/apis/credentials".to_string(),
+            },
+        },
+        RegistryEntry {
+            name: "slack-tool".to_string(),
+            display_name: "Slack Tool".to_string(),
+            kind: ExtensionKind::WasmTool,
+            description: "Send messages to Slack channels and DMs, read channel history, and manage workspace data.".to_string(),
+            keywords: vec!["messaging".into(), "team".into(), "channels".into(), "communication".into()],
+            category: Some("communication".into()),
+            source: ExtensionSource::WasmBuildable {
+                repo_url: "https://github.com/rustytalon/rustytalon".to_string(),
+                build_dir: Some("tools-src/slack".into()),
+            },
+            auth_hint: AuthHint::CapabilitiesAuth,
+        },
+        RegistryEntry {
+            name: "telegram-tool".to_string(),
+            display_name: "Telegram Tool".to_string(),
+            kind: ExtensionKind::WasmTool,
+            description: "Send messages via Telegram bot API. Useful for notifications and outbound messaging.".to_string(),
+            keywords: vec!["bot".into(), "notifications".into(), "messaging".into()],
+            category: Some("communication".into()),
+            source: ExtensionSource::WasmBuildable {
+                repo_url: "https://github.com/rustytalon/rustytalon".to_string(),
+                build_dir: Some("tools-src/telegram".into()),
+            },
+            auth_hint: AuthHint::CapabilitiesAuth,
+        },
+        RegistryEntry {
+            name: "okta".to_string(),
+            display_name: "Okta".to_string(),
+            kind: ExtensionKind::WasmTool,
+            description: "Manage Okta users, groups, and applications. Query directory data and automate identity workflows.".to_string(),
+            keywords: vec!["identity".into(), "sso".into(), "users".into(), "directory".into(), "auth".into()],
+            category: Some("infrastructure".into()),
+            source: ExtensionSource::WasmBuildable {
+                repo_url: "https://github.com/rustytalon/rustytalon".to_string(),
+                build_dir: Some("tools-src/okta".into()),
+            },
+            auth_hint: AuthHint::CapabilitiesAuth,
+        },
         // -- MCP Servers --
         RegistryEntry {
             name: "notion".to_string(),
@@ -170,6 +366,7 @@ fn builtin_entries() -> Vec<RegistryEntry> {
                 "pages".into(),
                 "database".into(),
             ],
+            category: Some("productivity".into()),
             source: ExtensionSource::McpUrl {
                 url: "https://mcp.notion.com/mcp".to_string(),
             },
@@ -189,14 +386,15 @@ fn builtin_entries() -> Vec<RegistryEntry> {
                 "tracking".into(),
                 "bugs".into(),
             ],
+            category: Some("development".into()),
             source: ExtensionSource::McpUrl {
                 url: "https://mcp.linear.app".to_string(),
             },
             auth_hint: AuthHint::Dcr,
         },
         RegistryEntry {
-            name: "google-calendar".to_string(),
-            display_name: "Google Calendar".to_string(),
+            name: "google-calendar-mcp".to_string(),
+            display_name: "Google Calendar (MCP)".to_string(),
             kind: ExtensionKind::McpServer,
             description: "Connect to Google Calendar for managing events, schedules, and reminders"
                 .to_string(),
@@ -207,14 +405,15 @@ fn builtin_entries() -> Vec<RegistryEntry> {
                 "meetings".into(),
                 "google".into(),
             ],
+            category: Some("productivity".into()),
             source: ExtensionSource::McpUrl {
                 url: "https://mcp.google.com/calendar".to_string(),
             },
             auth_hint: AuthHint::Dcr,
         },
         RegistryEntry {
-            name: "google-drive".to_string(),
-            display_name: "Google Drive".to_string(),
+            name: "google-drive-mcp".to_string(),
+            display_name: "Google Drive (MCP)".to_string(),
             kind: ExtensionKind::McpServer,
             description: "Connect to Google Drive for file management, search, and document access"
                 .to_string(),
@@ -225,6 +424,7 @@ fn builtin_entries() -> Vec<RegistryEntry> {
                 "storage".into(),
                 "google".into(),
             ],
+            category: Some("productivity".into()),
             source: ExtensionSource::McpUrl {
                 url: "https://mcp.google.com/drive".to_string(),
             },
@@ -244,6 +444,7 @@ fn builtin_entries() -> Vec<RegistryEntry> {
                 "pull-request".into(),
                 "issues".into(),
             ],
+            category: Some("development".into()),
             source: ExtensionSource::McpUrl {
                 url: "https://mcp.github.com".to_string(),
             },
@@ -251,7 +452,7 @@ fn builtin_entries() -> Vec<RegistryEntry> {
         },
         RegistryEntry {
             name: "slack".to_string(),
-            display_name: "Slack".to_string(),
+            display_name: "Slack (MCP)".to_string(),
             kind: ExtensionKind::McpServer,
             description:
                 "Connect to Slack for messaging, channel management, and team communication"
@@ -263,6 +464,7 @@ fn builtin_entries() -> Vec<RegistryEntry> {
                 "team".into(),
                 "communication".into(),
             ],
+            category: Some("communication".into()),
             source: ExtensionSource::McpUrl {
                 url: "https://mcp.slack.com".to_string(),
             },
@@ -282,6 +484,7 @@ fn builtin_entries() -> Vec<RegistryEntry> {
                 "crashes".into(),
                 "performance".into(),
             ],
+            category: Some("development".into()),
             source: ExtensionSource::McpUrl {
                 url: "https://mcp.sentry.dev/sse".to_string(),
             },
@@ -301,6 +504,7 @@ fn builtin_entries() -> Vec<RegistryEntry> {
                 "invoices".into(),
                 "finance".into(),
             ],
+            category: Some("finance".into()),
             source: ExtensionSource::McpUrl {
                 url: "https://mcp.stripe.com".to_string(),
             },
@@ -320,6 +524,7 @@ fn builtin_entries() -> Vec<RegistryEntry> {
                 "hosting".into(),
                 "infrastructure".into(),
             ],
+            category: Some("infrastructure".into()),
             source: ExtensionSource::McpUrl {
                 url: "https://mcp.cloudflare.com/sse".to_string(),
             },
@@ -337,6 +542,7 @@ fn builtin_entries() -> Vec<RegistryEntry> {
                 "management".into(),
                 "team".into(),
             ],
+            category: Some("productivity".into()),
             source: ExtensionSource::McpUrl {
                 url: "https://mcp.asana.com".to_string(),
             },
@@ -355,6 +561,7 @@ fn builtin_entries() -> Vec<RegistryEntry> {
                 "chat".into(),
                 "helpdesk".into(),
             ],
+            category: Some("communication".into()),
             source: ExtensionSource::McpUrl {
                 url: "https://mcp.intercom.com".to_string(),
             },
@@ -379,6 +586,7 @@ mod tests {
             source: ExtensionSource::McpUrl {
                 url: "https://example.com".to_string(),
             },
+            category: None,
             auth_hint: AuthHint::Dcr,
         };
 
@@ -401,6 +609,7 @@ mod tests {
             source: ExtensionSource::McpUrl {
                 url: "https://example.com".to_string(),
             },
+            category: None,
             auth_hint: AuthHint::Dcr,
         };
 
@@ -423,6 +632,7 @@ mod tests {
             source: ExtensionSource::McpUrl {
                 url: "https://example.com".to_string(),
             },
+            category: None,
             auth_hint: AuthHint::Dcr,
         };
 
@@ -445,6 +655,7 @@ mod tests {
             source: ExtensionSource::McpUrl {
                 url: "https://example.com".to_string(),
             },
+            category: None,
             auth_hint: AuthHint::Dcr,
         };
 
@@ -508,6 +719,7 @@ mod tests {
             source: ExtensionSource::McpUrl {
                 url: "https://custom.example.com".to_string(),
             },
+            category: None,
             auth_hint: AuthHint::Dcr,
         };
 
@@ -533,6 +745,7 @@ mod tests {
             source: ExtensionSource::McpUrl {
                 url: "https://example.com".to_string(),
             },
+            category: None,
             auth_hint: AuthHint::None,
         };
 

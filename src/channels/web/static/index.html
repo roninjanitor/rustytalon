@@ -168,27 +168,49 @@
     <!-- Extensions Tab -->
     <div class="tab-panel" id="tab-extensions">
       <div class="extensions-container">
-        <div class="extensions-section">
-          <h3>Install Extension</h3>
-          <div class="ext-install-form" id="ext-install-form">
-            <input type="text" id="ext-install-name" placeholder="Extension name (required)">
-            <input type="text" id="ext-install-url" placeholder="URL (optional)">
-            <select id="ext-install-kind">
-              <option value="mcp_server">MCP Server</option>
-              <option value="wasm_tool">WASM Tool</option>
-              <option value="wasm_channel">WASM Channel</option>
-            </select>
-            <button onclick="installExtension()">Install</button>
+        <!-- Setup banner: shown when SECRETS_MASTER_KEY is not configured -->
+        <div class="ext-setup-banner" id="ext-setup-banner" style="display:none">
+          <div class="ext-setup-banner-icon">&#128274;</div>
+          <div class="ext-setup-banner-text">
+            <strong>Extension installation requires a master key</strong><br>
+            Set <code>SECRETS_MASTER_KEY</code> in your <code>.env</code> file to enable installing and authenticating extensions.
+            Generate one with: <code>openssl rand -base64 32</code><br>
+            <span class="ext-setup-banner-note">Browsing the catalog still works. You can install extensions once the key is configured and the server is restarted.</span>
           </div>
         </div>
-        <div class="extensions-section">
-          <h3>Installed Extensions</h3>
+
+        <!-- Sub-tab bar -->
+        <div class="ext-sub-tabs">
+          <button class="ext-sub-tab active" data-subtab="catalog">Catalog</button>
+          <button class="ext-sub-tab" data-subtab="installed">Installed</button>
+          <button class="ext-sub-tab" data-subtab="tools">Tools</button>
+        </div>
+
+        <!-- Catalog sub-tab -->
+        <div class="ext-panel active" id="ext-panel-catalog">
+          <div class="ext-catalog-toolbar">
+            <input type="text" id="ext-catalog-search" placeholder="Search extensions...">
+            <div class="ext-kind-filters">
+              <button class="ext-kind-filter active" data-kind="all">All</button>
+              <button class="ext-kind-filter" data-kind="wasm_channel">Channels</button>
+              <button class="ext-kind-filter" data-kind="wasm_tool">WASM Tools</button>
+              <button class="ext-kind-filter" data-kind="mcp_server">MCP</button>
+            </div>
+          </div>
+          <div class="catalog-grid" id="catalog-grid">
+            <div class="empty-state">Loading catalog...</div>
+          </div>
+        </div>
+
+        <!-- Installed sub-tab -->
+        <div class="ext-panel" id="ext-panel-installed">
           <div class="extensions-list" id="extensions-list">
-            <div class="empty-state">Loading extensions...</div>
+            <div class="empty-state">No extensions installed</div>
           </div>
         </div>
-        <div class="extensions-section">
-          <h3>Registered Tools</h3>
+
+        <!-- Tools sub-tab -->
+        <div class="ext-panel" id="ext-panel-tools">
           <table class="tools-table" id="tools-table">
             <thead>
               <tr>
@@ -201,6 +223,25 @@
           <div class="empty-state" id="tools-empty" style="display:none">No tools registered</div>
         </div>
       </div>
+
+      <!-- Wizard modal (hidden by default) -->
+      <div class="wizard-overlay" id="wizard-overlay" style="display:none">
+        <div class="wizard-modal" id="wizard-modal">
+          <button class="wizard-close" id="wizard-close-btn">&times;</button>
+          <div class="wizard-steps" id="wizard-steps"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Setup guide modal -->
+  <div class="wizard-overlay" id="setup-guide-overlay" style="display:none">
+    <div class="setup-guide-modal" id="setup-guide-modal">
+      <div class="setup-guide-header">
+        <span id="setup-guide-title"></span>
+        <button class="wizard-close" id="setup-guide-close">&times;</button>
+      </div>
+      <div class="setup-guide-body" id="setup-guide-body"></div>
     </div>
   </div>
 

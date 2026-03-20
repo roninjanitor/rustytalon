@@ -673,8 +673,7 @@ impl LlmRoutingConfig {
     pub fn to_routing_config(&self) -> crate::llm::routing::RoutingConfig {
         use crate::llm::routing::{RoutingConfig, RoutingStrategy};
 
-        let strategy =
-            RoutingStrategy::from_str(&self.strategy).unwrap_or(RoutingStrategy::Balanced);
+        let strategy = RoutingStrategy::parse(&self.strategy).unwrap_or(RoutingStrategy::Balanced);
 
         RoutingConfig {
             strategy,

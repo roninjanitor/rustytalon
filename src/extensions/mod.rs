@@ -59,6 +59,9 @@ pub struct RegistryEntry {
     /// Search keywords beyond the name.
     #[serde(default)]
     pub keywords: Vec<String>,
+    /// UI grouping category (e.g., "communication", "productivity", "development").
+    #[serde(default)]
+    pub category: Option<String>,
     /// Where to get this extension.
     pub source: ExtensionSource,
     /// How authentication works.
@@ -169,6 +172,48 @@ pub struct ActivateResult {
     pub message: String,
 }
 
+/// Computed status of an installed extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionStatus {
+    /// Installed, authenticated, and active.
+    Active,
+    /// Installed but not yet authenticated.
+    NeedsAuth,
+    /// Installed and authenticated but not active.
+    Inactive,
+    /// Installed but activation failed.
+    Error,
+}
+
+impl std::fmt::Display for ExtensionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExtensionStatus::Active => write!(f, "active"),
+            ExtensionStatus::NeedsAuth => write!(f, "needs_auth"),
+            ExtensionStatus::Inactive => write!(f, "inactive"),
+            ExtensionStatus::Error => write!(f, "error"),
+        }
+    }
+}
+
+/// Auth information for an extension, used by the setup wizard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtensionAuthInfo {
+    pub name: String,
+    /// "dcr" | "oauth" | "manual" | "none"
+    pub auth_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    pub oauth_available: bool,
+}
+
 /// An installed extension with its current status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledExtension {
@@ -181,6 +226,11 @@ pub struct InstalledExtension {
     pub url: Option<String>,
     pub authenticated: bool,
     pub active: bool,
+    /// Computed status for UI display.
+    pub status: ExtensionStatus,
+    /// Last activation error message, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     /// Tool names if active.
     #[serde(default)]
     pub tools: Vec<String>,

@@ -6,9 +6,13 @@ RustyTalon is configured entirely through environment variables. Copy `.env.exam
 cp .env.example .env
 ```
 
-Only two things are required to get started:
+The minimum required to get started:
 1. A database connection (or the libSQL embedded default)
 2. At least one LLM provider API key
+
+To use extensions (Telegram, Discord, Google tools, MCP servers, etc.), you also need:
+
+3. `SECRETS_MASTER_KEY` — see [Secrets & Extension Management](#secrets--extension-management)
 
 ---
 
@@ -165,6 +169,29 @@ See [TELEGRAM_SETUP.md](TELEGRAM_SETUP.md) for full setup instructions.
 | `SLACK_BOT_TOKEN` | — | Bot OAuth token (`xoxb-...`) |
 | `SLACK_APP_TOKEN` | — | App-level token (`xapp-...`) |
 | `SLACK_SIGNING_SECRET` | — | Signing secret for request validation |
+
+---
+
+## Secrets & Extension Management
+
+Required to install and authenticate extensions (WASM tools, MCP servers, messaging channels).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SECRETS_MASTER_KEY` | — | Base64-encoded 32-byte key for AES-256-GCM encryption of stored credentials |
+
+**Generate a key:**
+
+```bash
+openssl rand -base64 32
+```
+
+Without this key:
+- The extension catalog is still browsable
+- Install, authenticate, and activate actions are disabled
+- The web UI displays a setup banner with instructions
+
+> **Security note:** The master key encrypts API tokens and OAuth secrets at rest. Keep it safe — losing it means re-authenticating all installed extensions. For production deployments, consider using the OS keychain (RustyTalon will auto-detect a key stored there).
 
 ---
 

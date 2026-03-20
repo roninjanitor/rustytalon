@@ -13,8 +13,9 @@ use tokio::sync::RwLock;
 use crate::extensions::discovery::OnlineDiscovery;
 use crate::extensions::registry::ExtensionRegistry;
 use crate::extensions::{
-    ActivateResult, AuthResult, ExtensionError, ExtensionKind, ExtensionSource, InstallResult,
-    InstalledExtension, RegistryEntry, ResultSource, SearchResult,
+    ActivateResult, AuthHint, AuthResult, ExtensionAuthInfo, ExtensionError, ExtensionKind,
+    ExtensionSource, ExtensionStatus, InstallResult, InstalledExtension, RegistryEntry,
+    ResultSource, SearchResult,
 };
 use crate::secrets::{CreateSecretParams, SecretsStore};
 use crate::tools::ToolRegistry;
@@ -53,6 +54,8 @@ pub struct ExtensionManager {
     secrets: Arc<dyn SecretsStore + Send + Sync>,
     tool_registry: Arc<ToolRegistry>,
     pending_auth: RwLock<HashMap<String, PendingAuth>>,
+    /// Cached last activation error per extension name.
+    activation_errors: RwLock<HashMap<String, String>>,
     /// Tunnel URL for remote OAuth callbacks (used in future iterations).
     _tunnel_url: Option<String>,
     user_id: String,
@@ -84,6 +87,7 @@ impl ExtensionManager {
             secrets,
             tool_registry,
             pending_auth: RwLock::new(HashMap::new()),
+            activation_errors: RwLock::new(HashMap::new()),
             _tunnel_url: tunnel_url,
             user_id,
             store,
@@ -177,11 +181,25 @@ impl ExtensionManager {
     pub async fn activate(&self, name: &str) -> Result<ActivateResult, ExtensionError> {
         let kind = self.determine_installed_kind(name).await?;
 
-        match kind {
+        let result = match kind {
             ExtensionKind::McpServer => self.activate_mcp(name).await,
             ExtensionKind::WasmTool => self.activate_wasm_tool(name).await,
             ExtensionKind::WasmChannel => Err(ExtensionError::ChannelNeedsRestart),
+        };
+
+        match &result {
+            Ok(_) => {
+                self.activation_errors.write().await.remove(name);
+            }
+            Err(e) => {
+                self.activation_errors
+                    .write()
+                    .await
+                    .insert(name.to_string(), e.to_string());
+            }
         }
+
+        result
     }
 
     /// List all installed extensions with their status.
@@ -213,6 +231,9 @@ impl ExtensionManager {
                             Vec::new()
                         };
 
+                        let errors = self.activation_errors.read().await;
+                        let error = errors.get(&server.name).cloned();
+                        let status = compute_status(authenticated, active, error.is_some());
                         extensions.push(InstalledExtension {
                             name: server.name.clone(),
                             kind: ExtensionKind::McpServer,
@@ -220,6 +241,8 @@ impl ExtensionManager {
                             url: Some(server.url.clone()),
                             authenticated,
                             active,
+                            status,
+                            error,
                             tools,
                         });
                     }
@@ -239,6 +262,9 @@ impl ExtensionManager {
                     for (name, _discovered) in tools {
                         let active = self.tool_registry.has(&name).await;
 
+                        let errors = self.activation_errors.read().await;
+                        let error = errors.get(&name).cloned();
+                        let status = compute_status(true, active, error.is_some());
                         extensions.push(InstalledExtension {
                             name: name.clone(),
                             kind: ExtensionKind::WasmTool,
@@ -246,6 +272,8 @@ impl ExtensionManager {
                             url: None,
                             authenticated: true, // WASM tools don't always need auth
                             active,
+                            status,
+                            error,
                             tools: if active { vec![name] } else { Vec::new() },
                         });
                     }
@@ -270,6 +298,8 @@ impl ExtensionManager {
                             url: None,
                             authenticated: true,
                             active: true, // If loaded at startup, they're active
+                            status: ExtensionStatus::Active,
+                            error: None,
                             tools: Vec::new(),
                         });
                     }
@@ -342,6 +372,53 @@ impl ExtensionManager {
                     .to_string(),
             )),
         }
+    }
+
+    /// Get auth setup information for an extension, used by the web UI wizard.
+    pub async fn get_auth_info(&self, name: &str) -> Result<ExtensionAuthInfo, ExtensionError> {
+        // Try the registry first for the auth_hint
+        if let Some(entry) = self.registry.get(name).await {
+            return Ok(auth_info_from_entry(&entry, name));
+        }
+
+        // For installed WASM tools, try reading the capabilities.json
+        let cap_path = self
+            .wasm_tools_dir
+            .join(format!("{}.capabilities.json", name));
+        if cap_path.exists() {
+            if let Ok(data) = tokio::fs::read_to_string(&cap_path).await {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
+                    return Ok(auth_info_from_capabilities(&json, name));
+                }
+            }
+        }
+
+        // For installed WASM channels, try the channels dir
+        let ch_cap_path = self
+            .wasm_channels_dir
+            .join(format!("{}.capabilities.json", name));
+        if ch_cap_path.exists() {
+            if let Ok(data) = tokio::fs::read_to_string(&ch_cap_path).await {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
+                    return Ok(auth_info_from_capabilities(&json, name));
+                }
+            }
+        }
+
+        // For installed MCP servers, derive from config
+        if let Ok(server) = self.get_mcp_server(name).await {
+            return Ok(ExtensionAuthInfo {
+                name: name.to_string(),
+                auth_type: "dcr".to_string(),
+                instructions: None,
+                setup_url: None,
+                token_hint: None,
+                display_name: server.description.clone(),
+                oauth_available: true,
+            });
+        }
+
+        Err(ExtensionError::NotFound(name.to_string()))
     }
 
     // ── MCP config helpers (DB with disk fallback) ─────────────────────
@@ -1019,10 +1096,120 @@ fn infer_kind_from_url(url: &str) -> ExtensionKind {
     }
 }
 
+/// Compute the display status of an extension from its auth/active state.
+fn compute_status(authenticated: bool, active: bool, has_error: bool) -> ExtensionStatus {
+    if active {
+        ExtensionStatus::Active
+    } else if has_error {
+        ExtensionStatus::Error
+    } else if !authenticated {
+        ExtensionStatus::NeedsAuth
+    } else {
+        ExtensionStatus::Inactive
+    }
+}
+
+/// Derive auth info from a registry entry (public for use by web handlers).
+pub fn auth_info_from_entry_pub(entry: &RegistryEntry, name: &str) -> ExtensionAuthInfo {
+    auth_info_from_entry(entry, name)
+}
+
+/// Derive auth info from a registry entry.
+fn auth_info_from_entry(entry: &RegistryEntry, name: &str) -> ExtensionAuthInfo {
+    match &entry.auth_hint {
+        AuthHint::Dcr => ExtensionAuthInfo {
+            name: name.to_string(),
+            auth_type: "dcr".to_string(),
+            instructions: None,
+            setup_url: None,
+            token_hint: None,
+            display_name: Some(entry.display_name.clone()),
+            oauth_available: true,
+        },
+        AuthHint::OAuthPreConfigured { setup_url } => ExtensionAuthInfo {
+            name: name.to_string(),
+            auth_type: "oauth".to_string(),
+            instructions: Some(format!(
+                "Set up OAuth credentials for {} at the link below, then click Authorize.",
+                entry.display_name
+            )),
+            setup_url: Some(setup_url.clone()),
+            token_hint: None,
+            display_name: Some(entry.display_name.clone()),
+            oauth_available: true,
+        },
+        AuthHint::CapabilitiesAuth => ExtensionAuthInfo {
+            name: name.to_string(),
+            auth_type: "manual".to_string(),
+            instructions: Some(format!("Enter your API token for {}.", entry.display_name)),
+            setup_url: None,
+            token_hint: None,
+            display_name: Some(entry.display_name.clone()),
+            oauth_available: false,
+        },
+        AuthHint::None => ExtensionAuthInfo {
+            name: name.to_string(),
+            auth_type: "none".to_string(),
+            instructions: None,
+            setup_url: None,
+            token_hint: None,
+            display_name: Some(entry.display_name.clone()),
+            oauth_available: false,
+        },
+    }
+}
+
+/// Derive auth info from a parsed capabilities.json value.
+fn auth_info_from_capabilities(json: &serde_json::Value, name: &str) -> ExtensionAuthInfo {
+    let auth = json.get("auth");
+    let display_name = auth
+        .and_then(|a| a.get("display_name"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let instructions = auth
+        .and_then(|a| a.get("instructions"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let setup_url = auth
+        .and_then(|a| a.get("setup_url"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let token_hint = auth
+        .and_then(|a| a.get("token_hint"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let oauth_available = auth.and_then(|a| a.get("oauth")).is_some();
+    let auth_type = if oauth_available {
+        "oauth".to_string()
+    } else if auth.is_some() {
+        "manual".to_string()
+    } else {
+        "none".to_string()
+    };
+
+    ExtensionAuthInfo {
+        name: name.to_string(),
+        auth_type,
+        instructions,
+        setup_url,
+        token_hint,
+        display_name,
+        oauth_available,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::extensions::ExtensionKind;
-    use crate::extensions::manager::infer_kind_from_url;
+    use crate::extensions::manager::{auth_info_from_entry_pub, infer_kind_from_url};
+    use crate::extensions::{AuthHint, ExtensionKind, ExtensionSource, RegistryEntry};
+
+    use super::{ExtensionStatus, auth_info_from_capabilities, compute_status};
+
+    // ── infer_kind_from_url ──────────────────────────────────────────────
 
     #[test]
     fn test_infer_kind_from_url() {
@@ -1038,5 +1225,154 @@ mod tests {
             infer_kind_from_url("https://example.com/mcp"),
             ExtensionKind::McpServer
         );
+    }
+
+    // ── compute_status ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_compute_status_active_wins_over_error() {
+        // active=true takes priority even when has_error=true
+        assert_eq!(compute_status(true, true, true), ExtensionStatus::Active);
+    }
+
+    #[test]
+    fn test_compute_status_active() {
+        assert_eq!(compute_status(true, true, false), ExtensionStatus::Active);
+    }
+
+    #[test]
+    fn test_compute_status_error() {
+        assert_eq!(compute_status(true, false, true), ExtensionStatus::Error);
+    }
+
+    #[test]
+    fn test_compute_status_needs_auth() {
+        assert_eq!(
+            compute_status(false, false, false),
+            ExtensionStatus::NeedsAuth
+        );
+    }
+
+    #[test]
+    fn test_compute_status_inactive() {
+        // authenticated, not active, no error
+        assert_eq!(
+            compute_status(true, false, false),
+            ExtensionStatus::Inactive
+        );
+    }
+
+    // ── auth_info_from_entry ─────────────────────────────────────────────
+
+    fn make_entry(auth_hint: AuthHint) -> RegistryEntry {
+        RegistryEntry {
+            name: "test-ext".to_string(),
+            display_name: "Test Extension".to_string(),
+            kind: ExtensionKind::WasmTool,
+            description: "A test extension".to_string(),
+            keywords: vec![],
+            category: None,
+            source: ExtensionSource::McpUrl {
+                url: "https://example.com".to_string(),
+            },
+            auth_hint,
+        }
+    }
+
+    #[test]
+    fn test_auth_info_from_entry_dcr() {
+        let entry = make_entry(AuthHint::Dcr);
+        let info = auth_info_from_entry_pub(&entry, "test-ext");
+        assert_eq!(info.auth_type, "dcr");
+        assert!(info.oauth_available);
+        assert!(info.instructions.is_none());
+        assert_eq!(info.display_name.as_deref(), Some("Test Extension"));
+    }
+
+    #[test]
+    fn test_auth_info_from_entry_oauth() {
+        let entry = make_entry(AuthHint::OAuthPreConfigured {
+            setup_url: "https://console.example.com/credentials".to_string(),
+        });
+        let info = auth_info_from_entry_pub(&entry, "test-ext");
+        assert_eq!(info.auth_type, "oauth");
+        assert!(info.oauth_available);
+        assert_eq!(
+            info.setup_url.as_deref(),
+            Some("https://console.example.com/credentials")
+        );
+        assert!(info.instructions.is_some());
+    }
+
+    #[test]
+    fn test_auth_info_from_entry_capabilities_auth() {
+        let entry = make_entry(AuthHint::CapabilitiesAuth);
+        let info = auth_info_from_entry_pub(&entry, "test-ext");
+        assert_eq!(info.auth_type, "manual");
+        assert!(!info.oauth_available);
+        assert!(info.instructions.is_some());
+        assert!(info.setup_url.is_none());
+    }
+
+    #[test]
+    fn test_auth_info_from_entry_none() {
+        let entry = make_entry(AuthHint::None);
+        let info = auth_info_from_entry_pub(&entry, "test-ext");
+        assert_eq!(info.auth_type, "none");
+        assert!(!info.oauth_available);
+        assert!(info.instructions.is_none());
+    }
+
+    // ── auth_info_from_capabilities ──────────────────────────────────────
+
+    #[test]
+    fn test_auth_info_from_capabilities_no_auth_block() {
+        let json = serde_json::json!({ "name": "my-tool" });
+        let info = auth_info_from_capabilities(&json, "my-tool");
+        assert_eq!(info.auth_type, "none");
+        assert!(!info.oauth_available);
+        assert!(info.instructions.is_none());
+        assert!(info.display_name.is_none());
+    }
+
+    #[test]
+    fn test_auth_info_from_capabilities_manual_token() {
+        let json = serde_json::json!({
+            "auth": {
+                "display_name": "My Service",
+                "instructions": "Go to example.com/tokens",
+                "setup_url": "https://example.com/tokens",
+                "token_hint": "Starts with 'sk-'"
+            }
+        });
+        let info = auth_info_from_capabilities(&json, "my-tool");
+        assert_eq!(info.auth_type, "manual");
+        assert!(!info.oauth_available);
+        assert_eq!(info.display_name.as_deref(), Some("My Service"));
+        assert_eq!(
+            info.instructions.as_deref(),
+            Some("Go to example.com/tokens")
+        );
+        assert_eq!(
+            info.setup_url.as_deref(),
+            Some("https://example.com/tokens")
+        );
+        assert_eq!(info.token_hint.as_deref(), Some("Starts with 'sk-'"));
+    }
+
+    #[test]
+    fn test_auth_info_from_capabilities_oauth() {
+        let json = serde_json::json!({
+            "auth": {
+                "display_name": "Google",
+                "oauth": {
+                    "authorization_url": "https://accounts.google.com/o/oauth2/auth"
+                }
+            }
+        });
+        let info = auth_info_from_capabilities(&json, "gmail");
+        assert_eq!(info.auth_type, "oauth");
+        assert!(info.oauth_available);
+        assert_eq!(info.display_name.as_deref(), Some("Google"));
     }
 }

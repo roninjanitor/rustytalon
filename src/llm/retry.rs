@@ -8,6 +8,7 @@ use std::time::Duration;
 use rand::Rng;
 
 /// Returns `true` if the HTTP status code is transient and worth retrying.
+#[allow(dead_code)]
 pub(crate) fn is_retryable_status(status: u16) -> bool {
     matches!(status, 429 | 500 | 502 | 503 | 504)
 }

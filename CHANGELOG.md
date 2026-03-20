@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-03-20
+
+### Added
+- Extension catalog API (`GET /api/extensions/catalog`, `POST /api/extensions/catalog/search`) — browseable registry of all known extensions with category, auth type, install status, and build metadata
+- Extension auth info endpoint (`GET /api/extensions/{name}/auth-info`) — returns structured auth instructions and OAuth availability for the setup wizard
+- `ExtensionStatus` enum (`active` | `needs_auth` | `inactive` | `error`) — computed status now included in every `InstalledExtension` response
+- `ExtensionAuthInfo` type — structured auth metadata (type, instructions, setup URL, token hint, OAuth flag) returned by the new auth-info endpoint
+- Activation error tracking in `ExtensionManager` — last activation error per extension persisted in memory and surfaced in list responses
+- `category` field on `RegistryEntry` — groups extensions by domain (e.g. `communication`, `productivity`, `infrastructure`) for catalog filtering
+- 18 new built-in registry entries: Telegram, Slack, Discord, WhatsApp, Matrix channels; Gmail, Google Calendar, Docs, Drive, Sheets, Slides, Slack Tool, Telegram Tool, Okta WASM tools
+- Docs endpoint (`GET /api/docs/{name}`) — serves allowlisted Markdown documentation files for in-app help rendering
+- Web UI: extension catalog browser, per-extension auth setup wizard, docs viewer panel, extension status badges
+
+### Changed
+- `InstalledExtension` now includes `status` (`ExtensionStatus`) and `error` (last activation failure message, if any)
+
 ## [0.1.4] - 2026-03-19
 
 ### Added
