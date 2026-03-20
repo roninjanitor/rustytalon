@@ -47,5 +47,27 @@
     "owner_id": null,
     "dm_policy": "pairing",
     "allow_from": []
+  },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "owner_id": {
+        "type": "string",
+        "nullable": true,
+        "description": "Your Discord user ID. Only messages from this user will be processed. Leave blank to allow anyone."
+      },
+      "dm_policy": {
+        "type": "string",
+        "enum": ["pairing", "owner_only", "anyone"],
+        "default": "pairing",
+        "description": "Who can send DMs to the bot. 'pairing' requires a /pair command first."
+      },
+      "allow_from": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": [],
+        "description": "Additional Discord user IDs allowed to send messages (comma-separated)."
+      }
+    }
   }
 }

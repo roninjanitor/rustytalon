@@ -343,6 +343,10 @@ pub struct ExtensionInfo {
     pub url: Option<String>,
     pub authenticated: bool,
     pub active: bool,
+    /// Always `true` — every entry returned by the installed-list endpoint is installed.
+    /// Included so the setup wizard (shared with the catalog flow) can tell the
+    /// difference and skip the install step.
+    pub installed: bool,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -399,6 +403,30 @@ pub struct CatalogSearchRequest {
 #[derive(Debug, Serialize)]
 pub struct ExtensionAuthInfoResponse {
     pub info: crate::extensions::ExtensionAuthInfo,
+}
+
+// --- Extension config ---
+
+/// Response for `GET /api/extensions/{name}/config`.
+/// Returns the JSON Schema for non-secret config fields plus the current saved values.
+#[derive(Debug, Serialize)]
+pub struct ExtensionConfigResponse {
+    pub name: String,
+    /// JSON Schema (`type: object` with `properties`) describing configurable fields.
+    /// `None` if the extension has no `config_schema`.
+    pub schema: Option<serde_json::Value>,
+    /// Current saved values keyed by field name.
+    /// Missing keys mean the field has no saved value; callers should fall back to the
+    /// schema `default`.
+    pub values: std::collections::HashMap<String, serde_json::Value>,
+}
+
+/// Request body for `PUT /api/extensions/{name}/config`.
+#[derive(Debug, Deserialize)]
+pub struct ExtensionConfigWriteRequest {
+    /// Field name → new value. Only present keys are written.
+    /// Sending `null` for a key deletes that setting.
+    pub values: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -940,6 +968,66 @@ mod tests {
         let json = r#"{"extension_name":"telegram"}"#;
         let req: AuthCancelRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.extension_name, "telegram");
+    }
+
+    // ---- ExtensionConfigResponse / ExtensionConfigWriteRequest ----
+
+    #[test]
+    fn test_extension_config_response_serialize_with_schema() {
+        let mut values = std::collections::HashMap::new();
+        values.insert("owner_id".to_string(), serde_json::json!("12345"));
+        values.insert("dm_policy".to_string(), serde_json::json!("owner_only"));
+        let resp = ExtensionConfigResponse {
+            name: "discord".to_string(),
+            schema: Some(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "owner_id": { "type": "string", "nullable": true },
+                    "dm_policy": { "type": "string", "enum": ["pairing", "owner_only", "anyone"] }
+                }
+            })),
+            values,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "discord");
+        assert!(json["schema"]["properties"].get("owner_id").is_some());
+        assert_eq!(json["values"]["owner_id"], "12345");
+        assert_eq!(json["values"]["dm_policy"], "owner_only");
+    }
+
+    #[test]
+    fn test_extension_config_response_serialize_no_schema() {
+        let resp = ExtensionConfigResponse {
+            name: "unknown_ext".to_string(),
+            schema: None,
+            values: std::collections::HashMap::new(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "unknown_ext");
+        assert!(json["schema"].is_null());
+        assert!(json["values"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_extension_config_write_request_deserialize() {
+        let json = r#"{"values":{"owner_id":"99","dm_policy":"owner_only"}}"#;
+        let req: ExtensionConfigWriteRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.values["owner_id"], "99");
+        assert_eq!(req.values["dm_policy"], "owner_only");
+    }
+
+    #[test]
+    fn test_extension_config_write_request_null_means_delete() {
+        let json = r#"{"values":{"owner_id":null}}"#;
+        let req: ExtensionConfigWriteRequest = serde_json::from_str(json).unwrap();
+        assert!(req.values["owner_id"].is_null());
+    }
+
+    #[test]
+    fn test_extension_config_write_request_empty_values() {
+        let json = r#"{"values":{}}"#;
+        let req: ExtensionConfigWriteRequest = serde_json::from_str(json).unwrap();
+        assert!(req.values.is_empty());
     }
 }
 
