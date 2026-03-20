@@ -1,0 +1,42 @@
+{
+  "http": {
+    "allowlist": [
+      {
+        "host": "*.matrix.org",
+        "path_prefix": "/_matrix/client/",
+        "methods": ["GET", "POST", "PUT"]
+      },
+      {
+        "host_env": "MATRIX_HOMESERVER_HOST",
+        "path_prefix": "/_matrix/client/",
+        "methods": ["GET", "POST", "PUT"]
+      }
+    ],
+    "credentials": {
+      "matrix_access_token": {
+        "secret_name": "matrix_access_token",
+        "location": { "type": "bearer" },
+        "host_patterns": ["*.matrix.org", "${MATRIX_HOMESERVER_HOST}"]
+      }
+    },
+    "rate_limit": {
+      "requests_per_minute": 60,
+      "requests_per_hour": 1000
+    },
+    "timeout_secs": 30
+  },
+  "workspace": {
+    "allowed_prefixes": ["matrix/"]
+  },
+  "secrets": {
+    "allowed_names": ["matrix_access_token"]
+  },
+  "auth": {
+    "secret_name": "matrix_access_token",
+    "display_name": "Matrix",
+    "instructions": "1. Log in to your Matrix account (e.g., via Element at https://app.element.io)\n2. Go to Settings > Help & About > Advanced\n3. Copy your Access Token\n4. If using a custom homeserver, set MATRIX_HOMESERVER env var\n   (e.g., MATRIX_HOMESERVER=https://matrix.example.com)\n   Default: https://matrix-client.matrix.org\n5. Store your homeserver URL in workspace at matrix/homeserver\n   (just the base URL, e.g., https://matrix-client.matrix.org)",
+    "setup_url": "https://app.element.io",
+    "token_hint": "Starts with 'syt_' (Synapse) or 'md_' (Dendrite)",
+    "env_var": "MATRIX_ACCESS_TOKEN"
+  }
+}

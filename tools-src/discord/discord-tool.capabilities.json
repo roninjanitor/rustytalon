@@ -1,0 +1,42 @@
+{
+  "http": {
+    "allowlist": [
+      {
+        "host": "discord.com",
+        "path_prefix": "/api/v10/",
+        "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+      }
+    ],
+    "credentials": {
+      "discord_bot_token": {
+        "secret_name": "discord_bot_token",
+        "location": { "type": "bearer", "prefix": "Bot " },
+        "host_patterns": ["discord.com"]
+      }
+    },
+    "rate_limit": {
+      "requests_per_minute": 50,
+      "requests_per_hour": 1000
+    },
+    "timeout_secs": 30
+  },
+  "secrets": {
+    "allowed_names": ["discord_bot_token"]
+  },
+  "auth": {
+    "secret_name": "discord_bot_token",
+    "display_name": "Discord",
+    "oauth": {
+      "authorization_url": "https://discord.com/oauth2/authorize",
+      "token_url": "https://discord.com/api/v10/oauth2/token",
+      "client_id_env": "DISCORD_OAUTH_CLIENT_ID",
+      "client_secret_env": "DISCORD_OAUTH_CLIENT_SECRET",
+      "scopes": ["bot", "identify"],
+      "use_pkce": false
+    },
+    "instructions": "1. Create a Discord Application at https://discord.com/developers/applications\n2. Go to the Bot section and create a bot\n3. Enable the Message Content Intent under Privileged Gateway Intents\n4. Copy the Bot Token (click 'Reset Token' if needed)\n5. Under OAuth2 > URL Generator, select 'bot' scope with permissions:\n   Send Messages, Read Message History, Add Reactions, View Channels\n6. Use the generated URL to invite the bot to your server",
+    "setup_url": "https://discord.com/developers/applications",
+    "token_hint": "Starts with a base64-encoded string (e.g., 'MTIz...')",
+    "env_var": "DISCORD_BOT_TOKEN"
+  }
+}
