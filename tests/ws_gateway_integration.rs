@@ -54,6 +54,7 @@ async fn start_test_server() -> (
         llm_provider: None,
         smart_router: None,
         chat_rate_limiter: rustytalon::channels::web::server::RateLimiter::new(30, 60),
+        wasm_channels: vec![],
     });
 
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
