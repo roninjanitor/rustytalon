@@ -993,6 +993,21 @@ async fn main() -> anyhow::Result<()> {
                             has_webhook_channels = true;
 
                             if let Some(ref secrets) = secrets_store {
+                                // Bootstrap any env var credentials into the DB (Docker-friendly).
+                                // Runs on every startup but skips secrets that are already stored.
+                                if let Err(e) = bootstrap_channel_secrets_from_env(
+                                    secrets.as_ref(),
+                                    &channel_name,
+                                )
+                                .await
+                                {
+                                    tracing::warn!(
+                                        channel = %channel_name,
+                                        error = %e,
+                                        "Failed to bootstrap channel secrets from env"
+                                    );
+                                }
+
                                 match inject_channel_credentials(
                                     &channel_arc,
                                     secrets.as_ref(),
@@ -1014,6 +1029,21 @@ async fn main() -> anyhow::Result<()> {
                                             channel = %channel_name,
                                             error = %e,
                                             "Failed to inject channel credentials"
+                                        );
+                                    }
+                                }
+                            } else {
+                                // No secrets store (no SECRETS_MASTER_KEY).
+                                // Fall back to injecting env var credentials directly so
+                                // Docker deployments work without encryption configured.
+                                let prefix = format!("{}_", channel_name.to_uppercase());
+                                for (key, value) in std::env::vars() {
+                                    if key.starts_with(&prefix) && !value.is_empty() {
+                                        channel_arc.set_credential(&key, value).await;
+                                        tracing::info!(
+                                            channel = %channel_name,
+                                            env_var = %key,
+                                            "Injected channel credential directly from env var"
                                         );
                                     }
                                 }
@@ -1207,6 +1237,7 @@ async fn main() -> anyhow::Result<()> {
         if let Some(ref router) = smart_router {
             gw = gw.with_smart_router(Arc::clone(router));
         }
+        gw = gw.with_wasm_channels(loaded_wasm_channel_names.clone());
         if config.sandbox.enabled {
             gw = gw.with_prompt_queue(Arc::clone(&prompt_queue));
 
@@ -1286,6 +1317,58 @@ fn check_onboard_needed() -> Option<&'static str> {
     }
 
     None
+}
+
+/// Bootstrap channel credentials from environment variables into the secrets store.
+///
+/// For Docker deployments: if secrets like `DISCORD_BOT_TOKEN` are provided as
+/// environment variables, this stores them encrypted in the DB on first run so
+/// that `inject_channel_credentials` picks them up — no CLI required.
+///
+/// Returns the number of new secrets stored.
+async fn bootstrap_channel_secrets_from_env(
+    secrets: &dyn SecretsStore,
+    channel_name: &str,
+) -> anyhow::Result<usize> {
+    use rustytalon::secrets::CreateSecretParams;
+
+    let prefix = format!("{}_", channel_name.to_uppercase());
+    let mut bootstrapped = 0;
+
+    for (key, value) in std::env::vars() {
+        if !key.starts_with(&prefix) || value.is_empty() {
+            continue;
+        }
+
+        let secret_name = key.to_lowercase();
+
+        // Skip if already stored — don't overwrite manually configured secrets.
+        if secrets.get_decrypted("default", &secret_name).await.is_ok() {
+            continue;
+        }
+
+        let params = CreateSecretParams::new(&secret_name, &value).with_provider(channel_name);
+
+        match secrets.create("default", params).await {
+            Ok(_) => {
+                tracing::info!(
+                    channel = %channel_name,
+                    secret = %secret_name,
+                    "Bootstrapped channel secret from environment variable"
+                );
+                bootstrapped += 1;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    secret = %secret_name,
+                    error = %e,
+                    "Failed to bootstrap channel secret from env var"
+                );
+            }
+        }
+    }
+
+    Ok(bootstrapped)
 }
 
 /// Inject credentials for a channel based on naming convention.

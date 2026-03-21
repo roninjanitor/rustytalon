@@ -143,6 +143,8 @@ pub struct GatewayState {
     pub smart_router: Option<Arc<crate::llm::routing::SmartRouter>>,
     /// Rate limiter for chat endpoints (30 messages per 60 seconds).
     pub chat_rate_limiter: RateLimiter,
+    /// WASM channels loaded at startup: (name, description).
+    pub wasm_channels: Vec<(String, Option<String>)>,
 }
 
 /// Start the gateway HTTP server.
@@ -201,6 +203,8 @@ pub async fn start_server(
         .route("/api/jobs/{id}/files/read", get(job_files_read_handler))
         // Logs
         .route("/api/logs/events", get(logs_events_handler))
+        // Channels
+        .route("/api/channels", get(channels_list_handler))
         // Extensions
         .route("/api/extensions", get(extensions_list_handler))
         .route("/api/extensions/tools", get(extensions_tools_handler))
@@ -1647,6 +1651,23 @@ fn auth_hint_to_type(hint: &crate::extensions::AuthHint) -> String {
         crate::extensions::AuthHint::CapabilitiesAuth => "manual".to_string(),
         crate::extensions::AuthHint::None => "none".to_string(),
     }
+}
+
+// --- Channel handlers ---
+
+async fn channels_list_handler(
+    State(state): State<Arc<GatewayState>>,
+) -> Json<ChannelListResponse> {
+    let channels = state
+        .wasm_channels
+        .iter()
+        .map(|(name, desc)| ChannelInfo {
+            name: name.clone(),
+            description: desc.clone(),
+            running: true,
+        })
+        .collect();
+    Json(ChannelListResponse { channels })
 }
 
 // --- Extension handlers ---

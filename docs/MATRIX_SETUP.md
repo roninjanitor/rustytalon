@@ -29,10 +29,10 @@ On startup the bot creates a DM room and invites your personal account. You acce
 
 ## Prerequisites
 
-- RustyTalon installed and running (`cargo run` or `rustytalon run`)
+- RustyTalon running (Docker recommended — channels are pre-installed in the image)
 - Two Matrix accounts (see above) — both can be on matrix.org for testing
 
-## Quick Start
+## Quick Start (Docker)
 
 ### 1. Create a Bot Account
 
@@ -65,63 +65,46 @@ The response includes `"access_token"`. Copy it.
 
 > **Important**: This must be the **bot account's** token, not your personal account's token.
 
-### 3. Build and Install the Channel
+### 3. Set Environment Variables
+
+Add to your `.env` file before starting the container:
 
 ```bash
-# One-time: add the WASM target
-rustup target add wasm32-wasip2
-cargo install wasm-tools
+# Required: bot account access token
+MATRIX_ACCESS_TOKEN=bot_account_token_here
 
-# Build
-cd channels-src/matrix
-./build.sh
-
-# Install
-mkdir -p ~/.rustytalon/channels
-cp matrix.wasm matrix.capabilities.json ~/.rustytalon/channels/
+# Required for encrypting tokens at rest
+SECRETS_MASTER_KEY=your_master_key_here   # openssl rand -base64 32
 ```
 
-### 4. Configure Homeserver and Owner ID
+The Matrix channel is pre-installed in the Docker image. On startup, RustyTalon automatically reads `MATRIX_ACCESS_TOKEN` and stores it in the encrypted secrets store.
 
-Edit `~/.rustytalon/channels/matrix.capabilities.json`:
+### 4. Start RustyTalon
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+### 5. Configure via the Web UI
+
+1. Open the web UI at `http://localhost:3001` and log in
+2. Go to the **Channels** tab
+3. Find **Matrix** — it should show as running with a green dot
+4. Click the **⚙** (config) button to set your homeserver and owner ID:
 
 ```json
 {
-  "config": {
-    "homeserver": "https://matrix.org",
-    "owner_id": "@you:matrix.org",
-    "dm_policy": "pairing",
-    "allow_from": []
-  }
+  "homeserver": "https://matrix.org",
+  "owner_id": "@you:matrix.org",
+  "dm_policy": "pairing",
+  "allow_from": []
 }
 ```
 
-- `homeserver` — the bot account's homeserver
+- `homeserver` — the **bot account's** homeserver URL
 - `owner_id` — **your personal** Matrix user ID (not the bot's)
 
-### 5. Configure the Access Token
-
-The bot account's access token is stored in RustyTalon's encrypted secrets store.
-
-Via environment variable:
-
-```bash
-MATRIX_ACCESS_TOKEN=bot_account_token_here
-```
-
-Or via the secrets store:
-
-```bash
-rustytalon tool auth matrix
-```
-
-### 6. Run RustyTalon
-
-```bash
-cargo run
-# or
-rustytalon run
-```
+5. Click **Save**
 
 On startup, the Matrix channel will:
 1. Validate the bot's access token via `/account/whoami`
@@ -130,6 +113,8 @@ On startup, the Matrix channel will:
 4. Begin polling every 30 seconds
 
 Open Element signed in as **your personal account**, accept the bot's invite, and send a message — the agent will respond within 30 seconds.
+
+---
 
 ## DM Pairing
 
@@ -142,25 +127,15 @@ When `dm_policy` is `pairing` (default), unknown users who message the bot recei
 3. You run: `rustytalon pairing approve matrix ABC12345`
 4. User is added to the allow list; future messages are delivered to the agent
 
-### Commands
-
-```bash
-# List pending pairing requests
-rustytalon pairing list matrix
-
-# Approve a user
-rustytalon pairing approve matrix ABC12345
-```
-
 ### Skip Pairing (for testing)
 
 To allow all users without pairing:
 
+Configure via **Channels** tab → Matrix → **⚙**:
+
 ```json
 {
-  "config": {
-    "dm_policy": "open"
-  }
+  "dm_policy": "open"
 }
 ```
 
@@ -168,12 +143,12 @@ To pre-approve specific users by their Matrix user ID:
 
 ```json
 {
-  "config": {
-    "dm_policy": "pairing",
-    "allow_from": ["@trusted:matrix.org"]
-  }
+  "dm_policy": "pairing",
+  "allow_from": ["@trusted:matrix.org"]
 }
 ```
+
+---
 
 ## Using Multiple Rooms
 
@@ -185,24 +160,26 @@ The bot responds to any room it is joined to. To add the bot to a room:
 
 The agent maintains separate conversation context per room (using the room ID as the thread ID).
 
+---
+
 ## Self-Hosted Homeservers
 
-If you run your own Synapse, Dendrite, or Conduit instance, set `homeserver` to your server's base URL:
+If you run your own Synapse, Dendrite, or Conduit instance, set `homeserver` to your server's base URL via **Channels** tab → Matrix → **⚙**:
 
 ```json
 {
-  "config": {
-    "homeserver": "https://your-server.example.com",
-    "owner_id": "@you:your-server.example.com"
-  }
+  "homeserver": "https://your-server.example.com",
+  "owner_id": "@you:your-server.example.com"
 }
 ```
 
 No other changes are needed — the channel speaks standard Matrix CS API v3.
 
+---
+
 ## Configuration Reference
 
-Edit `~/.rustytalon/channels/matrix.capabilities.json`:
+Configure via the web UI **Channels** tab → Matrix → **⚙**:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -211,14 +188,21 @@ Edit `~/.rustytalon/channels/matrix.capabilities.json`:
 | `dm_policy` | `"pairing"` \| `"open"` | `"pairing"` | `pairing` sends a pairing code to unknown users; `open` allows anyone |
 | `allow_from` | `["@user:server", ...]` | `[]` | Matrix user IDs pre-approved without pairing |
 
+---
+
 ## Secrets
 
 The channel expects a secret named `matrix_access_token` — this is the **bot account's** token. The host injects it as `Authorization: Bearer <token>` on every outbound Matrix API request — the WASM channel code never sees the raw token.
 
-Configure via:
+**With Docker (recommended):**
 
-- **Environment variable**: `MATRIX_ACCESS_TOKEN=bot_token`
-- **Secrets store**: `rustytalon tool auth matrix`
+Set `MATRIX_ACCESS_TOKEN=bot_token` in `.env` before starting the container. RustyTalon bootstraps it into the encrypted secrets store on startup (requires `SECRETS_MASTER_KEY`).
+
+**Update via web UI:**
+
+Open the **Channels** tab → Matrix → **Set Token** to update the token without restarting.
+
+---
 
 ## Troubleshooting
 
@@ -244,4 +228,9 @@ This is expected — the channel polls every 30 seconds. The typing indicator (`
 
 ### Token expired
 
-Matrix access tokens can expire or be invalidated. Regenerate a token in Element (signed in as the bot account) and update via `rustytalon tool auth matrix`.
+Matrix access tokens can expire or be invalidated. Regenerate a token in Element (signed in as the bot account) and update it via the **Channels** tab → Matrix → **Set Token**.
+
+### Channel shows as "not running" in the Channels tab
+
+- Check that `MATRIX_ACCESS_TOKEN` is set in your `.env`
+- Check container logs: `docker compose -f docker-compose.prod.yml logs rustytalon`

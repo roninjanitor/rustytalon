@@ -77,10 +77,9 @@ WASM tools run inside the agent process in a sandboxed WebAssembly environment. 
 - Output scanning for secret leakage
 
 **Examples of WASM extensions:**
-- Telegram channel
-- Slack channel
-- Discord channel
 - Google Workspace tools (Gmail, Calendar, Drive, Sheets, Docs, Slides)
+
+> **Messaging channels** (Discord, Telegram, Slack, Matrix) are also WASM-based but are managed through the **Channels** tab in the web UI, not the Extensions tab. They're pre-installed in the Docker image — just set the relevant env vars (e.g. `DISCORD_BOT_TOKEN`) before starting.
 
 ### MCP Extensions
 

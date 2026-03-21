@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-03-20
+
+### Added
+- Dedicated **Channels tab** in the web UI — WASM channels (Discord, Telegram, Slack, Matrix) now have their own panel showing running status and catalog entries, separate from the Extensions tab
+- `GET /api/channels` endpoint — returns the list of loaded WASM channels with name, description, and running status
+- `with_wasm_channels()` builder on `WebGateway` — wires startup-loaded channel names into the gateway state for the API
+- `ChannelInfo` / `ChannelListResponse` types in `web/types.rs`
+- **Bootstrap channel secrets from env** (`bootstrap_channel_secrets_from_env`) — on Docker deployments, environment variables like `DISCORD_BOT_TOKEN` are automatically stored encrypted in the DB on first run so channels activate without any CLI steps
+- Fallback credential injection for deployments without `SECRETS_MASTER_KEY` — env vars with a channel-name prefix are injected directly so Docker works out of the box
+- **Pre-built WASM channels in Docker image** — Discord, Telegram, Slack, and Matrix channels are compiled and bundled at image build time; users can configure them immediately via the web UI with no CLI required
+- **Multi-arch Docker builds** — GitHub Actions now builds `linux/amd64` and `linux/arm64` images in parallel (native runners) and pushes a combined multi-arch manifest
+
+### Changed
+- WASM channels are filtered out of the Extensions tab — they appear in the new Channels tab instead
+- `Channels` filter button removed from the Extensions kind-filter bar
+- Docker default port updated from `3000` to `3001` in Dockerfile comments and `docker-compose.prod.yml`
+- Dockerfile restructured into 5 stages (added `channels-builder` stage before the dependency planner)
+
 ## [0.1.8] - 2026-03-20
 
 ### Added

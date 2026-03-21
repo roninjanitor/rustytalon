@@ -94,8 +94,8 @@ RustyTalon is the AI assistant you can actually trust with your personal and pro
 ### Prerequisites
 
 - Rust 1.85+
-- PostgreSQL 15+ with [pgvector](https://github.com/pgvector/pgvector) extension (or use libSQL for zero-dependency local mode)
 - An API key for at least one LLM provider (Anthropic, OpenAI, or Ollama)
+- PostgreSQL 15+ with [pgvector](https://github.com/pgvector/pgvector) is optional — libSQL (embedded SQLite) works out of the box and is the default for Docker deployments
 
 ### Build from Source
 
@@ -130,14 +130,26 @@ No setup needed. RustyTalon creates `~/.rustytalon/rustytalon.db` automatically.
 
 **Option 1: Pre-built Images (Fastest)**
 
-Pull pre-built images from GitHub Container Registry:
+Pull pre-built images from GitHub Container Registry. The image includes:
+- Embedded libSQL database (no external database required)
+- Pre-built messaging channels (Discord, Telegram, Slack, Matrix)
+- Web UI on port 3001
 
 ```bash
 # Configure your LLM provider first
 cp .env.example .env
-# Edit .env with your API key (see Configuration below)
+# Edit .env — minimum required:
+#   ANTHROPIC_API_KEY (or another provider key)
+#   GATEWAY_AUTH_TOKEN (set a strong token)
+#
+# Optional: enable messaging channels
+#   DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, MATRIX_ACCESS_TOKEN
+#   SECRETS_MASTER_KEY (required to encrypt channel tokens)
 
-# Start full stack with pre-built agent image
+# Start with embedded SQLite (simplest)
+docker run -p 3001:3001 --env-file .env ghcr.io/roninjanitor/rustytalon:latest
+
+# Or start with PostgreSQL (for vector search / production)
 docker compose -f docker-compose.prod.yml up -d
 ```
 
@@ -202,13 +214,16 @@ OPENAI_COMPATIBLE_MODEL=model-name
 ### Database
 
 ```bash
-# PostgreSQL (default)
-DATABASE_BACKEND=postgres
-DATABASE_URL=postgres://user:pass@localhost:5432/rustytalon
-
-# libSQL (embedded)
+# libSQL / embedded SQLite (Docker default — no setup required)
+# Memory search uses keyword matching only.
 DATABASE_BACKEND=libsql
 LIBSQL_PATH=~/.rustytalon/rustytalon.db
+
+# PostgreSQL — recommended for production
+# Enables full hybrid memory search: keyword + semantic (vector) via pgvector.
+# The agent finds memories by meaning, not just exact words.
+DATABASE_BACKEND=postgres
+DATABASE_URL=postgres://user:pass@localhost:5432/rustytalon
 
 # libSQL with Turso cloud sync
 LIBSQL_URL=libsql://your-db.turso.io

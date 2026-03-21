@@ -16,45 +16,104 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    if: github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write
 
     strategy:
+      fail-fast: false
       matrix:
         include:
           - dockerfile: Dockerfile
             image-suffix: ""
-            platforms: linux/amd64,linux/arm64
+            platform: linux/amd64
+            runner: ubuntu-latest
+
+          - dockerfile: Dockerfile
+            image-suffix: ""
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
 
           - dockerfile: Dockerfile.worker
             image-suffix: "-worker"
-            platforms: linux/amd64,linux/arm64
+            platform: linux/amd64
+            runner: ubuntu-latest
+
+          - dockerfile: Dockerfile.worker
+            image-suffix: "-worker"
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up QEMU for multi-arch builds
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Container Registry
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare image name and arch
+        id: prep
+        run: |
+          suffix="${{ matrix.image-suffix }}"
+          base=$(echo "${{ env.IMAGE_NAME }}" | sed "s|/rustytalon$|/rustytalon${suffix}|")
+          echo "image=${{ env.REGISTRY }}/$base" >> $GITHUB_OUTPUT
+          echo "arch=$(echo '${{ matrix.platform }}' | tr '/' '-' | cut -d'-' -f2)" >> $GITHUB_OUTPUT
+
+      - name: Build and push per-arch image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.prep.outputs.image }}:${{ github.sha }}-${{ steps.prep.outputs.arch }}
+          cache-from: type=gha,scope=${{ matrix.dockerfile }}-${{ steps.prep.outputs.arch }}
+          cache-to: type=gha,scope=${{ matrix.dockerfile }}-${{ steps.prep.outputs.arch }},mode=max
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image-suffix: ""
+          - image-suffix: "-worker"
+
+    steps:
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare image name
+        id: prep
+        run: |
+          suffix="${{ matrix.image-suffix }}"
+          base=$(echo "${{ env.IMAGE_NAME }}" | sed "s|/rustytalon$|/rustytalon${suffix}|")
+          echo "image=${{ env.REGISTRY }}/$base" >> $GITHUB_OUTPUT
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.prep.outputs.image }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -63,33 +122,40 @@ jobs:
             type=sha,prefix=sha-,enable={{is_default_branch}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Update image tags for worker image
-        if: matrix.image-suffix == '-worker'
-        id: worker-meta
+      - name: Create and push multi-arch manifest
         run: |
-          # Rewrite image name: rustytalon -> rustytalon-worker (keeps tags unchanged)
-          tags=$(echo "${{ steps.meta.outputs.tags }}" | sed "s|/rustytalon:|/rustytalon-worker:|g")
-          {
-            echo "tags<<EOF"
-            echo "$tags"
-            echo "EOF"
-          } >> $GITHUB_OUTPUT
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: ${{ matrix.platforms }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ matrix.image-suffix == '-worker' && steps.worker-meta.outputs.tags || steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          IMAGE="${{ steps.prep.outputs.image }}"
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            docker buildx imagetools create \
+              -t "$tag" \
+              "${IMAGE}:${{ github.sha }}-amd64" \
+              "${IMAGE}:${{ github.sha }}-arm64"
+          done <<< "${{ steps.meta.outputs.tags }}"
 
   test-build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     if: github.event_name == 'pull_request'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dockerfile: Dockerfile
+            platform: linux/amd64
+            runner: ubuntu-latest
+
+          - dockerfile: Dockerfile
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+
+          - dockerfile: Dockerfile.worker
+            platform: linux/amd64
+            runner: ubuntu-latest
+
+          - dockerfile: Dockerfile.worker
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - name: Checkout repository
@@ -98,24 +164,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker images (test)
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Dockerfile
-          push: false
-          cache-from: type=gha
+      - name: Prepare arch
+        id: prep
+        run: echo "arch=$(echo '${{ matrix.platform }}' | tr '/' '-' | cut -d'-' -f2)" >> $GITHUB_OUTPUT
 
-      - name: Build worker Docker image (test)
+      - name: Build Docker image (test, no push)
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: Dockerfile.worker
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
           push: false
-          cache-from: type=gha
+          cache-from: type=gha,scope=${{ matrix.dockerfile }}-${{ steps.prep.outputs.arch }}
 
   verify:
-    needs: [build]
+    needs: [merge]
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/')
 

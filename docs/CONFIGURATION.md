@@ -22,7 +22,7 @@ Controls where RustyTalon stores conversations, jobs, memory, and all other pers
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_BACKEND` | `postgres` | Database backend: `postgres` or `libsql` |
+| `DATABASE_BACKEND` | `libsql` (Docker) / `postgres` (source build) | Database backend: `postgres` or `libsql` |
 | `DATABASE_URL` | — | PostgreSQL connection string (required when `DATABASE_BACKEND=postgres`) |
 | `DATABASE_POOL_SIZE` | `10` | PostgreSQL connection pool size |
 | `LIBSQL_PATH` | `~/.rustytalon/rustytalon.db` | Local libSQL file path (used when `DATABASE_BACKEND=libsql`) |
@@ -30,8 +30,8 @@ Controls where RustyTalon stores conversations, jobs, memory, and all other pers
 | `LIBSQL_AUTH_TOKEN` | — | Required when `LIBSQL_URL` is set |
 
 **Which backend to use:**
-- `libsql` — Zero-dependency embedded SQLite. Good for personal use and development. No setup required.
-- `postgres` — Full-featured. Required for vector-based semantic memory search. Recommended for production.
+- `libsql` — Zero-dependency embedded SQLite. Good for personal use and development. No setup required. Memory search uses keyword matching only.
+- `postgres` — **Recommended for production.** Uses [pgvector](https://github.com/pgvector/pgvector) for full hybrid search (keyword + semantic/vector similarity). Enables the agent to find memories by meaning, not just exact words. Requires a PostgreSQL 15+ instance with the `vector` extension.
 
 ---
 
