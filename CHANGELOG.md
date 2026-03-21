@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-03-20
+
+### Fixed
+- Missing `wasm_channels` field in `GatewayState` initializers in `ws.rs`, `ws_gateway_integration.rs`, and `openai_compat_integration.rs` — caused test compilation failures introduced by v0.1.9
+
 ## [0.1.9] - 2026-03-20
 
 ### Added
