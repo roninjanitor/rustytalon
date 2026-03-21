@@ -8,8 +8,10 @@ This guide covers deploying RustyTalon in various configurations, from local dev
 |-----------|----------|----------|
 | [Local binary](#local-binary) | libSQL (embedded) | Development, personal use |
 | [Local binary + PostgreSQL](#local-binary-with-postgresql) | PostgreSQL | Personal use with full features |
-| [Docker Compose](#docker-compose) | PostgreSQL (containerized) | Self-hosted production |
+| [Docker Compose](#docker-compose) | libSQL (default) or PostgreSQL | Self-hosted production |
 | [With Docker Sandbox](#enabling-docker-sandbox) | PostgreSQL | Production with isolated job execution |
+
+> **Docker default database**: The pre-built Docker image uses `DATABASE_BACKEND=libsql` (embedded SQLite) by default — no external database needed. For production use, PostgreSQL is recommended: it adds [pgvector](https://github.com/pgvector/pgvector) for semantic/vector memory search so the agent can find memories by meaning, not just keywords. Use `docker-compose.prod.yml` to run with PostgreSQL.
 
 ---
 
@@ -241,8 +243,10 @@ ROUTING_PREFERRED_PROVIDERS=anthropic   # comma-separated priority list
 
 Always enabled when `GATEWAY_ENABLED=true`. Provides the browser UI and API.
 
+In Docker, `GATEWAY_ENABLED=true`, `GATEWAY_HOST=0.0.0.0`, and `GATEWAY_PORT=3001` are set by default.
+
 ```bash
-GATEWAY_HOST=127.0.0.1    # Use 0.0.0.0 for external access
+GATEWAY_HOST=127.0.0.1    # Use 0.0.0.0 for external access (default in Docker)
 GATEWAY_PORT=3001
 GATEWAY_AUTH_TOKEN=changeme
 ```
@@ -257,21 +261,27 @@ HTTP_PORT=8080
 HTTP_WEBHOOK_SECRET=your-webhook-secret
 ```
 
-### Telegram
+### Messaging Channels (Discord, Telegram, Slack, Matrix)
+
+Messaging channels are pre-installed in the Docker image. Set the relevant env vars in `.env` and they activate automatically on startup:
 
 ```bash
-TELEGRAM_BOT_TOKEN=your-bot-token
-```
-
-See [TELEGRAM_SETUP.md](TELEGRAM_SETUP.md) for detailed setup instructions.
-
-### Slack
-
-```bash
+DISCORD_BOT_TOKEN=your-discord-token
+TELEGRAM_BOT_TOKEN=your-telegram-token
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
-SLACK_SIGNING_SECRET=...
+MATRIX_ACCESS_TOKEN=your-matrix-token
+
+# Required to encrypt channel tokens at rest
+SECRETS_MASTER_KEY=your-master-key   # openssl rand -base64 32
 ```
+
+Configure channel options (owner ID, DM policy, etc.) via the **Channels** tab in the web UI after startup.
+
+See individual setup guides:
+- [Discord](DISCORD_SETUP.md)
+- [Telegram](TELEGRAM_SETUP.md)
+- [Matrix](MATRIX_SETUP.md)
 
 ---
 

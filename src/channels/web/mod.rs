@@ -85,6 +85,7 @@ impl GatewayChannel {
             llm_provider: None,
             smart_router: None,
             chat_rate_limiter: server::RateLimiter::new(30, 60),
+            wasm_channels: vec![],
         });
 
         Self {
@@ -113,6 +114,7 @@ impl GatewayChannel {
             llm_provider: self.state.llm_provider.clone(),
             smart_router: self.state.smart_router.clone(),
             chat_rate_limiter: server::RateLimiter::new(30, 60),
+            wasm_channels: self.state.wasm_channels.clone(),
         };
         mutate(&mut new_state);
         self.state = Arc::new(new_state);
@@ -185,6 +187,12 @@ impl GatewayChannel {
     /// Inject the smart router for provider health dashboard.
     pub fn with_smart_router(mut self, router: Arc<crate::llm::routing::SmartRouter>) -> Self {
         self.rebuild_state(|s| s.smart_router = Some(router));
+        self
+    }
+
+    /// Inject the list of loaded WASM channels for the channels API.
+    pub fn with_wasm_channels(mut self, channels: Vec<(String, Option<String>)>) -> Self {
+        self.rebuild_state(|s| s.wasm_channels = channels);
         self
     }
 

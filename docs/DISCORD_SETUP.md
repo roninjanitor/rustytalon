@@ -15,11 +15,11 @@ The Discord channel communicates via Discord DMs using REST polling (no WebSocke
 
 ## Prerequisites
 
-- RustyTalon installed and running (`cargo run` or `rustytalon run`)
+- RustyTalon running (Docker recommended — channels are pre-installed in the image)
 - A Discord account with **Developer Mode** enabled
 - A Discord bot token (see below)
 
-## Quick Start
+## Quick Start (Docker)
 
 ### 1. Create a Discord Application and Bot
 
@@ -51,64 +51,46 @@ The channel needs your Discord user ID to open a DM with you on startup.
 2. Right-click your own username anywhere in Discord
 3. Click **Copy User ID** — this is your snowflake ID (e.g. `123456789012345678`)
 
-### 4. Build and Install the Channel
+### 4. Set Environment Variables
+
+Add to your `.env` file before starting the container:
 
 ```bash
-# One-time: add the WASM target
-rustup target add wasm32-wasip2
-cargo install wasm-tools
+# Required: your bot token
+DISCORD_BOT_TOKEN=your_bot_token_here
 
-# Build
-cd channels-src/discord
-./build.sh
-
-# Install
-mkdir -p ~/.rustytalon/channels
-cp discord.wasm discord.capabilities.json ~/.rustytalon/channels/
+# Required for SECRETS_MASTER_KEY to be set (encrypt tokens at rest)
+SECRETS_MASTER_KEY=your_master_key_here   # openssl rand -base64 32
 ```
 
-### 5. Configure Owner ID
+The Discord channel is pre-installed in the Docker image. On startup, RustyTalon automatically reads `DISCORD_BOT_TOKEN` and stores it in the encrypted secrets store.
 
-Edit `~/.rustytalon/channels/discord.capabilities.json` and set your user ID:
+### 5. Start RustyTalon
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+### 6. Configure via the Web UI
+
+1. Open the web UI at `http://localhost:3001` and log in
+2. Go to the **Channels** tab
+3. Find **Discord** — it should show as running with a green dot
+4. Click the **⚙** (config) button to set your owner ID and DM policy:
 
 ```json
 {
-  "config": {
-    "owner_id": "123456789012345678",
-    "dm_policy": "pairing",
-    "allow_from": []
-  }
+  "owner_id": "123456789012345678",
+  "dm_policy": "pairing",
+  "allow_from": []
 }
 ```
 
-### 6. Configure the Bot Token
-
-The bot token is stored securely in RustyTalon's encrypted secrets store. Set it via environment variable:
-
-```bash
-DISCORD_BOT_TOKEN=your_bot_token_here
-```
-
-Or via the secrets store:
-
-```bash
-rustytalon tool auth discord
-```
-
-### 7. Run RustyTalon
-
-```bash
-cargo run
-# or
-rustytalon run
-```
-
-On startup, the Discord channel will:
-1. Fetch the bot's own user ID (for self-message filtering)
-2. Open a DM channel with your configured `owner_id`
-3. Begin polling every 30 seconds for new messages
+5. Click **Save** — the channel picks up the new config on the next poll
 
 Send yourself a DM from your Discord account to your bot — the agent will respond within 30 seconds.
+
+---
 
 ## DM Pairing
 
@@ -121,42 +103,11 @@ When `dm_policy` is `pairing` (default), unknown users who DM the bot receive a 
 3. You run: `rustytalon pairing approve discord ABC12345`
 4. User is added to the allow list; future messages are delivered to the agent
 
-### Commands
-
-```bash
-# List pending pairing requests
-rustytalon pairing list discord
-
-# Approve a user
-rustytalon pairing approve discord ABC12345
-```
-
-### Skip Pairing
-
-To allow all users without pairing (not recommended for public bots):
-
-```json
-{
-  "config": {
-    "dm_policy": "open"
-  }
-}
-```
-
-To pre-approve specific users by their Discord user ID:
-
-```json
-{
-  "config": {
-    "dm_policy": "pairing",
-    "allow_from": ["123456789012345678"]
-  }
-}
-```
+---
 
 ## Configuration Reference
 
-Edit `~/.rustytalon/channels/discord.capabilities.json`:
+Configure via the web UI **Channels** tab → Discord → **⚙**:
 
 | Option | Values | Default | Description |
 |--------|--------|---------|-------------|
@@ -164,14 +115,21 @@ Edit `~/.rustytalon/channels/discord.capabilities.json`:
 | `dm_policy` | `pairing`, `open` | `pairing` | `pairing` sends a pairing code to unknown users; `open` allows anyone |
 | `allow_from` | `["user_id", ...]` | `[]` | Discord user IDs pre-approved without pairing |
 
+---
+
 ## Secrets
 
 The channel expects a secret named `discord_bot_token`. The host injects it as `Authorization: Bot <token>` on every outbound Discord API request — the WASM channel code never sees the raw token.
 
-Configure via:
+**With Docker (recommended):**
 
-- **Environment variable**: `DISCORD_BOT_TOKEN=your_token`
-- **Secrets store**: `rustytalon tool auth discord`
+Set `DISCORD_BOT_TOKEN=your_token` in `.env` before starting the container. RustyTalon bootstraps it into the encrypted secrets store on startup (requires `SECRETS_MASTER_KEY`).
+
+**Update via web UI:**
+
+Open the **Channels** tab → Discord → **Set Token** to update the token without restarting.
+
+---
 
 ## Troubleshooting
 
@@ -179,7 +137,7 @@ Configure via:
 
 - Verify the bot token is set correctly: check logs for `401 Unauthorized`
 - Ensure **Message Content Intent** is enabled in the Discord Developer Portal
-- Confirm `owner_id` is set in the capabilities config
+- Confirm `owner_id` is set in the channel config (Channels tab → ⚙)
 - Check logs for `Failed to open DM channel with owner` on startup
 
 ### Bot doesn't appear online
@@ -201,3 +159,9 @@ The bot lacks access to the channel. Ensure:
 ### Responses delayed up to 30 seconds
 
 This is expected — the channel polls every 30 seconds. The typing indicator (`Bot is typing…`) appears during agent processing to indicate activity.
+
+### Channel shows as "not running" in the Channels tab
+
+- Check that `DISCORD_BOT_TOKEN` is set in your `.env`
+- If `SECRETS_MASTER_KEY` is not set, the token is injected directly from env at startup — verify it's present in `docker compose config`
+- Check container logs: `docker compose -f docker-compose.prod.yml logs rustytalon`

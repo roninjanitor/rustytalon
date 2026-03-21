@@ -1031,6 +1031,20 @@ mod tests {
     }
 }
 
+// --- Channels ---
+
+#[derive(Debug, Serialize)]
+pub struct ChannelInfo {
+    pub name: String,
+    pub description: Option<String>,
+    pub running: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChannelListResponse {
+    pub channels: Vec<ChannelInfo>,
+}
+
 // --- Provider Health & Costs ---
 
 /// Response for the provider health summary endpoint.

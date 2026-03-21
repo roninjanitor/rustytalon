@@ -154,9 +154,33 @@ Create and manage automated tasks that run on a schedule or in response to event
 
 ---
 
+## Channels Tab
+
+Configure messaging channels (Discord, Telegram, Slack, Matrix). Channels are pre-installed in the Docker image — no manual WASM builds needed.
+
+### Channel Status
+
+Each channel card shows:
+- **Green dot** — channel is loaded and running
+- **Gray dot** — channel is available but not yet configured
+
+### Configuring a Channel
+
+1. Set your bot token in `.env` (e.g. `DISCORD_BOT_TOKEN=...`) before starting the container
+2. Open the **Channels** tab — a running channel shows a green dot
+3. Click **⚙** to open the config editor (sets options like `owner_id`, `dm_policy`)
+4. Click **Set Token** to update a credential without restarting
+
+See the individual setup guides for each channel:
+- [Discord](DISCORD_SETUP.md)
+- [Telegram](TELEGRAM_SETUP.md)
+- [Matrix](MATRIX_SETUP.md)
+
+---
+
 ## Extensions Tab
 
-Install, authenticate, and manage tools and integrations beyond the built-in set.
+Install, authenticate, and manage WASM tools and MCP integrations beyond the built-in set. Messaging channels (Discord, Telegram, etc.) are managed in the **Channels** tab instead.
 
 ### Extension Types
 

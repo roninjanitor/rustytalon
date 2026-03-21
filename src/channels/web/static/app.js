@@ -175,6 +175,7 @@ function connectSSE() {
       showToast(data.message, 'error');
     }
     enableChatInput();
+    if (currentTab === 'channels') loadChannels();
     // Advance wizard if it's waiting for OAuth completion
     if (wizardState && wizardState.name === data.extension_name && wizardState.waitingForAuth) {
       wizardState.waitingForAuth = false;
@@ -832,6 +833,7 @@ function switchTab(tab) {
     initCatalogSearch();
     checkExtensionManagerAvailable().then(() => loadCatalog());
   }
+  if (tab === 'channels') loadChannels();
 }
 
 // --- Memory (filesystem tree) ---
@@ -1261,12 +1263,14 @@ function loadCatalog() {
 
 function renderCatalogGrid(entries) {
   const grid = document.getElementById('catalog-grid');
-  if (entries.length === 0) {
+  // Channels are managed in the Channels tab — exclude them from Extensions.
+  const filtered = entries.filter((e) => e.kind !== 'wasm_channel');
+  if (filtered.length === 0) {
     grid.innerHTML = '<div class="empty-state">No extensions found</div>';
     return;
   }
   grid.innerHTML = '';
-  for (const entry of entries) {
+  for (const entry of filtered) {
     grid.appendChild(renderCatalogCard(entry));
   }
 }
@@ -1355,11 +1359,13 @@ function loadInstalledExtensions() {
   extList.innerHTML = '<div class="empty-state">Loading...</div>';
   apiFetch('/api/extensions')
     .then((data) => {
-      if (!data.extensions || data.extensions.length === 0) {
+      // Channels are managed in the Channels tab — exclude them here.
+      const extensions = (data.extensions || []).filter((e) => e.kind !== 'wasm_channel');
+      if (extensions.length === 0) {
         extList.innerHTML = '<div class="empty-state">No extensions installed</div>';
       } else {
         extList.innerHTML = '';
-        for (const ext of data.extensions) {
+        for (const ext of extensions) {
           extList.appendChild(renderExtensionCard(ext));
         }
       }
@@ -1520,6 +1526,132 @@ function removeExtension(name) {
       loadCatalog();
     })
     .catch((err) => showToast('Remove failed: ' + err.message, 'error'));
+}
+
+// --- Channels tab ---
+
+function loadChannels() {
+  const list = document.getElementById('channels-list');
+  list.innerHTML = '<div class="empty-state">Loading...</div>';
+
+  Promise.all([
+    apiFetch('/api/channels'),
+    apiFetch('/api/extensions/catalog?kind=wasm_channel').catch(() => ({ entries: [] })),
+  ]).then(([runningData, catalogData]) => {
+    const running = new Map((runningData.channels || []).map((ch) => [ch.name, ch]));
+    const catalog = (catalogData.entries || []);
+
+    // Merge: catalog is the source of truth for what exists; running overrides status.
+    const seen = new Set();
+    const cards = [];
+
+    for (const entry of catalog) {
+      seen.add(entry.name);
+      const liveChannel = running.get(entry.name);
+      cards.push(renderChannelCard(entry, liveChannel || null));
+    }
+
+    // Any running channels not in the catalog (e.g. custom ones).
+    for (const ch of (runningData.channels || [])) {
+      if (!seen.has(ch.name)) {
+        cards.push(renderChannelCard({ name: ch.name, description: ch.description, kind: 'wasm_channel' }, ch));
+      }
+    }
+
+    list.innerHTML = '';
+    if (cards.length === 0) {
+      list.innerHTML = '<div class="empty-state">No channels available.</div>';
+    } else {
+      for (const card of cards) list.appendChild(card);
+    }
+  }).catch(() => {
+    list.innerHTML = '<div class="empty-state">Failed to load channels.</div>';
+  });
+}
+
+// entry = catalog entry (or minimal object for custom channels)
+// liveChannel = running channel from /api/channels, or null if not loaded
+function renderChannelCard(entry, liveChannel) {
+  const card = document.createElement('div');
+  card.className = 'ext-card';
+
+  const header = document.createElement('div');
+  header.className = 'ext-header';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'ext-name';
+  nameEl.textContent = entry.display_name || entry.name;
+  header.appendChild(nameEl);
+
+  const kindEl = document.createElement('span');
+  kindEl.className = 'ext-kind kind-wasm_channel';
+  kindEl.textContent = 'Channel';
+  header.appendChild(kindEl);
+
+  const isRunning = !!liveChannel;
+  const dot = document.createElement('span');
+  dot.className = 'ext-auth-dot ' + (isRunning ? 'authed' : 'unauthed');
+  dot.title = isRunning ? 'Running' : 'Not installed';
+  header.appendChild(dot);
+
+  // Gear config button — only useful when the channel is running (config is persisted to DB).
+  if (isRunning) {
+    const configBtn = document.createElement('button');
+    configBtn.type = 'button';
+    configBtn.className = 'btn-ext-config-header';
+    configBtn.title = 'Configure';
+    configBtn.textContent = '\u2699';
+    configBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleExtensionConfig(entry.name, card);
+    });
+    header.appendChild(configBtn);
+  }
+
+  card.appendChild(header);
+
+  const desc = entry.description || (liveChannel && liveChannel.description);
+  if (desc) {
+    const descEl = document.createElement('div');
+    descEl.className = 'ext-desc';
+    descEl.textContent = desc;
+    card.appendChild(descEl);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'ext-actions';
+
+  if (isRunning) {
+    // Token setup wizard
+    const tokenBtn = document.createElement('button');
+    tokenBtn.className = 'btn-ext activate';
+    tokenBtn.textContent = 'Set Token';
+    tokenBtn.addEventListener('click', () => {
+      openWizard(Object.assign({ installed: true, authenticated: false, active: true, status: 'needs_auth', tools: [], kind: 'wasm_channel' }, entry));
+    });
+    actions.appendChild(tokenBtn);
+
+    const activeLabel = document.createElement('span');
+    activeLabel.className = 'ext-active-label';
+    activeLabel.textContent = 'Running';
+    actions.appendChild(activeLabel);
+  } else {
+    // Not installed — show setup guide
+    const guideBtn = document.createElement('button');
+    guideBtn.className = 'btn-ext activate';
+    guideBtn.textContent = 'Setup Guide';
+    guideBtn.addEventListener('click', () => openSetupGuide(entry));
+    actions.appendChild(guideBtn);
+
+    const statusLabel = document.createElement('span');
+    statusLabel.className = 'ext-active-label';
+    statusLabel.style.color = 'var(--text-secondary)';
+    statusLabel.textContent = 'Not installed';
+    actions.appendChild(statusLabel);
+  }
+
+  card.appendChild(actions);
+  return card;
 }
 
 // --- Extension inline config panel ---
@@ -2870,7 +3002,7 @@ document.addEventListener('keydown', (e) => {
   // Mod+1-6: switch tabs
   if (mod && e.key >= '1' && e.key <= '6') {
     e.preventDefault();
-    const tabs = ['chat', 'memory', 'jobs', 'routines', 'logs', 'extensions'];
+    const tabs = ['chat', 'memory', 'jobs', 'routines', 'logs', 'extensions', 'channels'];
     const idx = parseInt(e.key) - 1;
     if (tabs[idx]) switchTab(tabs[idx]);
     return;
