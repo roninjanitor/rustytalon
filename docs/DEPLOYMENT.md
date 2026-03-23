@@ -39,7 +39,7 @@ DATABASE_BACKEND=libsql
 LLM_BACKEND=anthropic
 ANTHROPIC_API_KEY=sk-ant-your-key-here
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
-GATEWAY_AUTH_TOKEN=a-strong-random-token
+# GATEWAY_AUTH_TOKEN=a-strong-random-token  # optional; auto-generated and logged if omitted
 ```
 
 ### Run
@@ -85,7 +85,7 @@ DATABASE_URL=postgres://rustytalon:rustytalon@localhost:5432/rustytalon
 LLM_BACKEND=anthropic
 ANTHROPIC_API_KEY=sk-ant-your-key-here
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
-GATEWAY_AUTH_TOKEN=a-strong-random-token
+# GATEWAY_AUTH_TOKEN=a-strong-random-token  # optional; auto-generated and logged if omitted
 
 # Optional: enable semantic search
 EMBEDDING_ENABLED=true
@@ -112,8 +112,9 @@ Full containerized deployment with PostgreSQL.
 cp .env.example .env
 # Edit .env -- at minimum set:
 #   ANTHROPIC_API_KEY (or another provider)
-#   GATEWAY_AUTH_TOKEN
-#   POSTGRES_PASSWORD
+#   POSTGRES_PASSWORD           (required by docker-compose.prod.yml)
+#   GATEWAY_AUTH_TOKEN          (optional; auto-generated and logged if omitted)
+#   SECRETS_MASTER_KEY          (required for extensions; openssl rand -base64 32)
 ```
 
 ### Start
@@ -248,7 +249,7 @@ In Docker, `GATEWAY_ENABLED=true`, `GATEWAY_HOST=0.0.0.0`, and `GATEWAY_PORT=300
 ```bash
 GATEWAY_HOST=127.0.0.1    # Use 0.0.0.0 for external access (default in Docker)
 GATEWAY_PORT=3001
-GATEWAY_AUTH_TOKEN=changeme
+# GATEWAY_AUTH_TOKEN=your-token  # optional; auto-generated and logged if omitted
 ```
 
 ### HTTP Webhooks
@@ -314,7 +315,7 @@ HEARTBEAT_NOTIFY_USER=default
 
 Before exposing RustyTalon to a network:
 
-- [ ] Set a strong `GATEWAY_AUTH_TOKEN` (not the default `changeme`)
+- [ ] Set a fixed `GATEWAY_AUTH_TOKEN` or note the auto-generated token from startup logs
 - [ ] Use HTTPS via a reverse proxy (nginx, Caddy, etc.)
 - [ ] Set `GATEWAY_HOST=127.0.0.1` if only accessed locally
 - [ ] Set a strong `POSTGRES_PASSWORD`

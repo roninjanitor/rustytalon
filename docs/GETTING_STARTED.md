@@ -45,12 +45,16 @@ LLM_BACKEND=anthropic
 ANTHROPIC_API_KEY=sk-ant-your-key-here
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
-# A secret token to protect your web UI
-GATEWAY_AUTH_TOKEN=choose-a-strong-password-here
+# Optional: set a fixed token for the web UI. If omitted, a random token is
+# generated at startup and printed in the log as part of the web UI URL.
+# GATEWAY_AUTH_TOKEN=choose-a-strong-password-here
 
 # Required to install extensions (Telegram, Discord, Google tools, etc.)
 # Generate with: openssl rand -base64 32
 SECRETS_MASTER_KEY=your-generated-key-here
+
+# Required for docker-compose.prod.yml — set a strong password
+POSTGRES_PASSWORD=choose-a-strong-db-password
 ```
 
 > **Where do I get an API key?**
@@ -66,7 +70,11 @@ docker compose -f docker-compose.prod.yml up -d
 
 ### 4. Open the web UI
 
-Visit [http://localhost:3001](http://localhost:3001) and log in with the `GATEWAY_AUTH_TOKEN` you set.
+Visit [http://localhost:3001](http://localhost:3001). If you set `GATEWAY_AUTH_TOKEN`, use that to log in. If you left it unset, check the container logs for the startup line — it will include a direct URL with the auto-generated token:
+
+```bash
+docker compose -f docker-compose.prod.yml logs rustytalon | grep "Web UI"
+```
 
 ---
 
@@ -99,7 +107,7 @@ DATABASE_BACKEND=libsql
 LLM_BACKEND=anthropic
 ANTHROPIC_API_KEY=sk-ant-your-key-here
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
-GATEWAY_AUTH_TOKEN=choose-a-strong-password-here
+# GATEWAY_AUTH_TOKEN=choose-a-strong-password-here  # optional; auto-generated if omitted
 
 # Required to install extensions (Telegram, Discord, Google tools, etc.)
 # Generate with: openssl rand -base64 32
@@ -154,7 +162,7 @@ DATABASE_URL=postgres://rustytalon:rustytalon@localhost:5432/rustytalon
 LLM_BACKEND=anthropic
 ANTHROPIC_API_KEY=sk-ant-your-key-here
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
-GATEWAY_AUTH_TOKEN=choose-a-strong-password-here
+# GATEWAY_AUTH_TOKEN=choose-a-strong-password-here  # optional; auto-generated if omitted
 
 # Required to install extensions (Telegram, Discord, Google tools, etc.)
 # Generate with: openssl rand -base64 32

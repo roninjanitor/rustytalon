@@ -268,7 +268,7 @@ SANDBOX_MEMORY_LIMIT_MB=512
 SANDBOX_TIMEOUT_SECS=1800
 ```
 
-See `.env.example` for the complete list of configuration options.
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the complete reference of all environment variables and their defaults.
 
 ## Security
 

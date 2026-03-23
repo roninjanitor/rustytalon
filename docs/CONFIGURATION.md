@@ -1,18 +1,21 @@
 # Configuration Reference
 
-RustyTalon is configured entirely through environment variables. Copy `.env.example` to `.env` and edit it before starting the agent.
+RustyTalon is configured entirely through environment variables. This document is the complete reference for every variable. To get started:
 
 ```bash
 cp .env.example .env
+# Edit .env with your values, then start the agent
 ```
 
-The minimum required to get started:
+The minimum required:
 1. A database connection (or the libSQL embedded default)
 2. At least one LLM provider API key
 
 To use extensions (Telegram, Discord, Google tools, MCP servers, etc.), you also need:
 
 3. `SECRETS_MASTER_KEY` — see [Secrets & Extension Management](#secrets--extension-management)
+
+> **Tip:** You do not need to set every variable. Unset variables use the defaults shown in the tables below. The `.env.example` file shows the most commonly changed options with inline comments — this page is the full reference.
 
 ---
 
@@ -23,11 +26,22 @@ Controls where RustyTalon stores conversations, jobs, memory, and all other pers
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_BACKEND` | `libsql` (Docker) / `postgres` (source build) | Database backend: `postgres` or `libsql` |
-| `DATABASE_URL` | — | PostgreSQL connection string (required when `DATABASE_BACKEND=postgres`) |
+| `DATABASE_URL` | `postgres://rustytalon:rustytalon@localhost/rustytalon` | PostgreSQL connection string (required when `DATABASE_BACKEND=postgres`) |
 | `DATABASE_POOL_SIZE` | `10` | PostgreSQL connection pool size |
 | `LIBSQL_PATH` | `~/.rustytalon/rustytalon.db` | Local libSQL file path (used when `DATABASE_BACKEND=libsql`) |
 | `LIBSQL_URL` | — | Turso cloud URL (optional, enables cloud sync for libSQL) |
 | `LIBSQL_AUTH_TOKEN` | — | Required when `LIBSQL_URL` is set |
+
+### PostgreSQL Compose Credentials
+
+These variables are used by `docker-compose.prod.yml` to create the database and build the internal `DATABASE_URL`. They are not needed for source builds (set `DATABASE_URL` directly instead).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `POSTGRES_USER` | `rustytalon` | Database user |
+| `POSTGRES_PASSWORD` | — | **Required.** Database password — must be set in `.env` |
+| `POSTGRES_DB` | `rustytalon` | Database name |
+| `DB_PORT` | `5432` | Host-side port exposed by the database container |
 
 **Which backend to use:**
 - `libsql` — Zero-dependency embedded SQLite. Good for personal use and development. No setup required. Memory search uses keyword matching only.
@@ -109,10 +123,12 @@ The browser UI and HTTP API.
 | `GATEWAY_ENABLED` | `true` | Enable the web gateway |
 | `GATEWAY_HOST` | `127.0.0.1` | Bind address. Use `0.0.0.0` for network access |
 | `GATEWAY_PORT` | `3001` | Port to listen on |
-| `GATEWAY_AUTH_TOKEN` | `changeme` | **Change this.** Bearer token required for all API calls |
+| `GATEWAY_AUTH_TOKEN` | *(auto-generated)* | Bearer token required for all API calls. If unset, a random 32-character token is generated at startup and printed to the log. Set this to a fixed value for scripting or stable reverse-proxy config. |
 | `GATEWAY_USER_ID` | `default` | Default user ID for web UI sessions |
 
-> **Security:** Always change `GATEWAY_AUTH_TOKEN` before exposing the gateway to any network. See [DEPLOYMENT.md](DEPLOYMENT.md) for HTTPS setup with a reverse proxy.
+> **Finding your token:** If you leave `GATEWAY_AUTH_TOKEN` unset, look for the startup log line: `Web UI: http://...:3001/?token=<token>`. The URL includes the token as a query parameter for one-click access.
+>
+> **Security:** See [DEPLOYMENT.md](DEPLOYMENT.md) for HTTPS setup with a reverse proxy.
 
 ---
 
@@ -206,13 +222,21 @@ Isolated container execution for long-running or untrusted jobs.
 | `SANDBOX_MEMORY_LIMIT_MB` | `512` | Memory limit per container |
 | `SANDBOX_TIMEOUT_SECS` | `1800` | Max job duration (30 minutes) |
 
+> **Docker socket required:** When running RustyTalon in a container with `SANDBOX_ENABLED=true`, you must mount the Docker socket. In `docker-compose.prod.yml`, uncomment the volumes section:
+> ```yaml
+> volumes:
+>   - /var/run/docker.sock:/var/run/docker.sock
+> ```
+
 ### Claude Code Mode
 
 Run Claude Code CLI inside sandbox containers for complex coding tasks.
 
+> **Prerequisite:** `SANDBOX_ENABLED=true` must be set before enabling Claude Code mode.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CLAUDE_CODE_ENABLED` | `false` | Enable Claude Code mode |
+| `CLAUDE_CODE_ENABLED` | `false` | Enable Claude Code mode (requires `SANDBOX_ENABLED=true`) |
 | `CLAUDE_CODE_MODEL` | `claude-sonnet-4-20250514` | Model for Claude Code |
 | `CLAUDE_CODE_MAX_TURNS` | `50` | Max conversation turns per job |
 | `CLAUDE_CODE_CONFIG_DIR` | `/home/worker/.claude` | Claude config directory inside container |

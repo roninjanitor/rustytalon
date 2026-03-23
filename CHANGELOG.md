@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-03-23
+
+### Fixed
+- `GATEWAY_AUTH_TOKEN=changeme` default replaced with auto-generation: if the variable is unset, a random 32-character token is generated at startup and printed to the log as part of the web UI URL
+- Dev `DATABASE_URL` default now matches `docker-compose.yml` credentials (`postgres://rustytalon:rustytalon@localhost/rustytalon`) — previous default caused auth failures when using the dev compose
+- `SANDBOX_ENABLED=true` now documents the Docker socket volume mount requirement in `.env.example` and `docker-compose.prod.yml`
+- `CLAUDE_CODE_ENABLED` now documents its `SANDBOX_ENABLED=true` prerequisite
+
+### Added
+- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, and `DB_PORT` variables added to `.env.example` — these are required by `docker-compose.prod.yml` but were previously undocumented
+- `docs/CONFIGURATION.md` is now the complete environment variable reference (all variables, defaults, and descriptions in one place); `README.md` links to it directly
+- `docs/CONFIGURATION.md` includes a new PostgreSQL Compose Credentials section and updated Docker Sandbox notes
+
 ## [0.1.11] - 2026-03-23
 
 ### Fixed

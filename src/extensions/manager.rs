@@ -1594,7 +1594,7 @@ mod tests {
     fn test_mcp_manual_auth_type_has_instructions() {
         // When auth_type is "manual", the instructions field must be populated so
         // the UI knows what to display to the user.
-        let server = server_no_oauth("github", "https://mcp.github.com");
+        let _server = server_no_oauth("github", "https://mcp.github.com");
         let display = "GitHub";
         let instructions = format!(
             "Enter an API token or personal access token for {}. \
@@ -1612,7 +1612,7 @@ mod tests {
         // Manual auth type must not advertise oauth_available so the wizard
         // renders a token <input>, not an "Authorize" button.
         let server = server_no_oauth("cloudflare", "https://mcp.cloudflare.com/sse");
-        assert!(!server.oauth.is_some()); // no oauth config
+        assert!(server.oauth.is_none()); // no oauth config
         assert!(server.requires_auth()); // remote HTTPS
     }
 
