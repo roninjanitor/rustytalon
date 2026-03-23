@@ -1038,11 +1038,20 @@ pub struct ChannelInfo {
     pub name: String,
     pub description: Option<String>,
     pub running: bool,
+    /// Whether the channel is enabled (will load on next restart). Defaults to true.
+    pub enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ChannelListResponse {
     pub channels: Vec<ChannelInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChannelToggleResponse {
+    pub name: String,
+    pub enabled: bool,
+    pub message: String,
 }
 
 // --- Provider Health & Costs ---

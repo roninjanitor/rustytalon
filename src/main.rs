@@ -906,6 +906,26 @@ async fn main() -> anyhow::Result<()> {
                                 .capabilities_file
                                 .as_ref()
                                 .and_then(|f| f.description.clone());
+
+                            // Skip channels that have been explicitly disabled via settings.
+                            if let Some(ref db_ref) = db {
+                                let key = format!("channel.enabled.{}", channel_name);
+                                let enabled = db_ref
+                                    .get_setting("default", &key)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(true);
+                                if !enabled {
+                                    tracing::info!(
+                                        "Skipping disabled WASM channel: {}",
+                                        channel_name
+                                    );
+                                    continue;
+                                }
+                            }
+
                             tracing::info!("Loaded WASM channel: {}", channel_name);
 
                             let secret_name = loaded.webhook_secret_name();

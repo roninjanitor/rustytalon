@@ -1,4 +1,7 @@
 
+# Local test compose overrides
+docker-compose.test.yml
+
 # Secrets / environment
 .env
 .env.local

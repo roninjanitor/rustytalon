@@ -171,7 +171,7 @@ fn builtin_entries() -> Vec<RegistryEntry> {
             auth_hint: AuthHint::CapabilitiesAuth,
         },
         RegistryEntry {
-            name: "slack-channel".to_string(),
+            name: "slack".to_string(),
             display_name: "Slack Channel".to_string(),
             kind: ExtensionKind::WasmChannel,
             description: "Receive Slack messages and respond inline. Lets you chat with RustyTalon from any Slack workspace.".to_string(),
@@ -754,5 +754,32 @@ mod tests {
 
         let results = registry.search("dup").await;
         assert_eq!(results.len(), 1, "Should not duplicate cached entries");
+    }
+
+    /// Regression guard: WasmChannel registry names must match the WASM loader's known channel
+    /// names (from `bundled.rs`). A mismatch causes the UI to show the channel as "Not installed"
+    /// even when it is running (the Slack "slack-channel" vs "slack" bug).
+    #[tokio::test]
+    async fn test_wasm_channel_names_match_bundled_channels() {
+        use crate::channels::wasm::bundled_channel_names;
+        use crate::extensions::ExtensionKind;
+
+        let registry = ExtensionRegistry::new();
+        let bundled: std::collections::HashSet<&str> = bundled_channel_names().into_iter().collect();
+
+        let all = registry.search("").await;
+        let channel_entries: Vec<_> = all
+            .into_iter()
+            .filter(|r| r.entry.kind == ExtensionKind::WasmChannel)
+            .collect();
+
+        for result in &channel_entries {
+            assert!(
+                bundled.contains(result.entry.name.as_str()),
+                "Registry WasmChannel '{}' has no matching bundled channel. \
+                 Either add it to KNOWN_CHANNELS in bundled.rs or fix the registry name.",
+                result.entry.name
+            );
+        }
     }
 }

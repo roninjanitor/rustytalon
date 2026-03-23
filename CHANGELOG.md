@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-03-23
+
+### Fixed
+- Slack channel showed as "Not installed" in the Channels tab while simultaneously appearing as "Running" — the registry entry name was `"slack-channel"` but the WASM binary self-reports as `"slack"`, causing the UI merge to produce two separate cards instead of one
+
+### Added
+- Per-channel enable/disable toggle in the Channels tab — click **Disable** to persist the off state to the database; the channel is skipped on next restart. Click **Enable** to re-activate it. Changes take effect after a restart.
+- `POST /api/channels/{name}/enable` and `POST /api/channels/{name}/disable` endpoints for programmatic channel management
+- `enabled` field on `ChannelInfo` / `GET /api/channels` response — reflects the persisted enabled state from settings
+- Regression test that verifies every `WasmChannel` registry entry name matches a known bundled channel name, preventing future name mismatches
+
+### Changed
+- **Channels tab now appears before Extensions** in the web UI navigation bar
+- WASM channels with a disabled setting are skipped at startup rather than loaded and left idle
+
 ## [0.1.12] - 2026-03-23
 
 ### Fixed

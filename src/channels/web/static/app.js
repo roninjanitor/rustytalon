@@ -1589,9 +1589,10 @@ function renderChannelCard(entry, liveChannel) {
   header.appendChild(kindEl);
 
   const isRunning = !!liveChannel;
+  const isEnabled = isRunning && (liveChannel.enabled !== false);
   const dot = document.createElement('span');
-  dot.className = 'ext-auth-dot ' + (isRunning ? 'authed' : 'unauthed');
-  dot.title = isRunning ? 'Running' : 'Not installed';
+  dot.className = 'ext-auth-dot ' + (isRunning ? (isEnabled ? 'authed' : 'unauthed') : 'unauthed');
+  dot.title = isRunning ? (isEnabled ? 'Running' : 'Running (disabled on next restart)') : 'Not installed';
   header.appendChild(dot);
 
   // Gear config button — only useful when the channel is running (config is persisted to DB).
@@ -1633,8 +1634,25 @@ function renderChannelCard(entry, liveChannel) {
 
     const activeLabel = document.createElement('span');
     activeLabel.className = 'ext-active-label';
-    activeLabel.textContent = 'Running';
+    activeLabel.textContent = isEnabled ? 'Running' : 'Running (restarts disabled)';
     actions.appendChild(activeLabel);
+
+    // Enable / Disable toggle
+    const toggleBtn = document.createElement('button');
+    toggleBtn.className = 'btn-ext ' + (isEnabled ? 'remove' : 'activate');
+    toggleBtn.textContent = isEnabled ? 'Disable' : 'Enable';
+    toggleBtn.addEventListener('click', () => {
+      const endpoint = isEnabled
+        ? '/api/channels/' + encodeURIComponent(liveChannel.name) + '/disable'
+        : '/api/channels/' + encodeURIComponent(liveChannel.name) + '/enable';
+      apiFetch(endpoint, { method: 'POST' })
+        .then((resp) => {
+          showNotification(resp.message || (isEnabled ? 'Channel disabled.' : 'Channel enabled.'));
+          loadChannels();
+        })
+        .catch((err) => showNotification('Failed: ' + (err.message || err), true));
+    });
+    actions.appendChild(toggleBtn);
   } else {
     // Not installed — show setup guide
     const guideBtn = document.createElement('button');

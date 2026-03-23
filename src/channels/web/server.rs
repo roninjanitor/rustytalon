@@ -205,6 +205,11 @@ pub async fn start_server(
         .route("/api/logs/events", get(logs_events_handler))
         // Channels
         .route("/api/channels", get(channels_list_handler))
+        .route("/api/channels/{name}/enable", post(channels_enable_handler))
+        .route(
+            "/api/channels/{name}/disable",
+            post(channels_disable_handler),
+        )
         // Extensions
         .route("/api/extensions", get(extensions_list_handler))
         .route("/api/extensions/tools", get(extensions_tools_handler))
@@ -1658,16 +1663,68 @@ fn auth_hint_to_type(hint: &crate::extensions::AuthHint) -> String {
 async fn channels_list_handler(
     State(state): State<Arc<GatewayState>>,
 ) -> Json<ChannelListResponse> {
-    let channels = state
-        .wasm_channels
-        .iter()
-        .map(|(name, desc)| ChannelInfo {
+    let mut channels = Vec::with_capacity(state.wasm_channels.len());
+    for (name, desc) in &state.wasm_channels {
+        let enabled = if let Some(store) = state.store.as_ref() {
+            let key = format!("channel.enabled.{}", name);
+            store
+                .get_setting(&state.user_id, &key)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true)
+        } else {
+            true
+        };
+        channels.push(ChannelInfo {
             name: name.clone(),
             description: desc.clone(),
             running: true,
-        })
-        .collect();
+            enabled,
+        });
+    }
     Json(ChannelListResponse { channels })
+}
+
+async fn channels_enable_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(name): Path<String>,
+) -> Result<Json<ChannelToggleResponse>, (StatusCode, String)> {
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
+    let key = format!("channel.enabled.{}", name);
+    store
+        .set_setting(&state.user_id, &key, &serde_json::Value::Bool(true))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(ChannelToggleResponse {
+        name,
+        enabled: true,
+        message: "Channel enabled. Restart RustyTalon to apply.".to_string(),
+    }))
+}
+
+async fn channels_disable_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(name): Path<String>,
+) -> Result<Json<ChannelToggleResponse>, (StatusCode, String)> {
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
+    let key = format!("channel.enabled.{}", name);
+    store
+        .set_setting(&state.user_id, &key, &serde_json::Value::Bool(false))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(ChannelToggleResponse {
+        name,
+        enabled: false,
+        message: "Channel disabled. Restart RustyTalon to apply.".to_string(),
+    }))
 }
 
 // --- Extension handlers ---
