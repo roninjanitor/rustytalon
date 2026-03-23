@@ -926,6 +926,33 @@ async fn main() -> anyhow::Result<()> {
                                 }
                             }
 
+                            // Skip channels with no credentials — avoids unauthenticated API
+                            // calls that would harm the server's IP reputation.
+                            let env_prefix = format!("{}_", channel_name.to_uppercase());
+                            let has_env_creds = std::env::vars()
+                                .any(|(k, v)| k.starts_with(&env_prefix) && !v.is_empty());
+                            let has_stored_creds = if let Some(ref secrets) = secrets_store {
+                                secrets
+                                    .list("default")
+                                    .await
+                                    .map(|list| {
+                                        let secret_prefix = format!("{}_", channel_name);
+                                        list.iter().any(|s| s.name.starts_with(&secret_prefix))
+                                    })
+                                    .unwrap_or(false)
+                            } else {
+                                false
+                            };
+                            if !has_env_creds && !has_stored_creds {
+                                tracing::info!(
+                                    "Skipping {} channel — no credentials configured \
+                                     (set {}_* env vars to activate)",
+                                    channel_name,
+                                    channel_name.to_uppercase()
+                                );
+                                continue;
+                            }
+
                             tracing::info!("Loaded WASM channel: {}", channel_name);
 
                             let secret_name = loaded.webhook_secret_name();

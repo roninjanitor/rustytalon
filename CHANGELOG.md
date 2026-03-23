@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-03-23
+
+### Fixed
+- WASM channels with no credentials configured no longer start at all — previously, pre-installed channels (Telegram, Discord, Slack, WhatsApp, Matrix) would connect to their respective APIs on every boot without any token, risking IP reputation damage from unauthenticated requests. Channels are now skipped at startup unless at least one `{CHANNEL_NAME}_*` env var or stored secret is present.
+
+### Changed
+- Channels require credentials to activate — set `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, etc. to enable the corresponding channel
+
 ## [0.1.14] - 2026-03-23
 
 ### Fixed
