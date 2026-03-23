@@ -25,9 +25,12 @@ RUN rustup target add wasm32-wasip2 && \
 
 WORKDIR /channels
 COPY channels-src/ .
+# Channel crates reference ../../wit/channel.wit which from /channels/<name>/
+# resolves to /wit/channel.wit — copy the WIT definitions so cargo build finds them.
+COPY wit/ /wit/
 
 # Build each channel; failures are non-fatal so a broken channel doesn't block the image.
-RUN for dir in discord telegram slack matrix; do \
+RUN for dir in discord telegram slack matrix whatsapp; do \
       if [ -f "$dir/build.sh" ]; then \
         echo "=== Building $dir channel ===" && \
         (cd "$dir" && bash build.sh) || echo "Warning: $dir build failed, skipping"; \
@@ -79,7 +82,7 @@ RUN useradd -m -u 1000 -s /bin/bash rustytalon
 # Users can configure them immediately via the web UI without any CLI steps.
 COPY --from=channels-builder /channels /channels-built
 RUN mkdir -p /home/rustytalon/.rustytalon/channels && \
-    for dir in discord telegram slack matrix; do \
+    for dir in discord telegram slack matrix whatsapp; do \
       wasm="/channels-built/$dir/$dir.wasm" && \
       cap="/channels-built/$dir/$dir.capabilities.json" && \
       if [ -f "$wasm" ] && [ -f "$cap" ]; then \
