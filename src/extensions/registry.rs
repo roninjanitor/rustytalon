@@ -765,7 +765,8 @@ mod tests {
         use crate::extensions::ExtensionKind;
 
         let registry = ExtensionRegistry::new();
-        let bundled: std::collections::HashSet<&str> = bundled_channel_names().into_iter().collect();
+        let bundled: std::collections::HashSet<&str> =
+            bundled_channel_names().into_iter().collect();
 
         let all = registry.search("").await;
         let channel_entries: Vec<_> = all

@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-03-23
+
+### Fixed
+- Browser cached the old `app.js` after a container update, causing the channel enable/disable toggle to not appear — static asset handlers now send `Cache-Control: no-cache, must-revalidate`
+
 ## [0.1.13] - 2026-03-23
 
 ### Fixed
