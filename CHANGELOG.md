@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-03-23
+
+### Fixed
+- WASM channels (Discord, Telegram, Slack, Matrix, WhatsApp) were silently not installed in the Docker image — the `channels-builder` stage was missing `COPY wit/ /wit/`, so `cargo build` failed because each channel crate references `../../wit/channel.wit` which resolved to `/wit/channel.wit` inside the container
+- Added missing `whatsapp/build.sh` so the WhatsApp channel is compiled and bundled alongside the other four channels
+
+### Added
+- WhatsApp channel is now pre-installed in the Docker image (was excluded from the build and install loops)
+
 ## [0.1.10] - 2026-03-20
 
 ### Fixed
