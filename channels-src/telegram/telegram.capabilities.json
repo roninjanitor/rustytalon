@@ -63,9 +63,9 @@
       },
       "dm_policy": {
         "type": "string",
-        "enum": ["pairing", "owner_only", "anyone"],
+        "enum": ["pairing", "allowlist", "open"],
         "default": "pairing",
-        "description": "Who can send DMs to the bot."
+        "description": "Who can send DMs to the bot. 'pairing' sends a pairing code to unknown users; 'allowlist' silently drops unknown users; 'open' allows anyone."
       },
       "allow_from": {
         "type": "array",

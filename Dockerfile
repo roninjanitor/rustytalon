@@ -62,6 +62,7 @@ COPY src/ src/
 COPY examples/ examples/
 COPY migrations/ migrations/
 COPY wit/ wit/
+COPY docs/ docs/
 
 RUN cargo build --release --bin rustytalon
 
@@ -72,8 +73,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
+WORKDIR /app
+
 COPY --from=builder /app/target/release/rustytalon /usr/local/bin/rustytalon
 COPY --from=builder /app/migrations /app/migrations
+COPY --from=builder /app/docs /app/docs
 
 # Non-root user
 RUN useradd -m -u 1000 -s /bin/bash rustytalon

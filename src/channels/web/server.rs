@@ -1632,6 +1632,8 @@ fn parse_extension_kind(s: &str) -> Option<crate::extensions::ExtensionKind> {
 fn docs_file_for(name: &str) -> Option<String> {
     match name {
         "telegram" | "telegram-tool" => Some("TELEGRAM_SETUP".to_string()),
+        "slack" => Some("SLACK_SETUP".to_string()),
+        "whatsapp" => Some("WHATSAPP_SETUP".to_string()),
         "discord" => Some("DISCORD_SETUP".to_string()),
         "matrix" => Some("MATRIX_SETUP".to_string()),
         _ => None,
@@ -2780,6 +2782,11 @@ mod tests {
         assert_eq!(
             docs_file_for("telegram-tool"),
             Some("TELEGRAM_SETUP".to_string())
+        );
+        assert_eq!(docs_file_for("slack"), Some("SLACK_SETUP".to_string()));
+        assert_eq!(
+            docs_file_for("whatsapp"),
+            Some("WHATSAPP_SETUP".to_string())
         );
         assert_eq!(docs_file_for("discord"), Some("DISCORD_SETUP".to_string()));
         assert_eq!(docs_file_for("matrix"), Some("MATRIX_SETUP".to_string()));

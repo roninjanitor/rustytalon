@@ -1866,38 +1866,19 @@ async function openSetupGuide(entry) {
     } catch (_) {}
   }
 
-  // Fallback: show generic build instructions
-  const dir = entry.build_dir || 'channels-src/' + entry.name;
-  const outDir = entry.kind === 'wasm_channel' ? '~/.rustytalon/channels' : '~/.rustytalon/tools';
+  // Fallback: channel is pre-installed in Docker but no dedicated guide exists yet
   body.innerHTML = marked.parse([
     '# ' + (entry.display_name || entry.name) + ' Setup',
     '',
     entry.description || '',
     '',
-    '## Build from Source',
+    '## Getting Started',
     '',
-    'This extension must be compiled from source before it can be installed.',
+    entry.kind === 'wasm_channel'
+      ? 'This channel is pre-installed in the RustyTalon Docker image. To activate it, set the required credentials as environment variables in your `.env` file and restart the container.'
+      : 'This extension must be installed before use. Run `rustytalon tool install` to install it.',
     '',
-    '**Prerequisites:**',
-    '',
-    '```bash',
-    '# Install the WASM target (one-time)',
-    'rustup target add wasm32-wasip2',
-    'cargo install wasm-tools',
-    '```',
-    '',
-    '**Build and install:**',
-    '',
-    '```bash',
-    'cd ' + dir,
-    './build.sh',
-    '',
-    '# Copy to RustyTalon',
-    'mkdir -p ' + outDir,
-    'cp ' + entry.name + '.wasm ' + entry.name + '.capabilities.json ' + outDir + '/',
-    '```',
-    '',
-    'Then restart RustyTalon — the extension will appear in the **Installed** tab.',
+    'Check the [documentation](https://github.com/nicklozano/rustytalon/tree/main/docs) for setup instructions.',
   ].join('\n'));
 }
 
