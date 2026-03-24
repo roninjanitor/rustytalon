@@ -1,4 +1,4 @@
-// IronClaw Web Gateway - Client
+// RustyTalon Web Gateway - Client
 
 let token = '';
 let eventSource = null;
@@ -25,7 +25,7 @@ function authenticate() {
   // Test the token against the health-ish endpoint (chat/threads requires auth)
   apiFetch('/api/chat/threads')
     .then(() => {
-      sessionStorage.setItem('ironclaw_token', token);
+      sessionStorage.setItem('rustytalon_token', token);
       document.getElementById('auth-screen').style.display = 'none';
       document.getElementById('app').style.display = 'flex';
       // Strip token from URL so it's not visible in the address bar
@@ -40,7 +40,7 @@ function authenticate() {
       loadJobs();
     })
     .catch(() => {
-      sessionStorage.removeItem('ironclaw_token');
+      sessionStorage.removeItem('rustytalon_token');
       document.getElementById('auth-screen').style.display = '';
       document.getElementById('app').style.display = 'none';
       document.getElementById('auth-error').textContent = 'Invalid token';
@@ -60,7 +60,7 @@ document.getElementById('token-input').addEventListener('keydown', (e) => {
     authenticate();
     return;
   }
-  const saved = sessionStorage.getItem('ironclaw_token');
+  const saved = sessionStorage.getItem('rustytalon_token');
   if (saved) {
     document.getElementById('token-input').value = saved;
     // Hide auth screen immediately to prevent flash, authenticate() will
