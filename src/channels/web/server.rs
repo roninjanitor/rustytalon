@@ -2664,6 +2664,8 @@ struct GatewayStatusResponse {
 /// Allowed docs filenames (no path traversal).
 const ALLOWED_DOCS: &[&str] = &[
     "TELEGRAM_SETUP",
+    "SLACK_SETUP",
+    "WHATSAPP_SETUP",
     "DISCORD_SETUP",
     "MATRIX_SETUP",
     "GETTING_STARTED",
