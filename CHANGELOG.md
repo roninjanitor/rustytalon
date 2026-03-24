@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-03-23
+
+### Fixed
+- Slack and WhatsApp setup guides returned 404 in the web UI — `SLACK_SETUP` and `WHATSAPP_SETUP` were missing from `ALLOWED_DOCS` in the docs endpoint, and the docs directory was not copied into the Docker image
+- Telegram `dm_policy` enum in `telegram.capabilities.json` listed wrong values (`owner_only`/`anyone`); corrected to `allowlist`/`open` to match the actual channel code
+- Rewrote `docs/TELEGRAM_SETUP.md` to be Docker-first and accurate (removed stale build-from-source instructions)
+
+### Added
+- `docs/SLACK_SETUP.md` — Docker-first Slack channel setup guide (bot token, OAuth scopes, socket mode, invite bot to channels)
+- `docs/WHATSAPP_SETUP.md` — Docker-first WhatsApp channel setup guide (Meta developer app, phone number ID, webhook verification)
+
+### Changed
+- CI: Docker images are now only built and pushed on version tags (`v*`) — previously every push to `main` triggered a build, causing spurious image publishes between releases. PRs still get a test build without a push.
+
 ## [0.1.15] - 2026-03-23
 
 ### Fixed
