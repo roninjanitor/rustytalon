@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-03-24
+
+### Added
+- `develop` branch as the integration branch for contributor PRs — all contributions should target `develop`, which is merged to `main` for releases
+- `CONTRIBUTING.md` expanded with branching model, PR process, quality gate steps, and pointers to the adding-tools/channels/DB guides in CLAUDE.md
+- Contributing section added to README with quick summary of the branch workflow
+
+### Changed
+- CI: tests now run on push to `develop` in addition to `main` and PRs; code style checks (fmt + clippy) also run on push to `develop`
+- `main` branch is now protected — direct pushes blocked, PRs require 1 approving review and passing CI
+
+### Fixed
+- Removed remaining IronClaw branding from web UI (`index.html`, `app.js`, `style.css`), Windows installer (`wix/main.wxs`), deploy scripts, channel build scripts, and database migration comments
+- Renamed `deploy/ironclaw.service` to `deploy/rustytalon.service`
+
 ## [0.1.16] - 2026-03-23
 
 ### Fixed
