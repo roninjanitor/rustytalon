@@ -526,6 +526,16 @@ cargo test test_name
 RUST_LOG=rustytalon=debug cargo run
 ```
 
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
+
+**Quick summary:**
+- Target PRs at the `develop` branch, not `main`
+- Run `cargo fmt`, `cargo clippy --all-features`, and `cargo test --lib` before opening a PR
+- CI enforces tests and style on all PRs
+- `main` is protected — changes land via PR from `develop`
+
 ## Attribution
 
 RustyTalon is derived from [IronClaw](https://github.com/nearai/ironclaw) (Copyright 2024 NEAR AI), an excellent open source AI assistant. We've preserved IronClaw's robust architecture (WASM sandbox, safety layers, database abstraction, workspace system) while removing vendor lock-in and adding multi-provider LLM support.
