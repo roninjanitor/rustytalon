@@ -10,7 +10,7 @@
     "credentials": {
       "discord_bot_token": {
         "secret_name": "discord_bot_token",
-        "location": { "type": "bearer", "prefix": "Bot " },
+        "location": { "type": "header", "name": "Authorization", "prefix": "Bot " },
         "host_patterns": ["discord.com"]
       }
     },
