@@ -733,6 +733,37 @@ Use the [Keep a Changelog](https://keepachangelog.com/) format under `[Unrelease
 - CHANGELOG hardcoded links causing broken URLs
 ```
 
+## Release & Versioning Workflow
+
+RustyTalon uses a `develop` → `main` branch model with GitHub Actions building releases on `main`.
+
+### Version bump checklist
+
+Before committing to `develop`, always check whether the current version in `Cargo.toml` has already been released on `main`:
+
+```bash
+# Check version on main vs develop
+git show main:Cargo.toml | head -3
+git show develop:Cargo.toml | head -3
+```
+
+If the versions match, **bump the patch version** in `Cargo.toml` on `develop` before committing. Otherwise the PR will merge a version that's already tagged and released, causing CI conflicts.
+
+### Release steps
+
+1. Bump version in `Cargo.toml` (patch for fixes, minor for features)
+2. Run `cargo generate-lockfile` to update `Cargo.lock`
+3. Move changelog entries from `[Unreleased]` to a new `[x.y.z] - YYYY-MM-DD` section
+4. Commit version bump + changelog together
+5. Push to `develop`, open PR to `main`
+6. After CI passes and PR is merged, GitHub Actions builds the release from the version tag
+
+### Common mistakes to avoid
+
+- **Don't commit code changes and version bumps separately across PRs** -- if a fix PR merges before the version bump, the bump lands in a second PR with no code delta, which is confusing
+- **Don't leave entries under `[Unreleased]` when bumping** -- move them to the versioned section
+- **Always check `main` version first** -- `git show main:Cargo.toml | head -3`
+
 ## Review & Fix Discipline
 
 Hard-won lessons from code review -- follow these when fixing bugs or addressing review feedback.
@@ -758,11 +789,18 @@ cargo check --all-features                           # all features
 ```
 Dead code behind the wrong `#[cfg]` gate will only show up when building with a single feature.
 
+### WASM credential consistency
+When a service has both a channel (`channels-src/`) and a tool (`tools-src/`), their `capabilities.json` credential configs must match. In particular:
+- The `location` type and parameters must produce the same `Authorization` header format
+- `"type": "bearer"` always produces `Authorization: Bearer {token}` -- if the API expects a different prefix (e.g., Discord's `Bot`), use `"type": "header"` with an explicit `name` and `prefix` instead
+- After editing any capabilities file, diff the channel and tool versions: `diff <(jq '.capabilities.http.credentials' channels-src/X/X.capabilities.json) <(jq '.http.credentials' tools-src/X/X-tool.capabilities.json)`
+
 ### Mechanical verification before committing
 Run these checks on changed files before committing:
 - `grep -rnE '\.unwrap\(|\.expect\(' <files>` -- no panics in production
 - `grep -rn 'super::' <files>` -- use `crate::` imports
 - If you fixed a pattern bug, `grep` for other instances of that pattern across `src/`
+- If touching WASM capabilities files, verify credential `location` consistency between channel and tool variants
 
 ## Workspace & Memory System
 

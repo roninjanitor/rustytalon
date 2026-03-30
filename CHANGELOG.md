@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-03-30
+
 ### Fixed
 - Discord tool credential injection used `bearer` type (producing `Authorization: Bearer {token}`) instead of `header` type with `Bot` prefix — Discord API requires `Authorization: Bot {token}` format, causing 401 Unauthorized on all Discord tool API calls
 
