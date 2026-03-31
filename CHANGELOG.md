@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- WASM channel wrapper missing host-based credential injection — channels like Discord that rely on the host to add `Authorization` headers (per capabilities.json) got 401 Unauthorized because only placeholder-based injection (`{TOKEN}`) was implemented for channels
+
 ## [0.1.18] - 2026-03-30
 
 ### Fixed

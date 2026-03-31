@@ -52,6 +52,7 @@ use crate::pairing::PairingStore;
 use crate::safety::LeakDetector;
 use crate::tools::wasm::LogLevel;
 use crate::tools::wasm::WasmResourceLimiter;
+use crate::tools::wasm::credential_injector::{InjectedCredentials, host_matches_pattern, inject_credential};
 
 // Generate component model bindings from the WIT file
 wasmtime::component::bindgen!({
@@ -62,6 +63,17 @@ wasmtime::component::bindgen!({
         // Use our own store data type
     },
 });
+
+/// Pre-resolved credential for host-based injection in channel HTTP requests.
+///
+/// Built from the capabilities file's credential mappings + pre-decrypted secrets.
+/// Applied per-request by matching the URL host against `host_patterns`.
+struct ResolvedHostCredential {
+    host_patterns: Vec<String>,
+    headers: HashMap<String, String>,
+    query_params: HashMap<String, String>,
+    secret_value: String,
+}
 
 /// Store data for WASM channel execution.
 ///
@@ -74,6 +86,9 @@ struct ChannelStoreData {
     /// Injected credentials for URL substitution (e.g., bot tokens).
     /// Keys are placeholder names like "TELEGRAM_BOT_TOKEN".
     credentials: HashMap<String, String>,
+    /// Pre-resolved credentials for automatic host-based injection.
+    /// Applied by matching URL host against each credential's host_patterns.
+    host_credentials: Vec<ResolvedHostCredential>,
     /// Pairing store for DM pairing (guest access control).
     pairing_store: Arc<PairingStore>,
     /// Dedicated tokio runtime for HTTP requests, lazily initialized.
@@ -92,15 +107,89 @@ impl ChannelStoreData {
         // Create a minimal WASI context (no filesystem, no env vars for security)
         let wasi = WasiCtxBuilder::new().build();
 
+        // Build host credentials from capabilities credential mappings.
+        // The `credentials` map has pre-decrypted values keyed by SCREAMING_SNAKE_CASE
+        // placeholder names (e.g., "DISCORD_BOT_TOKEN" → "actual-token").
+        // The capabilities file declares how each credential should be injected
+        // (header type, prefix, host patterns).
+        let host_credentials = Self::resolve_host_credentials(&capabilities, &credentials);
+
         Self {
             limiter: WasmResourceLimiter::new(memory_limit),
             host_state: ChannelHostState::new(channel_name, capabilities),
             wasi,
             table: ResourceTable::new(),
             credentials,
+            host_credentials,
             pairing_store,
             http_runtime: None,
         }
+    }
+
+    /// Resolve host credentials from capabilities and pre-decrypted credential values.
+    ///
+    /// Matches capability credential mappings (which declare secret_name, location,
+    /// and host_patterns) against the injected credentials map to build
+    /// pre-resolved headers/query params for host-based injection.
+    fn resolve_host_credentials(
+        capabilities: &ChannelCapabilities,
+        credentials: &HashMap<String, String>,
+    ) -> Vec<ResolvedHostCredential> {
+        let http_cap = match &capabilities.tool_capabilities.http {
+            Some(cap) => cap,
+            None => return Vec::new(),
+        };
+
+        let mut resolved = Vec::new();
+
+        for mapping in http_cap.credentials.values() {
+            // Look up the pre-decrypted value by trying both the original secret_name
+            // and the SCREAMING_SNAKE_CASE placeholder form
+            let placeholder = mapping.secret_name.to_uppercase();
+            let secret_value = credentials
+                .get(&placeholder)
+                .or_else(|| credentials.get(&mapping.secret_name));
+
+            let secret_value = match secret_value {
+                Some(v) => v,
+                None => {
+                    tracing::debug!(
+                        secret_name = %mapping.secret_name,
+                        placeholder = %placeholder,
+                        "No pre-injected credential found for host-based injection"
+                    );
+                    continue;
+                }
+            };
+
+            // Use the shared inject_credential function to build headers/query params
+            let decrypted = match crate::secrets::DecryptedSecret::from_bytes(secret_value.as_bytes().to_vec()) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let mut injected = InjectedCredentials::empty();
+            inject_credential(&mut injected, &mapping.location, &decrypted);
+
+            if injected.is_empty() {
+                continue;
+            }
+
+            resolved.push(ResolvedHostCredential {
+                host_patterns: mapping.host_patterns.clone(),
+                headers: injected.headers,
+                query_params: injected.query_params,
+                secret_value: secret_value.clone(),
+            });
+        }
+
+        if !resolved.is_empty() {
+            tracing::debug!(
+                count = resolved.len(),
+                "Resolved host credentials for channel"
+            );
+        }
+
+        resolved
     }
 
     /// Inject credentials into a string by replacing placeholders.
@@ -164,7 +253,55 @@ impl ChannelStoreData {
                 result = result.replace(value, &format!("[REDACTED:{}]", name));
             }
         }
+        // Also redact host credential values
+        for cred in &self.host_credentials {
+            if !cred.secret_value.is_empty() {
+                result = result.replace(&cred.secret_value, "[REDACTED:host_credential]");
+            }
+        }
         result
+    }
+
+    /// Inject pre-resolved host credentials into the request.
+    ///
+    /// Matches the URL host against each resolved credential's host_patterns.
+    /// Matching credentials have their headers merged and query params appended.
+    fn inject_host_credentials(
+        &self,
+        url_host: &str,
+        headers: &mut HashMap<String, String>,
+        url: &mut String,
+    ) {
+        for cred in &self.host_credentials {
+            let matches = cred
+                .host_patterns
+                .iter()
+                .any(|pattern| host_matches_pattern(url_host, pattern));
+
+            if !matches {
+                continue;
+            }
+
+            // Merge injected headers (host credentials take precedence)
+            for (key, value) in &cred.headers {
+                headers.insert(key.clone(), value.clone());
+            }
+
+            // Append query parameters to URL
+            if !cred.query_params.is_empty() {
+                let separator = if url.contains('?') { '&' } else { '?' };
+                for (i, (name, value)) in cred.query_params.iter().enumerate() {
+                    if i == 0 {
+                        url.push(separator);
+                    } else {
+                        url.push('&');
+                    }
+                    url.push_str(name);
+                    url.push('=');
+                    url.push_str(value);
+                }
+            }
+        }
     }
 }
 
@@ -257,6 +394,8 @@ impl near::agent::channel_host::Host for ChannelStoreData {
             })
             .collect();
 
+        let mut headers = headers;
+
         let headers_changed = headers
             .values()
             .any(|v| v.contains("Bearer ") && !v.contains('{'));
@@ -266,7 +405,17 @@ impl near::agent::channel_host::Host for ChannelStoreData {
             "Parsed and injected request headers"
         );
 
-        let url = injected_url;
+        let mut url = injected_url;
+
+        // Inject host-based credentials (e.g., Authorization: Bot <token> for Discord)
+        // This uses the credential mappings from capabilities.json to automatically
+        // add auth headers based on the request's target host.
+        if let Ok(parsed) = reqwest::Url::parse(&url) {
+            if let Some(host) = parsed.host_str() {
+                self.inject_host_credentials(host, &mut headers, &mut url);
+            }
+        }
+
         let leak_detector = LeakDetector::new();
         let header_vec: Vec<(String, String)> = headers
             .iter()
