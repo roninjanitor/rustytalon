@@ -52,7 +52,9 @@ use crate::pairing::PairingStore;
 use crate::safety::LeakDetector;
 use crate::tools::wasm::LogLevel;
 use crate::tools::wasm::WasmResourceLimiter;
-use crate::tools::wasm::credential_injector::{InjectedCredentials, host_matches_pattern, inject_credential};
+use crate::tools::wasm::credential_injector::{
+    InjectedCredentials, host_matches_pattern, inject_credential,
+};
 
 // Generate component model bindings from the WIT file
 wasmtime::component::bindgen!({
@@ -163,10 +165,12 @@ impl ChannelStoreData {
             };
 
             // Use the shared inject_credential function to build headers/query params
-            let decrypted = match crate::secrets::DecryptedSecret::from_bytes(secret_value.as_bytes().to_vec()) {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
+            let decrypted =
+                match crate::secrets::DecryptedSecret::from_bytes(secret_value.as_bytes().to_vec())
+                {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
             let mut injected = InjectedCredentials::empty();
             inject_credential(&mut injected, &mapping.location, &decrypted);
 
