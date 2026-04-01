@@ -2908,4 +2908,248 @@ mod tests {
         // 404 because "000" is not a valid bot token
         assert_eq!(result, 404);
     }
+
+    #[test]
+    fn test_resolve_host_credentials_from_capabilities() {
+        use super::ChannelStoreData;
+        use crate::tools::wasm::{Capabilities, HttpCapability};
+
+        // Simulate what discord.capabilities.json declares
+        let mut cred_mappings = std::collections::HashMap::new();
+        cred_mappings.insert(
+            "discord_bot_token".to_string(),
+            crate::secrets::CredentialMapping {
+                secret_name: "discord_bot_token".to_string(),
+                location: crate::secrets::CredentialLocation::Header {
+                    name: "Authorization".to_string(),
+                    prefix: Some("Bot ".to_string()),
+                },
+                host_patterns: vec!["discord.com".to_string()],
+            },
+        );
+
+        let tool_caps = Capabilities {
+            http: Some(HttpCapability {
+                credentials: cred_mappings,
+                ..HttpCapability::default()
+            }),
+            ..Capabilities::default()
+        };
+
+        let capabilities =
+            ChannelCapabilities::for_channel("discord").with_tool_capabilities(tool_caps);
+
+        // Simulate the pre-injected credentials (as inject_channel_credentials does)
+        let mut credentials = std::collections::HashMap::new();
+        credentials.insert(
+            "DISCORD_BOT_TOKEN".to_string(),
+            "MTIz.fake.token".to_string(),
+        );
+
+        let store = ChannelStoreData::new(
+            1024 * 1024,
+            "discord",
+            capabilities,
+            credentials,
+            Arc::new(PairingStore::new()),
+        );
+
+        // Verify host credentials were resolved
+        assert_eq!(
+            store.host_credentials.len(),
+            1,
+            "Should have resolved 1 host credential"
+        );
+
+        let cred = &store.host_credentials[0];
+        assert_eq!(cred.host_patterns, vec!["discord.com".to_string()]);
+        assert_eq!(
+            cred.headers.get("Authorization"),
+            Some(&"Bot MTIz.fake.token".to_string()),
+            "Should produce 'Bot <token>' header"
+        );
+    }
+
+    #[test]
+    fn test_inject_host_credentials_adds_auth_header() {
+        use super::ChannelStoreData;
+        use crate::tools::wasm::{Capabilities, HttpCapability};
+
+        // Build capabilities with Discord-style credential mapping
+        let mut cred_mappings = std::collections::HashMap::new();
+        cred_mappings.insert(
+            "discord_bot_token".to_string(),
+            crate::secrets::CredentialMapping {
+                secret_name: "discord_bot_token".to_string(),
+                location: crate::secrets::CredentialLocation::Header {
+                    name: "Authorization".to_string(),
+                    prefix: Some("Bot ".to_string()),
+                },
+                host_patterns: vec!["discord.com".to_string()],
+            },
+        );
+
+        let tool_caps = Capabilities {
+            http: Some(HttpCapability {
+                credentials: cred_mappings,
+                ..HttpCapability::default()
+            }),
+            ..Capabilities::default()
+        };
+
+        let capabilities =
+            ChannelCapabilities::for_channel("discord").with_tool_capabilities(tool_caps);
+
+        let mut credentials = std::collections::HashMap::new();
+        credentials.insert(
+            "DISCORD_BOT_TOKEN".to_string(),
+            "MTIz.fake.token".to_string(),
+        );
+
+        let store = ChannelStoreData::new(
+            1024 * 1024,
+            "discord",
+            capabilities,
+            credentials,
+            Arc::new(PairingStore::new()),
+        );
+
+        // Simulate the WASM module sending headers with only Content-Type
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
+        let mut url = "https://discord.com/api/v10/users/@me".to_string();
+
+        store.inject_host_credentials("discord.com", &mut headers, &mut url);
+
+        // Authorization header should have been injected
+        assert_eq!(
+            headers.get("Authorization"),
+            Some(&"Bot MTIz.fake.token".to_string()),
+            "inject_host_credentials should add Authorization: Bot <token>"
+        );
+        // Original header should still be present
+        assert_eq!(
+            headers.get("Content-Type"),
+            Some(&"application/json".to_string())
+        );
+    }
+
+    #[test]
+    fn test_inject_host_credentials_no_match_for_wrong_host() {
+        use super::ChannelStoreData;
+        use crate::tools::wasm::{Capabilities, HttpCapability};
+
+        let mut cred_mappings = std::collections::HashMap::new();
+        cred_mappings.insert(
+            "discord_bot_token".to_string(),
+            crate::secrets::CredentialMapping {
+                secret_name: "discord_bot_token".to_string(),
+                location: crate::secrets::CredentialLocation::Header {
+                    name: "Authorization".to_string(),
+                    prefix: Some("Bot ".to_string()),
+                },
+                host_patterns: vec!["discord.com".to_string()],
+            },
+        );
+
+        let tool_caps = Capabilities {
+            http: Some(HttpCapability {
+                credentials: cred_mappings,
+                ..HttpCapability::default()
+            }),
+            ..Capabilities::default()
+        };
+
+        let capabilities =
+            ChannelCapabilities::for_channel("discord").with_tool_capabilities(tool_caps);
+
+        let mut credentials = std::collections::HashMap::new();
+        credentials.insert(
+            "DISCORD_BOT_TOKEN".to_string(),
+            "MTIz.fake.token".to_string(),
+        );
+
+        let store = ChannelStoreData::new(
+            1024 * 1024,
+            "discord",
+            capabilities,
+            credentials,
+            Arc::new(PairingStore::new()),
+        );
+
+        // Request to a different host — should NOT inject
+        let mut headers = std::collections::HashMap::new();
+        let mut url = "https://other.com/api".to_string();
+
+        store.inject_host_credentials("other.com", &mut headers, &mut url);
+
+        assert!(
+            !headers.contains_key("Authorization"),
+            "Should not inject credentials for non-matching host"
+        );
+    }
+
+    #[test]
+    fn test_discord_capabilities_json_parses_credentials() {
+        // Parse the actual discord.capabilities.json to verify the full chain
+        let json = include_str!("../../../channels-src/discord/discord.capabilities.json");
+        let cap_file = crate::channels::wasm::schema::ChannelCapabilitiesFile::from_json(json)
+            .expect("Should parse discord capabilities JSON");
+        let caps = cap_file.to_capabilities();
+
+        // Verify HTTP capability exists with credentials
+        let http = caps
+            .tool_capabilities
+            .http
+            .as_ref()
+            .expect("Should have HTTP capability");
+        assert!(
+            !http.credentials.is_empty(),
+            "Should have at least one credential mapping, got: {:?}",
+            http.credentials.keys().collect::<Vec<_>>()
+        );
+
+        // Verify the discord_bot_token credential mapping
+        let mapping = http
+            .credentials
+            .get("discord_bot_token")
+            .expect("Should have discord_bot_token credential");
+        assert_eq!(mapping.secret_name, "discord_bot_token");
+        assert_eq!(mapping.host_patterns, vec!["discord.com".to_string()]);
+        assert!(
+            matches!(
+                &mapping.location,
+                crate::secrets::CredentialLocation::Header { name, prefix }
+                    if name == "Authorization" && prefix == &Some("Bot ".to_string())
+            ),
+            "Should be Header location with Bot prefix, got: {:?}",
+            mapping.location
+        );
+
+        // Now verify resolve_host_credentials works with parsed capabilities
+        use super::ChannelStoreData;
+        let mut credentials = std::collections::HashMap::new();
+        credentials.insert(
+            "DISCORD_BOT_TOKEN".to_string(),
+            "test-token-value".to_string(),
+        );
+
+        let store = ChannelStoreData::new(
+            1024 * 1024,
+            "discord",
+            caps,
+            credentials,
+            Arc::new(PairingStore::new()),
+        );
+
+        assert_eq!(
+            store.host_credentials.len(),
+            1,
+            "Should resolve 1 host credential from parsed capabilities"
+        );
+        assert_eq!(
+            store.host_credentials[0].headers.get("Authorization"),
+            Some(&"Bot test-token-value".to_string()),
+        );
+    }
 }
