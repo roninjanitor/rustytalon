@@ -756,7 +756,13 @@ If the versions match, **bump the patch version** in `Cargo.toml` on `develop` b
 3. Move changelog entries from `[Unreleased]` to a new `[x.y.z] - YYYY-MM-DD` section
 4. Commit version bump + changelog together
 5. Push to `develop`, open PR to `main`
-6. After CI passes and PR is merged, GitHub Actions builds the release from the version tag
+6. After CI passes and PR is merged, **create and push a git tag** to trigger the release:
+   ```bash
+   git fetch origin main
+   git tag v<x.y.z> origin/main
+   git push origin v<x.y.z>
+   ```
+   The `Release` workflow (`.github/workflows/release.yml`) only triggers on tag pushes matching `v*` -- merging the PR alone does NOT create a release
 
 ### Common mistakes to avoid
 
