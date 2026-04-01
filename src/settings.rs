@@ -165,6 +165,10 @@ pub struct ChannelSettings {
     #[serde(default)]
     pub telegram_owner_id: Option<i64>,
 
+    /// Discord owner user ID. When set, the bot only responds to this user.
+    #[serde(default)]
+    pub discord_owner_id: Option<String>,
+
     /// Enabled WASM channels by name.
     /// Channels not in this list but present in the channels directory will still load.
     /// This is primarily used by the setup wizard to track which channels were configured.
