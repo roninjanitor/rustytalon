@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-04-01
+
+### Added
+- Discord `owner_id` injection via `DISCORD_OWNER_ID` env var or `channels.discord_owner_id` setting — the bot now filters messages to the configured user, matching Telegram's existing owner binding
+
+### Fixed
+- Excessive `INFO`-level logging from WASM channel credential injection on every poll cycle (~30s) — downgraded 8 diagnostic log lines in `resolve_host_credentials` and `inject_host_credentials` to `DEBUG`
+
 ## [0.1.19] - 2026-03-31
 
 ### Fixed

@@ -758,6 +758,8 @@ pub struct ChannelsConfig {
     pub wasm_channels_enabled: bool,
     /// Telegram owner user ID. When set, the bot only responds to this user.
     pub telegram_owner_id: Option<i64>,
+    /// Discord owner user ID. When set, the bot only responds to this user.
+    pub discord_owner_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -853,6 +855,8 @@ impl ChannelsConfig {
                     message: format!("must be an integer: {e}"),
                 })?
                 .or(settings.channels.telegram_owner_id),
+            discord_owner_id: optional_env("DISCORD_OWNER_ID")?
+                .or(settings.channels.discord_owner_id.clone()),
         })
     }
 }

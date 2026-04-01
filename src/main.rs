@@ -1000,10 +1000,18 @@ async fn main() -> anyhow::Result<()> {
                                     );
                                 }
 
-                                // Inject owner_id for Telegram so the bot only responds
-                                // to the bound user account.
+                                // Inject owner_id so the bot only responds to the
+                                // bound user account.
                                 if channel_name == "telegram"
                                     && let Some(owner_id) = config.channels.telegram_owner_id
+                                {
+                                    config_updates.insert(
+                                        "owner_id".to_string(),
+                                        serde_json::json!(owner_id),
+                                    );
+                                }
+                                if channel_name == "discord"
+                                    && let Some(ref owner_id) = config.channels.discord_owner_id
                                 {
                                     config_updates.insert(
                                         "owner_id".to_string(),

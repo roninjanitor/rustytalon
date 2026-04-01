@@ -145,7 +145,7 @@ impl ChannelStoreData {
             .map(|h| h.credentials.len())
             .unwrap_or(0);
 
-        tracing::info!(
+        tracing::debug!(
             has_http_cap = has_http,
             capability_credential_count = cred_count,
             injected_credential_count = credentials.len(),
@@ -168,7 +168,7 @@ impl ChannelStoreData {
             // and the SCREAMING_SNAKE_CASE placeholder form
             let placeholder = mapping.secret_name.to_uppercase();
 
-            tracing::info!(
+            tracing::debug!(
                 mapping_key = %key,
                 secret_name = %mapping.secret_name,
                 placeholder = %placeholder,
@@ -183,7 +183,7 @@ impl ChannelStoreData {
 
             let secret_value = match secret_value {
                 Some(v) => {
-                    tracing::info!(
+                    tracing::debug!(
                         secret_name = %mapping.secret_name,
                         value_len = v.len(),
                         "Found pre-injected credential for host-based injection"
@@ -211,7 +211,7 @@ impl ChannelStoreData {
             let mut injected = InjectedCredentials::empty();
             inject_credential(&mut injected, &mapping.location, &decrypted);
 
-            tracing::info!(
+            tracing::debug!(
                 injected_header_count = injected.headers.len(),
                 injected_header_names = ?injected.headers.keys().collect::<Vec<_>>(),
                 injected_query_count = injected.query_params.len(),
@@ -231,7 +231,7 @@ impl ChannelStoreData {
             });
         }
 
-        tracing::info!(
+        tracing::debug!(
             resolved_count = resolved.len(),
             "Host credential resolution complete"
         );
@@ -319,7 +319,7 @@ impl ChannelStoreData {
         headers: &mut HashMap<String, String>,
         url: &mut String,
     ) {
-        tracing::info!(
+        tracing::debug!(
             url_host = %url_host,
             host_credentials_count = self.host_credentials.len(),
             "inject_host_credentials called"
@@ -331,7 +331,7 @@ impl ChannelStoreData {
                 .iter()
                 .any(|pattern| host_matches_pattern(url_host, pattern));
 
-            tracing::info!(
+            tracing::debug!(
                 host_patterns = ?cred.host_patterns,
                 matches = matches,
                 "Checking host credential match"
@@ -343,7 +343,7 @@ impl ChannelStoreData {
 
             // Merge injected headers (host credentials take precedence)
             for (key, value) in &cred.headers {
-                tracing::info!(
+                tracing::debug!(
                     header_name = %key,
                     "Injecting host credential header"
                 );
