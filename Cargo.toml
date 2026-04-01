@@ -167,6 +167,26 @@ required-features = ["postgres"]
 inherits = "release"
 lto = "thin"
 
+[workspace]
+exclude = [
+    "channels-src/discord",
+    "channels-src/matrix",
+    "channels-src/slack",
+    "channels-src/telegram",
+    "channels-src/whatsapp",
+    "tools-src/discord",
+    "tools-src/gmail",
+    "tools-src/google-calendar",
+    "tools-src/google-docs",
+    "tools-src/google-drive",
+    "tools-src/google-sheets",
+    "tools-src/google-slides",
+    "tools-src/matrix",
+    "tools-src/okta",
+    "tools-src/slack",
+    "tools-src/telegram",
+]
+
 # Config for 'dist'
 [workspace.metadata.dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
