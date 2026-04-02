@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-04-01
+
+### Fixed
+- Extension settings (`extensions.discord.owner_id`, `extensions.discord.dm_policy`, etc.) saved via web UI now load into WASM channels on startup — previously silently ignored
+- "Path not found" warnings on startup for `extensions.*` and `channel.enabled.*` DB settings that don't belong to the Settings struct
+- `channels-src/` and `tools-src/` crates excluded from Cargo workspace so they build independently with `--target wasm32-wasip2`
+
 ## [0.1.20] - 2026-04-01
 
 ### Added
