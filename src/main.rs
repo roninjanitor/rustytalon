@@ -1001,7 +1001,9 @@ async fn main() -> anyhow::Result<()> {
                                 }
 
                                 // Inject owner_id so the bot only responds to the
-                                // bound user account.
+                                // bound user account.  Check both the Config
+                                // struct (env / Settings) and the per-extension
+                                // DB settings saved by the web UI.
                                 if channel_name == "telegram"
                                     && let Some(owner_id) = config.channels.telegram_owner_id
                                 {
@@ -1017,6 +1019,23 @@ async fn main() -> anyhow::Result<()> {
                                         "owner_id".to_string(),
                                         serde_json::json!(owner_id),
                                     );
+                                }
+
+                                // Load per-extension config from DB (keys like
+                                // "extensions.<channel>.<field>") and inject any
+                                // values not already set by the Config struct.
+                                if let Some(ref db_ref) = db {
+                                    let prefix = format!("extensions.{}.", channel_name);
+                                    if let Ok(all) = db_ref.get_all_settings("default").await {
+                                        for (key, value) in &all {
+                                            if let Some(field) = key.strip_prefix(&prefix) {
+                                                if !config_updates.contains_key(field) {
+                                                    config_updates
+                                                        .insert(field.to_string(), value.clone());
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
 
                                 if !config_updates.is_empty() {

@@ -1,6 +1,6 @@
 [package]
 name = "rustytalon"
-version = "0.1.20"
+version = "0.1.21"
 edition = "2024"
 rust-version = "1.85"
 description = "Secure multi-provider AI assistant with smart routing and no vendor lock-in"
@@ -166,6 +166,26 @@ required-features = ["postgres"]
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[workspace]
+exclude = [
+    "channels-src/discord",
+    "channels-src/matrix",
+    "channels-src/slack",
+    "channels-src/telegram",
+    "channels-src/whatsapp",
+    "tools-src/discord",
+    "tools-src/gmail",
+    "tools-src/google-calendar",
+    "tools-src/google-docs",
+    "tools-src/google-drive",
+    "tools-src/google-sheets",
+    "tools-src/google-slides",
+    "tools-src/matrix",
+    "tools-src/okta",
+    "tools-src/slack",
+    "tools-src/telegram",
+]
 
 # Config for 'dist'
 [workspace.metadata.dist]

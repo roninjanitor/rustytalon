@@ -54,7 +54,7 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 
 # Build only dependencies — this layer is cached unless Cargo.toml/Cargo.lock changes
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --all-features --recipe-path recipe.json
 
 # Copy source and build the binary
 COPY Cargo.toml Cargo.lock ./
@@ -64,7 +64,7 @@ COPY migrations/ migrations/
 COPY wit/ wit/
 COPY docs/ docs/
 
-RUN cargo build --release --bin rustytalon
+RUN cargo build --release --all-features --bin rustytalon
 
 # Stage 5: Runtime
 FROM debian:bookworm-slim
