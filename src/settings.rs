@@ -509,8 +509,7 @@ impl Settings {
     /// Key prefixes stored in the same settings table but not part of the
     /// Settings struct.  These are extension/channel runtime keys managed by
     /// the web API and read back via `Database::get_setting()` directly.
-    const NON_STRUCT_PREFIXES: &'static [&'static str] =
-        &["extensions.", "channel.enabled."];
+    const NON_STRUCT_PREFIXES: &'static [&'static str] = &["extensions.", "channel.enabled."];
 
     pub fn from_db_map(map: &std::collections::HashMap<String, serde_json::Value>) -> Self {
         // Start with defaults, then overlay each DB setting
@@ -519,10 +518,7 @@ impl Settings {
         for (key, value) in map {
             // Skip keys that live in the settings table but aren't part of
             // the Settings struct (extension config, channel toggles, etc.).
-            if Self::NON_STRUCT_PREFIXES
-                .iter()
-                .any(|p| key.starts_with(p))
-            {
+            if Self::NON_STRUCT_PREFIXES.iter().any(|p| key.starts_with(p)) {
                 continue;
             }
 

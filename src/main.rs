@@ -1026,16 +1026,12 @@ async fn main() -> anyhow::Result<()> {
                                 // values not already set by the Config struct.
                                 if let Some(ref db_ref) = db {
                                     let prefix = format!("extensions.{}.", channel_name);
-                                    if let Ok(all) =
-                                        db_ref.get_all_settings("default").await
-                                    {
+                                    if let Ok(all) = db_ref.get_all_settings("default").await {
                                         for (key, value) in &all {
                                             if let Some(field) = key.strip_prefix(&prefix) {
                                                 if !config_updates.contains_key(field) {
-                                                    config_updates.insert(
-                                                        field.to_string(),
-                                                        value.clone(),
-                                                    );
+                                                    config_updates
+                                                        .insert(field.to_string(), value.clone());
                                                 }
                                             }
                                         }
