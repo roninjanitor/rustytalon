@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 use wasmtime::Store;
@@ -161,6 +161,12 @@ impl ChannelStoreData {
             }
         };
 
+        tracing::info!(
+            capability_credential_keys = ?http_cap.credentials.keys().collect::<Vec<_>>(),
+            injected_credential_keys = ?credentials.keys().collect::<Vec<_>>(),
+            "resolve_host_credentials: matching capabilities vs injected credentials"
+        );
+
         let mut resolved = Vec::new();
 
         for (key, mapping) in &http_cap.credentials {
@@ -168,12 +174,11 @@ impl ChannelStoreData {
             // and the SCREAMING_SNAKE_CASE placeholder form
             let placeholder = mapping.secret_name.to_uppercase();
 
-            tracing::debug!(
+            tracing::info!(
                 mapping_key = %key,
                 secret_name = %mapping.secret_name,
                 placeholder = %placeholder,
                 host_patterns = ?mapping.host_patterns,
-                location = ?mapping.location,
                 "Processing credential mapping"
             );
 
@@ -231,8 +236,10 @@ impl ChannelStoreData {
             });
         }
 
-        tracing::debug!(
+        tracing::info!(
             resolved_count = resolved.len(),
+            capability_credential_count = http_cap.credentials.len(),
+            injected_credential_count = credentials.len(),
             "Host credential resolution complete"
         );
 
@@ -473,10 +480,24 @@ impl near::agent::channel_host::Host for ChannelStoreData {
         // Inject host-based credentials (e.g., Authorization: Bot <token> for Discord)
         // This uses the credential mappings from capabilities.json to automatically
         // add auth headers based on the request's target host.
+        let headers_before = headers.len();
         if let Ok(parsed) = reqwest::Url::parse(&url) {
             if let Some(host) = parsed.host_str() {
+                tracing::info!(
+                    url_host = %host,
+                    host_credentials_count = self.host_credentials.len(),
+                    "Host credential injection: checking"
+                );
                 self.inject_host_credentials(host, &mut headers, &mut url);
             }
+        }
+        let host_headers_added = headers.len() - headers_before;
+        if host_headers_added > 0 || !self.host_credentials.is_empty() {
+            tracing::info!(
+                host_headers_added = host_headers_added,
+                has_authorization = headers.contains_key("Authorization"),
+                "Host credential injection: result"
+            );
         }
 
         let leak_detector = LeakDetector::new();
@@ -759,6 +780,13 @@ pub struct WasmChannel {
 
     /// Pairing store for DM pairing (guest access control).
     pairing_store: Arc<PairingStore>,
+
+    /// Connection broker shutdown signal sender.
+    /// Sending `true` signals the broker tasks to stop.
+    broker_shutdown_tx: watch::Sender<bool>,
+
+    /// Connection broker task handle.
+    broker_task: RwLock<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl WasmChannel {
@@ -789,6 +817,8 @@ impl WasmChannel {
             credentials: Arc::new(RwLock::new(HashMap::new())),
             typing_task: RwLock::new(None),
             pairing_store,
+            broker_shutdown_tx: watch::channel(false).0,
+            broker_task: RwLock::new(None),
         }
     }
 
@@ -1850,11 +1880,100 @@ impl WasmChannel {
         }
     }
 
+    /// Execute a single event callback with a fresh WASM instance.
+    ///
+    /// Called by the connection broker's dispatch loop for each event received
+    /// from a persistent connection. Same security model as `execute_poll`:
+    /// fresh instance, fuel limits, timeout, leak detection.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn execute_event(
+        channel_name: &str,
+        runtime: &Arc<WasmChannelRuntime>,
+        prepared: &Arc<PreparedChannelModule>,
+        capabilities: &ChannelCapabilities,
+        credentials: &RwLock<HashMap<String, String>>,
+        pairing_store: Arc<PairingStore>,
+        timeout: Duration,
+        event_json: &str,
+    ) -> Result<Vec<EmittedMessage>, WasmChannelError> {
+        // Skip if no WASM bytes (testing mode)
+        if prepared.component_bytes.is_empty() {
+            tracing::debug!(
+                channel = %channel_name,
+                "WASM channel on_event called (no WASM module)"
+            );
+            return Ok(Vec::new());
+        }
+
+        let runtime = Arc::clone(runtime);
+        let prepared = Arc::clone(prepared);
+        let capabilities = capabilities.clone();
+        let credentials_snapshot = credentials.read().await.clone();
+        let channel_name_owned = channel_name.to_string();
+        let event_json_owned = event_json.to_string();
+
+        // Execute in blocking task with timeout
+        let result = tokio::time::timeout(timeout, async move {
+            tokio::task::spawn_blocking(move || {
+                let mut store = Self::create_store(
+                    &runtime,
+                    &prepared,
+                    &capabilities,
+                    credentials_snapshot,
+                    pairing_store,
+                )?;
+                let instance = Self::instantiate_component(&runtime, &prepared, &mut store)?;
+
+                // Call on_event using the generated typed interface
+                let channel_iface = instance.near_agent_channel();
+                let result = channel_iface
+                    .call_on_event(&mut store, &event_json_owned)
+                    .map_err(|e| Self::map_wasm_error(e, &prepared.name, prepared.limits.fuel))?;
+
+                // Check if WASM returned an error
+                if let Err(err_msg) = result {
+                    tracing::warn!(
+                        channel = %prepared.name,
+                        error = %err_msg,
+                        "on_event returned error"
+                    );
+                }
+
+                let host_state =
+                    Self::extract_host_state(&mut store, &prepared.name, &capabilities);
+                Ok(host_state)
+            })
+            .await
+            .map_err(|e| WasmChannelError::ExecutionPanicked {
+                name: channel_name_owned.clone(),
+                reason: e.to_string(),
+            })?
+        })
+        .await;
+
+        match result {
+            Ok(Ok(mut host_state)) => {
+                let emitted = host_state.take_emitted_messages();
+                tracing::debug!(
+                    channel = %channel_name,
+                    emitted_count = emitted.len(),
+                    "WASM channel on_event completed"
+                );
+                Ok(emitted)
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(WasmChannelError::Timeout {
+                name: channel_name.to_string(),
+                callback: "on_event".to_string(),
+            }),
+        }
+    }
+
     /// Dispatch emitted messages to the message channel.
     ///
-    /// This is a static helper used by the polling loop since it doesn't have
-    /// access to `&self`.
-    async fn dispatch_emitted_messages(
+    /// This is a static helper used by the polling loop and broker dispatch loop
+    /// since they don't have access to `&self`.
+    pub(crate) async fn dispatch_emitted_messages(
         channel_name: &str,
         messages: Vec<EmittedMessage>,
         message_tx: &RwLock<Option<mpsc::Sender<IncomingMessage>>>,
@@ -2000,6 +2119,29 @@ impl Channel for WasmChannel {
             self.start_polling(Duration::from_millis(interval as u64), poll_shutdown_rx);
         }
 
+        // Start connection broker if configured
+        if let Some(ref connection_config) = self.capabilities.connection {
+            let shutdown_rx = self.broker_shutdown_tx.subscribe();
+            let handle = crate::channels::wasm::broker::ConnectionBroker::spawn(
+                self.name.clone(),
+                connection_config.clone(),
+                Arc::clone(&self.runtime),
+                Arc::clone(&self.prepared),
+                self.capabilities.clone(),
+                self.credentials.clone(),
+                self.message_tx.clone(),
+                self.rate_limiter.clone(),
+                self.pairing_store.clone(),
+                shutdown_rx,
+            );
+            *self.broker_task.write().await = Some(handle);
+
+            tracing::info!(
+                channel = %self.name,
+                "Connection broker started"
+            );
+        }
+
         tracing::info!(
             channel = %self.name,
             display_name = %config.display_name,
@@ -2074,6 +2216,12 @@ impl Channel for WasmChannel {
 
         // Stop polling by dropping the sender (receiver will complete)
         let _ = self.poll_shutdown_tx.write().await.take();
+
+        // Cancel the connection broker
+        let _ = self.broker_shutdown_tx.send(true);
+        if let Some(handle) = self.broker_task.write().await.take() {
+            handle.abort();
+        }
 
         // Clear the message sender
         *self.message_tx.write().await = None;

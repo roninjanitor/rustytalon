@@ -80,6 +80,22 @@ pub enum WasmChannelError {
 
     #[error("HTTP request error: {0}")]
     HttpRequest(String),
+
+    #[error("Channel {name} broker connection failed: {reason}")]
+    BrokerConnectionFailed { name: String, reason: String },
+
+    #[error("Channel {name} broker handshake failed: {reason}")]
+    BrokerHandshakeFailed { name: String, reason: String },
+
+    #[error("Channel {name} broker reconnect exhausted ({attempts} attempts)")]
+    BrokerReconnectExhausted { name: String, attempts: u32 },
+
+    #[error("Channel {name} broker event too large: {size} bytes (max: {max})")]
+    BrokerEventTooLarge {
+        name: String,
+        size: usize,
+        max: usize,
+    },
 }
 
 impl From<crate::tools::wasm::WasmError> for WasmChannelError {

@@ -84,6 +84,12 @@ impl WasmChannelLoader {
                             .as_ref()
                             .map(|h| h.allowlist.len())
                             .unwrap_or(0),
+                        http_credential_count = caps
+                            .tool_capabilities
+                            .http
+                            .as_ref()
+                            .map(|h| h.credentials.len())
+                            .unwrap_or(0),
                         "Channel capabilities loaded"
                     );
 

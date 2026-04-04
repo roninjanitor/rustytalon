@@ -306,6 +306,22 @@ interface channel {
     /// Use emit-message to queue messages discovered during polling.
     on-poll: func();
 
+    /// Handle an event from the connection broker.
+    ///
+    /// Called when the host-managed persistent connection receives an event
+    /// that passes the event filter. The event is delivered as raw JSON.
+    ///
+    /// This is the persistent-connection equivalent of on-poll: same sandbox
+    /// rules apply (fresh instance, fuel limits, timeout, leak detection).
+    ///
+    /// Arguments:
+    /// - event-json: The raw event JSON from the persistent connection
+    ///
+    /// Returns:
+    /// - Ok: Event processed (any messages emitted via emit-message)
+    /// - Err(string): Processing failure message
+    on-event: func(event-json: string) -> result<_, string>;
+
     /// Deliver an agent response to the channel.
     ///
     /// Called when the agent has generated a response to a message

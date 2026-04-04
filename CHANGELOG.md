@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Connection broker for WASM channels — host-side persistent connection management (WebSocket, long-poll, SSE) that preserves sandbox security
+- `on-event` WIT callback for WASM channels to receive events from persistent connections
+- `connection` capability in channel `capabilities.json` schema for declaring persistent connection requirements
+- Discord Gateway WebSocket configuration in `discord.capabilities.json` (enables real-time message delivery alongside existing polling)
+- `on_event` handler in Discord WASM module for processing Gateway events
+
 ## [0.1.21] - 2026-04-01
 
 ### Fixed

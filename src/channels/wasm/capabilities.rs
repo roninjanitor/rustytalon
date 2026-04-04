@@ -8,6 +8,10 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::channels::wasm::schema::{
+    AllowlistEntrySchema, ConnectionSchema, ConnectionType, EventFilterSchema, HandshakeSchema,
+    KeepaliveSchema, ReconnectSchema, UrlFromApiSchema,
+};
 use crate::tools::wasm::{Capabilities as ToolCapabilities, RateLimitConfig};
 
 /// Minimum allowed polling interval (30 seconds).
@@ -49,6 +53,10 @@ pub struct ChannelCapabilities {
 
     /// Callback timeout duration.
     pub callback_timeout: Duration,
+
+    /// Optional persistent connection configuration.
+    /// When present, the host spawns a connection broker task.
+    pub connection: Option<ConnectionConfig>,
 }
 
 impl Default for ChannelCapabilities {
@@ -62,6 +70,7 @@ impl Default for ChannelCapabilities {
             emit_rate_limit: EmitRateLimitConfig::default(),
             max_message_size: 64 * 1024, // 64 KB
             callback_timeout: Duration::from_secs(30),
+            connection: None,
         }
     }
 }
@@ -154,6 +163,55 @@ impl ChannelCapabilities {
 
         // Prefix with channel namespace
         Ok(self.prefix_workspace_path(path))
+    }
+}
+
+// ============================================================================
+// Connection broker runtime config
+// ============================================================================
+
+/// Runtime configuration for the connection broker.
+///
+/// Converted from [`ConnectionSchema`] during capabilities loading.
+/// The broker reads this to know how to connect, heartbeat, reconnect, and filter events.
+#[derive(Debug, Clone)]
+pub struct ConnectionConfig {
+    /// Connection protocol type.
+    pub connection_type: ConnectionType,
+    /// Static connection URL (may contain credential placeholders).
+    pub url: Option<String>,
+    /// Obtain connection URL from an API call (e.g., Slack Socket Mode).
+    pub url_from_api: Option<UrlFromApiSchema>,
+    /// Keepalive/heartbeat configuration.
+    pub keepalive: Option<KeepaliveSchema>,
+    /// Handshake to send after connecting.
+    pub handshake: Option<HandshakeSchema>,
+    /// Reconnection policy.
+    pub reconnect: ReconnectSchema,
+    /// Event filtering rules.
+    pub events: EventFilterSchema,
+    /// Maximum size of a single inbound event in bytes.
+    pub max_event_size: usize,
+    /// Maximum number of events to buffer before dropping oldest.
+    pub event_queue_size: usize,
+    /// Additional allowlist entries for the connection URL.
+    pub additional_allowlist: Vec<AllowlistEntrySchema>,
+}
+
+impl From<ConnectionSchema> for ConnectionConfig {
+    fn from(schema: ConnectionSchema) -> Self {
+        Self {
+            connection_type: schema.r#type,
+            url: schema.url,
+            url_from_api: schema.url_from_api,
+            keepalive: schema.keepalive,
+            handshake: schema.handshake,
+            reconnect: schema.reconnect,
+            events: schema.events,
+            max_event_size: schema.max_event_size,
+            event_queue_size: schema.event_queue_size,
+            additional_allowlist: schema.additional_allowlist,
+        }
     }
 }
 
