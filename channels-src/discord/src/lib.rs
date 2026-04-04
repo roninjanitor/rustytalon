@@ -380,6 +380,40 @@ impl Guest for DiscordChannel {
         }
     }
 
+    fn on_event(event_json: String) -> Result<(), String> {
+        // Parse the raw gateway event (already filtered to MESSAGE_CREATE by the broker)
+        let event: serde_json::Value =
+            serde_json::from_str(&event_json).map_err(|e| format!("Invalid event JSON: {}", e))?;
+
+        // Extract the message payload from "d"
+        let d = event.get("d").ok_or("Missing 'd' field in gateway event")?;
+        let msg: DiscordMessage =
+            serde_json::from_value(d.clone()).map_err(|e| format!("Failed to parse message: {}", e))?;
+
+        let bot_id = channel_host::workspace_read(BOT_ID_PATH).unwrap_or_default();
+
+        // Skip messages from the bot itself
+        if !bot_id.is_empty() && msg.author.id == bot_id {
+            return Ok(());
+        }
+        // Skip other bots
+        if msg.author.bot {
+            return Ok(());
+        }
+        // Skip empty messages
+        if msg.content.trim().is_empty() {
+            return Ok(());
+        }
+
+        // Ensure this DM channel is tracked for future polling/responses
+        add_dm_channel(&msg.channel_id);
+
+        let channel_id = msg.channel_id.clone();
+        handle_message(&msg, &channel_id);
+
+        Ok(())
+    }
+
     fn on_shutdown() {
         channel_host::log(
             channel_host::LogLevel::Info,

@@ -169,6 +169,10 @@ impl ChannelCapabilitiesSchema {
             if let Some(timeout_secs) = channel.callback_timeout_secs {
                 caps.callback_timeout = Duration::from_secs(timeout_secs);
             }
+
+            if let Some(conn) = &channel.connection {
+                caps.connection = Some(conn.clone().into());
+            }
         }
 
         caps
@@ -209,6 +213,13 @@ pub struct ChannelSpecificCapabilitiesSchema {
     /// Webhook configuration (secret header, etc.).
     #[serde(default)]
     pub webhook: Option<WebhookSchema>,
+
+    /// Persistent connection broker configuration.
+    /// When present, the host spawns a connection broker task that maintains
+    /// a WebSocket, long-poll, or SSE connection and delivers events to WASM
+    /// via `on_event` callbacks.
+    #[serde(default)]
+    pub connection: Option<ConnectionSchema>,
 }
 
 /// Webhook configuration schema.
@@ -317,6 +328,234 @@ impl From<RateLimitSchema> for EmitRateLimitSchema {
             messages_per_hour: schema.requests_per_hour,
         }
     }
+}
+
+// ============================================================================
+// Connection broker schema types
+// ============================================================================
+
+/// Connection broker configuration schema.
+///
+/// Declares a persistent connection the host should maintain on behalf of the WASM channel.
+/// The broker handles connection lifecycle (connect, heartbeat, reconnect); WASM handles
+/// message processing via `on_event` callbacks.
+///
+/// # Example (Discord Gateway WebSocket)
+///
+/// ```json
+/// {
+///   "type": "websocket",
+///   "url": "wss://gateway.discord.gg/?v=10&encoding=json",
+///   "keepalive": { "type": "json_opcode", "interval_field": "d.heartbeat_interval", ... },
+///   "handshake": { "send": { "op": 2, "d": { "token": "{DISCORD_BOT_TOKEN}", ... } } },
+///   "reconnect": { "max_retries": 5, "backoff_ms": 1000 },
+///   "events": { "deliver_to_wasm": ["MESSAGE_CREATE"], "type_field": "t" }
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionSchema {
+    /// Connection protocol type.
+    pub r#type: ConnectionType,
+
+    /// Connection URL (may contain credential placeholders like `{DISCORD_BOT_TOKEN}`).
+    /// Mutually exclusive with `url_from_api`.
+    #[serde(default)]
+    pub url: Option<String>,
+
+    /// Obtain the connection URL by calling an API endpoint first.
+    /// Used by Slack Socket Mode (POST to apps.connections.open to get WSS URL).
+    #[serde(default)]
+    pub url_from_api: Option<UrlFromApiSchema>,
+
+    /// Keepalive/heartbeat configuration.
+    #[serde(default)]
+    pub keepalive: Option<KeepaliveSchema>,
+
+    /// Handshake message to send after connecting (e.g., Discord Identify op 2).
+    /// May contain credential placeholders.
+    #[serde(default)]
+    pub handshake: Option<HandshakeSchema>,
+
+    /// Reconnection policy.
+    #[serde(default)]
+    pub reconnect: ReconnectSchema,
+
+    /// Event filtering — which events to deliver to WASM vs drop silently.
+    #[serde(default)]
+    pub events: EventFilterSchema,
+
+    /// Maximum size of a single inbound event in bytes (default: 64KB).
+    #[serde(default = "default_max_event_size")]
+    pub max_event_size: usize,
+
+    /// Maximum number of events to buffer before dropping oldest (default: 100).
+    #[serde(default = "default_event_queue_size")]
+    pub event_queue_size: usize,
+
+    /// Additional allowlist entries for the connection URL.
+    /// Merged with the existing HTTP allowlist.
+    #[serde(default)]
+    pub additional_allowlist: Vec<AllowlistEntrySchema>,
+}
+
+/// Connection protocol type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionType {
+    Websocket,
+    LongPoll,
+    Sse,
+}
+
+/// Obtain connection URL from an API call.
+///
+/// Some services (e.g., Slack Socket Mode) require a POST to get a temporary WSS URL.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UrlFromApiSchema {
+    /// HTTP method (e.g., "POST").
+    pub method: String,
+    /// API endpoint URL (may contain credential placeholders).
+    pub endpoint: String,
+    /// JSON path to extract the URL from the response (dot-separated, e.g., "url").
+    pub url_field: String,
+}
+
+/// Keepalive configuration.
+///
+/// Configures how the broker keeps the connection alive. Different services use
+/// different strategies: WebSocket ping/pong, JSON opcodes (Discord), or nothing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeepaliveSchema {
+    /// Keepalive strategy.
+    pub r#type: KeepaliveType,
+
+    /// For `json_opcode` type: which field in the server's Hello message contains the interval.
+    /// Dot-separated path (e.g., "d.heartbeat_interval" for Discord).
+    #[serde(default)]
+    pub interval_field: Option<String>,
+
+    /// For `json_opcode` type: the JSON payload to send as heartbeat.
+    #[serde(default)]
+    pub send: Option<serde_json::Value>,
+
+    /// For `json_opcode` type: the expected ACK shape (broker checks `op` field match).
+    #[serde(default)]
+    pub expect: Option<serde_json::Value>,
+
+    /// Fallback fixed interval in milliseconds (used if server doesn't provide one).
+    #[serde(default = "default_keepalive_interval_ms")]
+    pub fallback_interval_ms: u64,
+}
+
+/// Keepalive strategy type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeepaliveType {
+    /// WebSocket ping/pong frames (protocol-level).
+    PingPong,
+    /// JSON opcode-based heartbeat (e.g., Discord op 1/11).
+    JsonOpcode,
+    /// No keepalive needed (server handles it).
+    None,
+}
+
+/// Handshake message sent after connection established.
+///
+/// For example, Discord requires an Identify payload (op 2) with the bot token
+/// after connecting. The `send` field may contain credential placeholders like
+/// `{DISCORD_BOT_TOKEN}` which are substituted at the host boundary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandshakeSchema {
+    /// JSON payload to send. May contain credential placeholders.
+    pub send: serde_json::Value,
+
+    /// Optional: wait for a specific response before considering handshake complete.
+    /// If set, the broker waits for a message matching this `op` field value.
+    #[serde(default)]
+    pub expect_op: Option<u64>,
+}
+
+/// Reconnection policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconnectSchema {
+    /// Maximum reconnection attempts before giving up (0 = never reconnect).
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+
+    /// Initial backoff in milliseconds (doubles each retry, capped at 60s).
+    #[serde(default = "default_backoff_ms")]
+    pub backoff_ms: u64,
+
+    /// Whether to attempt resume (e.g., Discord RESUME with session_id + sequence).
+    /// Note: resume logic is parsed but not yet implemented.
+    #[serde(default)]
+    pub resumable: bool,
+}
+
+impl Default for ReconnectSchema {
+    fn default() -> Self {
+        Self {
+            max_retries: 5,
+            backoff_ms: 1000,
+            resumable: false,
+        }
+    }
+}
+
+/// Event filtering configuration.
+///
+/// Controls which events from the persistent connection are delivered to WASM.
+/// Events are identified by a type field in the JSON (configurable via `type_field`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventFilterSchema {
+    /// Event type names to deliver to WASM (empty = deliver all).
+    #[serde(default)]
+    pub deliver_to_wasm: Vec<String>,
+
+    /// Event type names to silently drop (takes precedence over deliver_to_wasm).
+    #[serde(default)]
+    pub drop: Vec<String>,
+
+    /// JSON path to the event type field (e.g., "t" for Discord, "type" for Slack).
+    #[serde(default = "default_event_type_field")]
+    pub type_field: String,
+}
+
+impl Default for EventFilterSchema {
+    fn default() -> Self {
+        Self {
+            deliver_to_wasm: Vec::new(),
+            drop: Vec::new(),
+            type_field: "t".to_string(),
+        }
+    }
+}
+
+/// Allowlist entry for connection URLs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllowlistEntrySchema {
+    pub host: String,
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+}
+
+fn default_max_event_size() -> usize {
+    65_536
+} // 64KB
+fn default_event_queue_size() -> usize {
+    100
+}
+fn default_keepalive_interval_ms() -> u64 {
+    30_000
+} // 30s
+fn default_max_retries() -> u32 {
+    5
+}
+fn default_backoff_ms() -> u64 {
+    1_000
+}
+fn default_event_type_field() -> String {
+    "t".to_string()
 }
 
 /// Channel configuration returned by on_start.
@@ -547,6 +786,298 @@ mod tests {
         let file = ChannelCapabilitiesFile::from_json(json).unwrap();
         assert_eq!(file.webhook_secret_header(), None);
         assert_eq!(file.webhook_secret_name(), "mybot_webhook_secret");
+    }
+
+    #[test]
+    fn test_parse_connection_websocket_full() {
+        let json = r#"{
+            "name": "discord",
+            "capabilities": {
+                "channel": {
+                    "allow_polling": true,
+                    "connection": {
+                        "type": "websocket",
+                        "url": "wss://gateway.discord.gg/?v=10&encoding=json",
+                        "keepalive": {
+                            "type": "json_opcode",
+                            "interval_field": "d.heartbeat_interval",
+                            "send": { "op": 1, "d": null },
+                            "expect": { "op": 11 },
+                            "fallback_interval_ms": 41250
+                        },
+                        "handshake": {
+                            "send": {
+                                "op": 2,
+                                "d": { "token": "{DISCORD_BOT_TOKEN}", "intents": 36864 }
+                            },
+                            "expect_op": 0
+                        },
+                        "reconnect": {
+                            "max_retries": 5,
+                            "backoff_ms": 1000,
+                            "resumable": true
+                        },
+                        "events": {
+                            "deliver_to_wasm": ["MESSAGE_CREATE"],
+                            "drop": ["PRESENCE_UPDATE", "TYPING_START"],
+                            "type_field": "t"
+                        },
+                        "max_event_size": 65536,
+                        "event_queue_size": 100,
+                        "additional_allowlist": [
+                            { "host": "gateway.discord.gg" }
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let file = ChannelCapabilitiesFile::from_json(json).unwrap();
+        let caps = file.to_capabilities();
+
+        let conn = caps
+            .connection
+            .expect("connection config should be present");
+        assert!(matches!(
+            conn.connection_type,
+            crate::channels::wasm::schema::ConnectionType::Websocket
+        ));
+        assert_eq!(
+            conn.url.as_deref(),
+            Some("wss://gateway.discord.gg/?v=10&encoding=json")
+        );
+
+        // Keepalive
+        let ka = conn.keepalive.expect("keepalive should be present");
+        assert!(matches!(
+            ka.r#type,
+            crate::channels::wasm::schema::KeepaliveType::JsonOpcode
+        ));
+        assert_eq!(ka.interval_field.as_deref(), Some("d.heartbeat_interval"));
+        assert_eq!(ka.fallback_interval_ms, 41250);
+
+        // Handshake
+        let hs = conn.handshake.expect("handshake should be present");
+        assert_eq!(hs.expect_op, Some(0));
+        assert!(
+            hs.send["d"]["token"]
+                .as_str()
+                .unwrap()
+                .contains("DISCORD_BOT_TOKEN")
+        );
+
+        // Reconnect
+        assert_eq!(conn.reconnect.max_retries, 5);
+        assert_eq!(conn.reconnect.backoff_ms, 1000);
+        assert!(conn.reconnect.resumable);
+
+        // Events
+        assert_eq!(conn.events.deliver_to_wasm, vec!["MESSAGE_CREATE"]);
+        assert_eq!(conn.events.drop, vec!["PRESENCE_UPDATE", "TYPING_START"]);
+        assert_eq!(conn.events.type_field, "t");
+
+        // Limits
+        assert_eq!(conn.max_event_size, 65536);
+        assert_eq!(conn.event_queue_size, 100);
+
+        // Allowlist
+        assert_eq!(conn.additional_allowlist.len(), 1);
+        assert_eq!(conn.additional_allowlist[0].host, "gateway.discord.gg");
+    }
+
+    #[test]
+    fn test_parse_connection_minimal() {
+        let json = r#"{
+            "name": "test",
+            "capabilities": {
+                "channel": {
+                    "connection": {
+                        "type": "websocket",
+                        "url": "wss://example.com/ws"
+                    }
+                }
+            }
+        }"#;
+
+        let file = ChannelCapabilitiesFile::from_json(json).unwrap();
+        let caps = file.to_capabilities();
+
+        let conn = caps
+            .connection
+            .expect("connection config should be present");
+        assert!(matches!(
+            conn.connection_type,
+            crate::channels::wasm::schema::ConnectionType::Websocket
+        ));
+        assert_eq!(conn.url.as_deref(), Some("wss://example.com/ws"));
+
+        // Verify defaults
+        assert!(conn.keepalive.is_none());
+        assert!(conn.handshake.is_none());
+        assert_eq!(conn.reconnect.max_retries, 5);
+        assert_eq!(conn.reconnect.backoff_ms, 1000);
+        assert!(!conn.reconnect.resumable);
+        assert!(conn.events.deliver_to_wasm.is_empty());
+        assert!(conn.events.drop.is_empty());
+        assert_eq!(conn.events.type_field, "t");
+        assert_eq!(conn.max_event_size, 65536);
+        assert_eq!(conn.event_queue_size, 100);
+        assert!(conn.additional_allowlist.is_empty());
+    }
+
+    #[test]
+    fn test_parse_connection_long_poll() {
+        let json = r#"{
+            "name": "matrix",
+            "capabilities": {
+                "channel": {
+                    "connection": {
+                        "type": "long_poll",
+                        "url": "https://matrix.org/_matrix/client/v3/sync"
+                    }
+                }
+            }
+        }"#;
+
+        let file = ChannelCapabilitiesFile::from_json(json).unwrap();
+        let caps = file.to_capabilities();
+        let conn = caps.connection.unwrap();
+        assert!(matches!(
+            conn.connection_type,
+            crate::channels::wasm::schema::ConnectionType::LongPoll
+        ));
+    }
+
+    #[test]
+    fn test_parse_connection_sse() {
+        let json = r#"{
+            "name": "stream",
+            "capabilities": {
+                "channel": {
+                    "connection": {
+                        "type": "sse",
+                        "url": "https://api.example.com/events"
+                    }
+                }
+            }
+        }"#;
+
+        let file = ChannelCapabilitiesFile::from_json(json).unwrap();
+        let caps = file.to_capabilities();
+        let conn = caps.connection.unwrap();
+        assert!(matches!(
+            conn.connection_type,
+            crate::channels::wasm::schema::ConnectionType::Sse
+        ));
+    }
+
+    #[test]
+    fn test_parse_connection_url_from_api() {
+        let json = r#"{
+            "name": "slack",
+            "capabilities": {
+                "channel": {
+                    "connection": {
+                        "type": "websocket",
+                        "url_from_api": {
+                            "method": "POST",
+                            "endpoint": "https://slack.com/api/apps.connections.open",
+                            "url_field": "url"
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let file = ChannelCapabilitiesFile::from_json(json).unwrap();
+        let caps = file.to_capabilities();
+        let conn = caps.connection.unwrap();
+        assert!(conn.url.is_none());
+        let api = conn.url_from_api.unwrap();
+        assert_eq!(api.method, "POST");
+        assert_eq!(api.endpoint, "https://slack.com/api/apps.connections.open");
+        assert_eq!(api.url_field, "url");
+    }
+
+    #[test]
+    fn test_parse_keepalive_ping_pong() {
+        let json = r#"{
+            "name": "test",
+            "capabilities": {
+                "channel": {
+                    "connection": {
+                        "type": "websocket",
+                        "url": "wss://example.com/ws",
+                        "keepalive": { "type": "ping_pong" }
+                    }
+                }
+            }
+        }"#;
+
+        let file = ChannelCapabilitiesFile::from_json(json).unwrap();
+        let caps = file.to_capabilities();
+        let ka = caps.connection.unwrap().keepalive.unwrap();
+        assert!(matches!(
+            ka.r#type,
+            crate::channels::wasm::schema::KeepaliveType::PingPong
+        ));
+        assert_eq!(ka.fallback_interval_ms, 30000);
+    }
+
+    #[test]
+    fn test_parse_keepalive_none() {
+        let json = r#"{
+            "name": "test",
+            "capabilities": {
+                "channel": {
+                    "connection": {
+                        "type": "websocket",
+                        "url": "wss://example.com/ws",
+                        "keepalive": { "type": "none" }
+                    }
+                }
+            }
+        }"#;
+
+        let file = ChannelCapabilitiesFile::from_json(json).unwrap();
+        let caps = file.to_capabilities();
+        let ka = caps.connection.unwrap().keepalive.unwrap();
+        assert!(matches!(
+            ka.r#type,
+            crate::channels::wasm::schema::KeepaliveType::None
+        ));
+    }
+
+    #[test]
+    fn test_parse_handshake_without_expect_op() {
+        let json = r#"{
+            "name": "test",
+            "capabilities": {
+                "channel": {
+                    "connection": {
+                        "type": "websocket",
+                        "url": "wss://example.com/ws",
+                        "handshake": {
+                            "send": { "type": "hello", "token": "{TOKEN}" }
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let file = ChannelCapabilitiesFile::from_json(json).unwrap();
+        let caps = file.to_capabilities();
+        let hs = caps.connection.unwrap().handshake.unwrap();
+        assert!(hs.expect_op.is_none());
+        assert_eq!(hs.send["type"].as_str(), Some("hello"));
+    }
+
+    #[test]
+    fn test_no_connection_by_default() {
+        let json = r#"{ "name": "test" }"#;
+        let file = ChannelCapabilitiesFile::from_json(json).unwrap();
+        let caps = file.to_capabilities();
+        assert!(caps.connection.is_none());
     }
 
     #[test]

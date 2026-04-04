@@ -91,6 +91,7 @@ src/
 │   │   └── static/     # HTML, CSS, JS (single-page app)
 │   └── wasm/           # WASM channel runtime
 │       ├── mod.rs
+│       ├── broker.rs   # Host-side persistent connection broker (WebSocket, long-poll, SSE)
 │       ├── bundled.rs  # Bundled channel discovery
 │       └── wrapper.rs  # Channel trait wrapper for WASM modules
 │
@@ -205,6 +206,10 @@ src/
 ### Architecture
 
 When designing new features or systems, always prefer generic/extensible architectures over hardcoding specific integrations. Ask clarifying questions about the desired abstraction level before implementing.
+
+### Connection Broker
+
+WASM channels that need persistent connections (WebSocket, long-poll, SSE) declare a `connection` section in their `capabilities.json`. The host-side connection broker manages the connection lifecycle (connect, heartbeat, reconnect) and delivers events to WASM via `on_event` callbacks, preserving the fresh-instance-per-callback security model. The broker and polling coexist — channels choose which to use.
 
 ### Error Handling
 - Use `thiserror` for error types in `error.rs`
@@ -485,6 +490,9 @@ Key test patterns:
 6. **Tool versioning workflow** - No version tracking or rollback for dynamically built tools
 7. **Webhook trigger endpoint** - Routines webhook trigger not yet exposed in web gateway
 8. **Full channel status view** - Gateway status widget exists, but no per-channel connection dashboard
+9. **Connection broker long-poll adapter** - Matrix `/sync` long-poll not yet implemented (config parsed but adapter stubbed)
+10. **Connection broker SSE adapter** - SSE adapter not yet implemented (config parsed but adapter stubbed)
+11. **Connection broker resume support** - Discord RESUME with session_id + sequence — config parsed (`resumable: true`) but not implemented
 
 ### Completed
 
@@ -509,6 +517,7 @@ Key test patterns:
 - ✅ **Routines system** - Cron, event, webhook, and manual triggers with guardrails
 - ✅ **Extension management** - Install, auth, activate MCP/WASM extensions via CLI and web UI
 - ✅ **libSQL/Turso backend** - Database trait abstraction (`src/db/`), feature-gated dual backend support (postgres/libsql), embedded SQLite for zero-dependency local mode
+- ✅ **Connection broker (WebSocket adapter)** - Host-side persistent connections for WASM channels, with `on-event` WIT callback, event filtering, heartbeat, and reconnect
 
 ## Adding a New Tool
 

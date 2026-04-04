@@ -40,6 +40,47 @@
       "emit_rate_limit": {
         "messages_per_minute": 100,
         "messages_per_hour": 5000
+      },
+      "connection": {
+        "type": "websocket",
+        "url": "wss://gateway.discord.gg/?v=10&encoding=json",
+        "keepalive": {
+          "type": "json_opcode",
+          "interval_field": "d.heartbeat_interval",
+          "send": { "op": 1, "d": null },
+          "expect": { "op": 11 },
+          "fallback_interval_ms": 41250
+        },
+        "handshake": {
+          "send": {
+            "op": 2,
+            "d": {
+              "token": "{DISCORD_BOT_TOKEN}",
+              "intents": 36864,
+              "properties": {
+                "os": "linux",
+                "browser": "rustytalon",
+                "device": "rustytalon"
+              }
+            }
+          },
+          "expect_op": 0
+        },
+        "reconnect": {
+          "max_retries": 5,
+          "backoff_ms": 1000,
+          "resumable": true
+        },
+        "events": {
+          "deliver_to_wasm": ["MESSAGE_CREATE"],
+          "drop": ["PRESENCE_UPDATE", "TYPING_START", "GUILD_MEMBER_LIST_UPDATE"],
+          "type_field": "t"
+        },
+        "max_event_size": 65536,
+        "event_queue_size": 100,
+        "additional_allowlist": [
+          { "host": "gateway.discord.gg" }
+        ]
       }
     }
   },
