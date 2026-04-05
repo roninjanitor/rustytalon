@@ -51,6 +51,11 @@ use rustytalon::setup::{SetupConfig, SetupWizard};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Install a process-wide rustls CryptoProvider so that all TLS consumers
+    // (reqwest, tokio-tungstenite WebSocket broker, etc.) have a provider
+    // available regardless of which thread they run on.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let cli = Cli::parse();
 
     // Handle non-agent commands first (they don't need full setup)
@@ -1384,6 +1389,9 @@ async fn main() -> anyhow::Result<()> {
 fn check_onboard_needed() -> Option<&'static str> {
     let has_db = std::env::var("DATABASE_URL").is_ok()
         || std::env::var("LIBSQL_PATH").is_ok()
+        || std::env::var("DATABASE_BACKEND")
+            .map(|v| v.eq_ignore_ascii_case("libsql"))
+            .unwrap_or(false)
         || rustytalon::config::default_libsql_path().exists();
 
     if !has_db {

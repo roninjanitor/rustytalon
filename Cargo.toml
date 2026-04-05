@@ -1,6 +1,6 @@
 [package]
 name = "rustytalon"
-version = "0.1.21"
+version = "0.1.22"
 edition = "2024"
 rust-version = "1.85"
 description = "Secure multi-provider AI assistant with smart routing and no vendor lock-in"
@@ -68,6 +68,7 @@ termimad = "0.34"
 # Channel integrations
 axum = { version = "0.8", features = ["ws"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 

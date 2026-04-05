@@ -10,12 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-04-05
+
 ### Added
 - Connection broker for WASM channels — host-side persistent connection management (WebSocket, long-poll, SSE) that preserves sandbox security
 - `on-event` WIT callback for WASM channels to receive events from persistent connections
 - `connection` capability in channel `capabilities.json` schema for declaring persistent connection requirements
 - Discord Gateway WebSocket configuration in `discord.capabilities.json` (enables real-time message delivery alongside existing polling)
 - `on_event` handler in Discord WASM module for processing Gateway events
+
+### Fixed
+- WebSocket broker panic due to missing rustls `CryptoProvider` — installed `ring` provider at process startup so all TLS consumers (reqwest, tokio-tungstenite) work regardless of thread
+- Docker onboarding wizard false-triggering when `DATABASE_BACKEND=libsql` is set but the DB file doesn't exist yet (libsql creates it on first use)
 
 ## [0.1.21] - 2026-04-01
 
