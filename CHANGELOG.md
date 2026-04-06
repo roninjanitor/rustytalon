@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-04-06
+
+### Added
+- `docker-compose.dev.yml` — builds RustyTalon from local source instead of pulling from ghcr.io, enabling fast local iteration without waiting for CI image builds
+- `dev/build-channels.sh` — builds all (or named) WASM channels and copies them into `dev/channels/` for use with the dev compose volume mount
+- `dev/channels/` volume mount in dev compose — WASM channel changes can be tested by rebuilding the channel and restarting the container, no full image rebuild needed
+
 ## [0.1.23] - 2026-04-06
 
 ### Fixed

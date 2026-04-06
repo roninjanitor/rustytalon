@@ -15,6 +15,9 @@ target/
 # WASM build artifacts (loaded from disk, not bundled)
 *.wasm
 
+# Local dev channel overrides — populated by dev/build-channels.sh
+dev/channels/*.capabilities.json
+
 # Local database files
 *.db
 *.sqlite
