@@ -288,30 +288,39 @@ async fn run_websocket_connection(
 
         let (mut ws_sink, mut ws_stream_rx) = ws_stream.split();
 
-        // Perform handshake if configured
-        if let Some(handshake) = &config.handshake {
-            // Send handshake payload with credential substitution
-            let creds_snapshot = credentials.read().await.clone();
-            let payload_str = serde_json::to_string(&handshake.send).unwrap_or_default();
-            let substituted = substitute_credentials(&payload_str, &creds_snapshot);
+        // Perform handshake if configured and not waiting for a server Hello first.
+        // If `wait_for_op` is set, the handshake is deferred until we see that op
+        // in the message loop below (e.g., Discord op 10 Hello before IDENTIFY).
+        let needs_deferred_handshake = config
+            .handshake
+            .as_ref()
+            .and_then(|h| h.wait_for_op)
+            .is_some();
 
-            if let Err(e) = ws_sink.send(Message::Text(substituted.into())).await {
-                tracing::warn!(
-                    channel = %channel_name,
-                    error = %e,
-                    "Failed to send handshake"
-                );
-                attempt += 1;
-                if attempt > config.reconnect.max_retries {
-                    return Err(WasmChannelError::BrokerHandshakeFailed {
-                        name: channel_name.to_string(),
-                        reason: e.to_string(),
-                    });
-                }
-                let delay = backoff_duration(config.reconnect.backoff_ms, attempt - 1);
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => continue,
-                    _ = shutdown_rx.changed() => return Ok(()),
+        if !needs_deferred_handshake {
+            if let Some(handshake) = &config.handshake {
+                let creds_snapshot = credentials.read().await.clone();
+                let payload_str = serde_json::to_string(&handshake.send).unwrap_or_default();
+                let substituted = substitute_credentials(&payload_str, &creds_snapshot);
+
+                if let Err(e) = ws_sink.send(Message::Text(substituted.into())).await {
+                    tracing::warn!(
+                        channel = %channel_name,
+                        error = %e,
+                        "Failed to send handshake"
+                    );
+                    attempt += 1;
+                    if attempt > config.reconnect.max_retries {
+                        return Err(WasmChannelError::BrokerHandshakeFailed {
+                            name: channel_name.to_string(),
+                            reason: e.to_string(),
+                        });
+                    }
+                    let delay = backoff_duration(config.reconnect.backoff_ms, attempt - 1);
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => continue,
+                        _ = shutdown_rx.changed() => return Ok(()),
+                    }
                 }
             }
         }
@@ -354,6 +363,8 @@ async fn run_websocket_connection(
             .handshake
             .as_ref()
             .is_none_or(|h| h.expect_op.is_none());
+        // Deferred handshake: send only after receiving the wait_for_op message.
+        let mut handshake_sent = !needs_deferred_handshake;
 
         loop {
             tokio::select! {
@@ -414,6 +425,36 @@ async fn run_websocket_connection(
                                 }
                             }
 
+                            // Check for deferred handshake trigger (wait_for_op).
+                            // Example: Discord sends Hello (op 10) before we send IDENTIFY (op 2).
+                            if !handshake_sent {
+                                if let Some(wait_op) = config.handshake.as_ref().and_then(|h| h.wait_for_op) {
+                                    if let Some(op) = event.get("op").and_then(|v| v.as_u64()) {
+                                        if op == wait_op {
+                                            let creds_snapshot = credentials.read().await.clone();
+                                            let hs = config.handshake.as_ref().unwrap();
+                                            let payload_str = serde_json::to_string(&hs.send).unwrap_or_default();
+                                            let substituted = substitute_credentials(&payload_str, &creds_snapshot);
+                                            tracing::debug!(
+                                                channel = %channel_name,
+                                                trigger_op = wait_op,
+                                                "Sending deferred handshake"
+                                            );
+                                            if let Err(e) = ws_sink.send(Message::Text(substituted.into())).await {
+                                                tracing::warn!(
+                                                    channel = %channel_name,
+                                                    error = %e,
+                                                    "Failed to send deferred handshake"
+                                                );
+                                                break;
+                                            }
+                                            handshake_sent = true;
+                                            // Still process this message (e.g., Hello contains heartbeat_interval)
+                                        }
+                                    }
+                                }
+                            }
+
                             // Check for handshake response (e.g., Discord READY op 0)
                             if !handshake_completed {
                                 if let Some(expect_op) = config.handshake.as_ref().and_then(|h| h.expect_op) {
@@ -465,11 +506,20 @@ async fn run_websocket_connection(
                                 );
                             }
                         }
-                        Message::Close(_) => {
-                            tracing::info!(
-                                channel = %channel_name,
-                                "WebSocket close frame received"
-                            );
+                        Message::Close(frame) => {
+                            if let Some(ref f) = frame {
+                                tracing::info!(
+                                    channel = %channel_name,
+                                    code = %f.code,
+                                    reason = %f.reason,
+                                    "WebSocket close frame received"
+                                );
+                            } else {
+                                tracing::info!(
+                                    channel = %channel_name,
+                                    "WebSocket close frame received"
+                                );
+                            }
                             break; // Reconnect
                         }
                         Message::Ping(_) | Message::Pong(_) | Message::Binary(_) | Message::Frame(_) => {

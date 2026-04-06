@@ -469,6 +469,13 @@ pub struct HandshakeSchema {
     /// JSON payload to send. May contain credential placeholders.
     pub send: serde_json::Value,
 
+    /// Optional: wait for a server message with this `op` value before sending
+    /// the handshake payload. Use this when the server sends a Hello-style
+    /// message first (e.g., Discord op 10). If unset, the payload is sent
+    /// immediately after connecting.
+    #[serde(default)]
+    pub wait_for_op: Option<u64>,
+
     /// Optional: wait for a specific response before considering handshake complete.
     /// If set, the broker waits for a message matching this `op` field value.
     #[serde(default)]

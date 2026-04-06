@@ -30,20 +30,26 @@ The Discord channel communicates via Discord DMs using REST polling (no WebSocke
 5. Under **Privileged Gateway Intents**, enable **Message Content Intent**
    - This is required for the bot to read message content in DMs
 
-### 2. Invite the Bot to a Server (or Enable DMs)
+### 2. Invite the Bot to a Server
 
-Discord DMs with a bot only work if the user shares a server with the bot, or has previously interacted with it.
+Discord DMs with a bot only work if you share at least one server with the bot.
 
-**Option A — Add to a server:**
 1. In your application, go to **OAuth2 → URL Generator**
 2. Select scope: `bot`
 3. Select permissions: `Send Messages`, `Read Message History`
 4. Open the generated URL and add the bot to a server you own
 
-**Option B — Direct DMs (no server needed):**
-If you already share a server with the bot, you can DM it directly.
+### 3. Allow Direct Messages from Server Members
 
-### 3. Get Your Discord User ID
+This is a **required** Discord privacy setting or the bot cannot send DMs back to you:
+
+1. In Discord, open **User Settings** (gear icon)
+2. Go to **Privacy & Safety**
+3. Enable **Allow direct messages from server members**
+
+> Without this setting, Discord will show "Your message could not be delivered" in the DM channel and the bot will not be able to respond.
+
+### 4. Get Your Discord User ID
 
 The channel needs your Discord user ID to open a DM with you on startup.
 
@@ -51,7 +57,7 @@ The channel needs your Discord user ID to open a DM with you on startup.
 2. Right-click your own username anywhere in Discord
 3. Click **Copy User ID** — this is your snowflake ID (e.g. `123456789012345678`)
 
-### 4. Set Environment Variables
+### 5. Set Environment Variables
 
 Add to your `.env` file before starting the container:
 
@@ -65,13 +71,13 @@ SECRETS_MASTER_KEY=your_master_key_here   # openssl rand -base64 32
 
 The Discord channel is pre-installed in the Docker image. On startup, RustyTalon automatically reads `DISCORD_BOT_TOKEN` and stores it in the encrypted secrets store.
 
-### 5. Start RustyTalon
+### 6. Start RustyTalon
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-### 6. Configure via the Web UI
+### 7. Configure via the Web UI
 
 1. Open the web UI at `http://localhost:3001` and log in
 2. Go to the **Channels** tab
@@ -132,6 +138,13 @@ Open the **Channels** tab → Discord → **Set Token** to update the token with
 ---
 
 ## Troubleshooting
+
+### "Your message could not be delivered" (Clyde error)
+
+This means the bot cannot send DMs back to you. Fix:
+
+1. Discord **User Settings → Privacy & Safety → Allow direct messages from server members** — must be enabled
+2. Confirm the bot is in at least one mutual server with your account
 
 ### Messages not received
 

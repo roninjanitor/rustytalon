@@ -52,11 +52,12 @@
           "fallback_interval_ms": 41250
         },
         "handshake": {
+          "wait_for_op": 10,
           "send": {
             "op": 2,
             "d": {
               "token": "{DISCORD_BOT_TOKEN}",
-              "intents": 36864,
+              "intents": 37377,
               "properties": {
                 "os": "linux",
                 "browser": "rustytalon",
