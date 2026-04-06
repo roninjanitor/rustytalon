@@ -435,9 +435,13 @@ async fn run_websocket_connection(
                                             let hs = config.handshake.as_ref().unwrap();
                                             let payload_str = serde_json::to_string(&hs.send).unwrap_or_default();
                                             let substituted = substitute_credentials(&payload_str, &creds_snapshot);
-                                            tracing::debug!(
+                                            let has_unresolved = substituted.contains("{") && substituted.contains("}");
+                                            tracing::info!(
                                                 channel = %channel_name,
                                                 trigger_op = wait_op,
+                                                credential_count = creds_snapshot.len(),
+                                                credential_keys = ?creds_snapshot.keys().collect::<Vec<_>>(),
+                                                has_unresolved_placeholders = has_unresolved,
                                                 "Sending deferred handshake"
                                             );
                                             if let Err(e) = ws_sink.send(Message::Text(substituted.into())).await {

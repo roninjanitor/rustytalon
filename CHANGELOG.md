@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.25] - 2026-04-06
+
+### Fixed
+- Discord Gateway handshake now logs credential count, credential keys, and whether unresolved placeholders remain — diagnoses token injection failures that produce 4004 Authentication failed
+
 ## [0.1.24] - 2026-04-06
 
 ### Added
