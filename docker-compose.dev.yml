@@ -3,29 +3,35 @@
 # Builds the image from source instead of pulling from ghcr.io, so you can
 # test Rust and WASM changes without waiting for CI.
 #
+# Supports both database backends — set DATABASE_BACKEND in your .env:
+#   DATABASE_BACKEND=libsql   (default, no postgres needed)
+#   DATABASE_BACKEND=postgres (requires POSTGRES_PASSWORD in .env)
+#
 # First-time setup:
 #   cp .env.example .env   # fill in API keys
-#   mkdir -p dev/channels  # create the local channel override directory
 #
 # Full build + start (Rust binary + all WASM channels):
 #   docker compose -f docker-compose.dev.yml up --build
 #
-# Rust-only change (recompiles binary, re-bakes channels from source):
+# Rust binary change (recompiles everything):
 #   docker compose -f docker-compose.dev.yml up --build
 #
 # WASM-only channel change (no full rebuild needed):
-#   cd channels-src/discord && ./build.sh
-#   cp channels-src/discord/discord.wasm channels-src/discord/discord.capabilities.json dev/channels/
+#   ./dev/build-channels.sh discord
 #   docker compose -f docker-compose.dev.yml restart rustytalon
+#
+# Start with postgres backend:
+#   docker compose -f docker-compose.dev.yml --profile postgres up --build
 #
 # Stop everything:
 #   docker compose -f docker-compose.dev.yml down
 
 services:
   # ---------------------------------------------------------------------------
-  # PostgreSQL with pgvector extension
+  # PostgreSQL with pgvector — only started when --profile postgres is used
   # ---------------------------------------------------------------------------
   postgres:
+    profiles: ["postgres"]
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     ports:
@@ -33,7 +39,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-rustytalon}
       POSTGRES_USER: ${POSTGRES_USER:-rustytalon}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rustytalon_dev}
     volumes:
       - pgdata-dev:/var/lib/postgresql/data
     healthcheck:
@@ -54,18 +60,11 @@ services:
       - "${GATEWAY_PORT:-3001}:3001"
     env_file: .env
     environment:
-      DATABASE_BACKEND: postgres
-      DATABASE_URL: postgres://${POSTGRES_USER:-rustytalon}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-rustytalon}
       GATEWAY_HOST: "0.0.0.0"
       GATEWAY_PORT: "3001"
-    depends_on:
-      postgres:
-        condition: service_healthy
     volumes:
       # Override baked-in WASM channels with locally built ones.
-      # Files here take precedence over what was compiled into the image.
-      # Run `./build.sh` in a channel's directory then copy the .wasm and
-      # .capabilities.json here to pick up changes without a full rebuild.
+      # Run ./dev/build-channels.sh then restart to pick up changes.
       - ./dev/channels:/home/rustytalon/.rustytalon/channels
       # Uncomment to mount Docker socket for sandbox jobs:
       # - /var/run/docker.sock:/var/run/docker.sock
