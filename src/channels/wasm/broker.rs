@@ -212,11 +212,7 @@ fn regex_like_unresolved(s: &str) -> bool {
             if j < bytes.len() {
                 let inner = &s[start..j];
                 // Treat as unresolved if it looks like SCREAMING_SNAKE_CASE
-                if !inner.is_empty()
-                    && inner
-                        .chars()
-                        .all(|c| c.is_ascii_uppercase() || c == '_')
-                {
+                if !inner.is_empty() && inner.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
                     return true;
                 }
             }

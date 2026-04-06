@@ -1259,12 +1259,12 @@ impl Store {
     pub async fn list_conversations_with_preview(
         &self,
         user_id: &str,
-        channel: &str,
+        channel: Option<&str>,
         limit: i64,
     ) -> Result<Vec<ConversationSummary>, DatabaseError> {
         let conn = self.conn().await?;
-        let rows = conn
-            .query(
+        let rows = if let Some(channel) = channel {
+            conn.query(
                 r#"
                 SELECT
                     c.id,
@@ -1285,7 +1285,31 @@ impl Store {
                 "#,
                 &[&user_id, &channel, &limit],
             )
-            .await?;
+            .await?
+        } else {
+            conn.query(
+                r#"
+                SELECT
+                    c.id,
+                    c.started_at,
+                    c.last_activity,
+                    c.metadata,
+                    (SELECT COUNT(*) FROM conversation_messages m WHERE m.conversation_id = c.id) AS message_count,
+                    (SELECT LEFT(m2.content, 100)
+                     FROM conversation_messages m2
+                     WHERE m2.conversation_id = c.id AND m2.role = 'user'
+                     ORDER BY m2.created_at ASC
+                     LIMIT 1
+                    ) AS title
+                FROM conversations c
+                WHERE c.user_id = $1
+                ORDER BY c.last_activity DESC
+                LIMIT $2
+                "#,
+                &[&user_id, &limit],
+            )
+            .await?
+        };
 
         Ok(rows
             .iter()

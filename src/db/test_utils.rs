@@ -91,7 +91,7 @@ impl Database for MockDatabase {
     async fn list_conversations_with_preview(
         &self,
         _: &str,
-        _: &str,
+        _: Option<&str>,
         _: i64,
     ) -> Result<Vec<ConversationSummary>, DatabaseError> {
         unimplemented!()

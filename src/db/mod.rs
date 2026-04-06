@@ -136,10 +136,11 @@ pub trait Database: Send + Sync {
     ) -> Result<(), DatabaseError>;
 
     /// List conversations with a title preview.
+    /// Pass `channel = None` to list across all channels.
     async fn list_conversations_with_preview(
         &self,
         user_id: &str,
-        channel: &str,
+        channel: Option<&str>,
         limit: i64,
     ) -> Result<Vec<ConversationSummary>, DatabaseError>;
 

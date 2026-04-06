@@ -145,6 +145,10 @@ pub struct GatewayState {
     pub chat_rate_limiter: RateLimiter,
     /// WASM channels loaded at startup: (name, description).
     pub wasm_channels: Vec<(String, Option<String>)>,
+    /// Env-sourced config overrides per channel, keyed by channel name.
+    /// Used by the config GET handler to show effective values even when not
+    /// yet persisted to the DB (e.g. DISCORD_OWNER_ID env var).
+    pub channel_env_config: std::collections::HashMap<String, serde_json::Value>,
 }
 
 /// Start the gateway HTTP server.
@@ -818,7 +822,7 @@ async fn chat_threads_handler(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
         if let Ok(summaries) = store
-            .list_conversations_with_preview(&state.user_id, "gateway", 50)
+            .list_conversations_with_preview(&state.user_id, None, 50)
             .await
         {
             let mut assistant_thread = None;
@@ -2093,23 +2097,27 @@ async fn extension_config_get_handler(
     let schema = read_extension_config_schema(&state, &name).await;
 
     // Load current values from settings, filtering to this extension's namespace.
+    // Start with env-sourced defaults so the UI always shows effective values,
+    // then overlay DB values (user-set UI values take priority over env defaults).
+    let mut values: std::collections::HashMap<String, serde_json::Value> = state
+        .channel_env_config
+        .get(&name)
+        .and_then(|v| v.as_object())
+        .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default();
+
     let prefix = format!("extensions.{}.", name);
-    let values = match state.store.as_ref() {
-        Some(store) => {
-            let rows = store
-                .list_settings(&state.user_id)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            rows.into_iter()
-                .filter_map(|row| {
-                    row.key
-                        .strip_prefix(&prefix)
-                        .map(|field| (field.to_string(), row.value))
-                })
-                .collect()
+    if let Some(store) = state.store.as_ref() {
+        let rows = store
+            .list_settings(&state.user_id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        for row in rows {
+            if let Some(field) = row.key.strip_prefix(&prefix) {
+                values.insert(field.to_string(), row.value);
+            }
         }
-        None => std::collections::HashMap::new(),
-    };
+    }
 
     Ok(Json(ExtensionConfigResponse {
         name,

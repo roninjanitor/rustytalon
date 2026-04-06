@@ -101,7 +101,7 @@ impl Database for PgBackend {
     async fn list_conversations_with_preview(
         &self,
         user_id: &str,
-        channel: &str,
+        channel: Option<&str>,
         limit: i64,
     ) -> Result<Vec<ConversationSummary>, DatabaseError> {
         self.store

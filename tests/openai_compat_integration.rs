@@ -116,6 +116,7 @@ async fn start_test_server() -> (SocketAddr, Arc<GatewayState>) {
         smart_router: None,
         chat_rate_limiter: rustytalon::channels::web::server::RateLimiter::new(30, 60),
         wasm_channels: vec![],
+            channel_env_config: std::collections::HashMap::new(),
     });
 
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -438,6 +439,7 @@ async fn test_no_llm_provider_returns_503() {
         smart_router: None,
         chat_rate_limiter: rustytalon::channels::web::server::RateLimiter::new(30, 60),
         wasm_channels: vec![],
+            channel_env_config: std::collections::HashMap::new(),
     });
 
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();

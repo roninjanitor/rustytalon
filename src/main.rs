@@ -1328,6 +1328,24 @@ async fn main() -> anyhow::Result<()> {
             gw = gw.with_smart_router(Arc::clone(router));
         }
         gw = gw.with_wasm_channels(loaded_wasm_channel_names.clone());
+
+        // Inject env-sourced channel config so the web UI shows effective values.
+        {
+            let mut discord_env = serde_json::json!({});
+            if let Some(ref v) = config.channels.discord_owner_id {
+                discord_env["owner_id"] = serde_json::json!(v);
+            }
+            if let Some(ref v) = config.channels.discord_dm_policy {
+                discord_env["dm_policy"] = serde_json::json!(v);
+            }
+            if discord_env
+                .as_object()
+                .map(|o| !o.is_empty())
+                .unwrap_or(false)
+            {
+                gw = gw.with_channel_env_config("discord", discord_env);
+            }
+        }
         if config.sandbox.enabled {
             gw = gw.with_prompt_queue(Arc::clone(&prompt_queue));
 

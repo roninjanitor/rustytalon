@@ -888,6 +888,11 @@ pub struct AgentConfig {
     pub session_idle_timeout: Duration,
     /// Allow chat to use filesystem/shell tools directly (bypass sandbox).
     pub allow_local_tools: bool,
+    /// Primary user ID for DB persistence (conversations, jobs).
+    /// Defaults to the gateway user ID ("default"). All channel conversations
+    /// are stored under this ID so they appear in the web UI regardless of
+    /// which channel they came from.
+    pub primary_user_id: String,
 }
 
 impl AgentConfig {
@@ -966,6 +971,8 @@ impl AgentConfig {
                     message: format!("must be 'true' or 'false': {e}"),
                 })?
                 .unwrap_or(false),
+            primary_user_id: optional_env("GATEWAY_USER_ID")?
+                .unwrap_or_else(|| "default".to_string()),
         })
     }
 }

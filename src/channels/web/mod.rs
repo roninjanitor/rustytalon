@@ -86,6 +86,7 @@ impl GatewayChannel {
             smart_router: None,
             chat_rate_limiter: server::RateLimiter::new(30, 60),
             wasm_channels: vec![],
+            channel_env_config: std::collections::HashMap::new(),
         });
 
         Self {
@@ -115,6 +116,7 @@ impl GatewayChannel {
             smart_router: self.state.smart_router.clone(),
             chat_rate_limiter: server::RateLimiter::new(30, 60),
             wasm_channels: self.state.wasm_channels.clone(),
+            channel_env_config: self.state.channel_env_config.clone(),
         };
         mutate(&mut new_state);
         self.state = Arc::new(new_state);
@@ -193,6 +195,19 @@ impl GatewayChannel {
     /// Inject the list of loaded WASM channels for the channels API.
     pub fn with_wasm_channels(mut self, channels: Vec<(String, Option<String>)>) -> Self {
         self.rebuild_state(|s| s.wasm_channels = channels);
+        self
+    }
+
+    /// Inject env-sourced config for a channel so the UI can display effective values.
+    pub fn with_channel_env_config(
+        mut self,
+        channel: impl Into<String>,
+        config: serde_json::Value,
+    ) -> Self {
+        let name = channel.into();
+        self.rebuild_state(|s| {
+            s.channel_env_config.insert(name, config);
+        });
         self
     }
 

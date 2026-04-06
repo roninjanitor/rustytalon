@@ -1885,6 +1885,7 @@ impl WasmChannel {
     /// Execute a single poll callback with a fresh WASM instance.
     ///
     /// Returns any emitted messages from the callback.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_poll(
         channel_name: &str,
         runtime: &Arc<WasmChannelRuntime>,
@@ -2676,6 +2677,7 @@ mod tests {
         let credentials = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
         let timeout = std::time::Duration::from_secs(5);
 
+        let channel_state = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
         let result = WasmChannel::execute_poll(
             "poll-test",
             &runtime,
@@ -2683,6 +2685,7 @@ mod tests {
             &capabilities,
             &credentials,
             Arc::new(PairingStore::new()),
+            channel_state,
             timeout,
         )
         .await;

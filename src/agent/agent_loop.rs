@@ -892,8 +892,15 @@ impl Agent {
                     )
                     .await;
 
-                // Fire-and-forget: persist turn to DB
-                self.persist_turn(thread_id, &message.user_id, content, Some(&response));
+                // Fire-and-forget: persist turn to DB (always under primary_user_id
+                // so all channels appear in the web UI regardless of channel-specific user IDs)
+                self.persist_turn(
+                    thread_id,
+                    &message.channel,
+                    &self.config.primary_user_id,
+                    content,
+                    Some(&response),
+                );
 
                 Ok(SubmissionResult::response(response))
             }
@@ -923,7 +930,13 @@ impl Agent {
                 thread.fail_turn(e.to_string());
 
                 // Persist the user message even on failure
-                self.persist_turn(thread_id, &message.user_id, content, None);
+                self.persist_turn(
+                    thread_id,
+                    &message.channel,
+                    &self.config.primary_user_id,
+                    content,
+                    None,
+                );
 
                 Ok(SubmissionResult::error(e.to_string()))
             }
@@ -934,6 +947,7 @@ impl Agent {
     fn persist_turn(
         &self,
         thread_id: Uuid,
+        channel: &str,
         user_id: &str,
         user_input: &str,
         response: Option<&str>,
@@ -943,13 +957,14 @@ impl Agent {
             None => return,
         };
 
+        let channel = channel.to_string();
         let user_id = user_id.to_string();
         let user_input = user_input.to_string();
         let response = response.map(String::from);
 
         tokio::spawn(async move {
             if let Err(e) = store
-                .ensure_conversation(thread_id, "gateway", &user_id, None)
+                .ensure_conversation(thread_id, &channel, &user_id, None)
                 .await
             {
                 tracing::warn!("Failed to ensure conversation {}: {}", thread_id, e);
