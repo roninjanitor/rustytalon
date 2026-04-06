@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-04-06
+
+### Added
+- `docker-compose.dev.yml` — builds RustyTalon from local source instead of pulling from ghcr.io, enabling fast local iteration without waiting for CI image builds
+- `dev/build-channels.sh` — builds all (or named) WASM channels and copies them into `dev/channels/` for use with the dev compose volume mount
+- `dev/channels/` volume mount in dev compose — WASM channel changes can be tested by rebuilding the channel and restarting the container, no full image rebuild needed
+
+## [0.1.23] - 2026-04-06
+
+### Fixed
+- Discord Gateway IDENTIFY now sent after receiving Hello (op 10) instead of immediately on connect — Discord requires this order and was closing the connection before any messages could be received
+- Discord Gateway intents corrected to `37377` (GUILDS + GUILD_MESSAGES + DIRECT_MESSAGES + MESSAGE_CONTENT) — previous value `36864` was missing GUILDS and GUILD_MESSAGES, preventing the bot from receiving server channel messages
+- WebSocket close frame code and reason now logged — previously swallowed, making Gateway rejections invisible in logs
+
+### Added
+- `wait_for_op` field in `HandshakeSchema` — allows WASM channel capabilities to declare a server op to wait for before sending the handshake payload (generalizes the Discord Hello → IDENTIFY pattern)
+- Discord setup docs updated with required Discord privacy setting (Privacy & Safety → Allow direct messages from server members) and promoted to an explicit setup step
+
 ## [0.1.22] - 2026-04-05
 
 ### Added

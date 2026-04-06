@@ -1,0 +1,73 @@
+# Local development Docker Compose for RustyTalon
+#
+# Builds the image from source instead of pulling from ghcr.io, so you can
+# test Rust and WASM changes without waiting for CI.
+#
+# Supports both database backends — set DATABASE_BACKEND in your .env:
+#   DATABASE_BACKEND=libsql   (default, no postgres needed)
+#   DATABASE_BACKEND=postgres (requires POSTGRES_PASSWORD in .env)
+#
+# First-time setup:
+#   cp .env.example .env   # fill in API keys
+#
+# Full build + start (Rust binary + all WASM channels):
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# Rust binary change (recompiles everything):
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# WASM-only channel change (no full rebuild needed):
+#   ./dev/build-channels.sh discord
+#   docker compose -f docker-compose.dev.yml restart rustytalon
+#
+# Start with postgres backend:
+#   docker compose -f docker-compose.dev.yml --profile postgres up --build
+#
+# Stop everything:
+#   docker compose -f docker-compose.dev.yml down
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL with pgvector — only started when --profile postgres is used
+  # ---------------------------------------------------------------------------
+  postgres:
+    profiles: ["postgres"]
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rustytalon}
+      POSTGRES_USER: ${POSTGRES_USER:-rustytalon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rustytalon_dev}
+    volumes:
+      - pgdata-dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rustytalon}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # RustyTalon agent — built from local source
+  # ---------------------------------------------------------------------------
+  rustytalon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-3001}:3001"
+    env_file: .env
+    environment:
+      GATEWAY_HOST: "0.0.0.0"
+      GATEWAY_PORT: "3001"
+    volumes:
+      # Override baked-in WASM channels with locally built ones.
+      # Run ./dev/build-channels.sh then restart to pick up changes.
+      - ./dev/channels:/home/rustytalon/.rustytalon/channels
+      # Uncomment to mount Docker socket for sandbox jobs:
+      # - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  pgdata-dev:
