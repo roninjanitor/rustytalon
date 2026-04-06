@@ -39,7 +39,7 @@ wit_bindgen::generate!({
 use serde::{Deserialize, Serialize};
 
 use exports::near::agent::channel::{
-    AgentResponse, ChannelConfig, Guest, HttpEndpointConfig, IncomingHttpRequest,
+    AgentResponse, ChannelConfig, Guest, IncomingHttpRequest,
     OutgoingHttpResponse, PollConfig, StatusType, StatusUpdate,
 };
 use near::agent::channel_host::{self, EmittedMessage};
@@ -120,8 +120,11 @@ const LAST_MESSAGE_IDS_PATH: &str = "state/last_message_ids";
 /// JSON array of DM channel IDs the bot should poll.
 const DM_CHANNELS_PATH: &str = "state/dm_channels";
 
-/// DM policy persisted across callbacks: "pairing" | "open".
+/// DM policy persisted across callbacks: "owner_only" | "pairing" | "open".
 const DM_POLICY_PATH: &str = "state/dm_policy";
+
+/// Bot owner's Discord user ID — used by the "owner_only" policy.
+const OWNER_ID_PATH: &str = "state/owner_id";
 
 /// JSON array of allowed user IDs (from config `allow_from`).
 const ALLOW_FROM_PATH: &str = "state/allow_from";
@@ -160,8 +163,9 @@ struct DiscordConfig {
     #[serde(default)]
     owner_id: Option<String>,
 
-    /// DM policy: `"pairing"` (default) or `"open"`.
+    /// DM policy: `"owner_only"` (default), `"pairing"`, or `"open"`.
     ///
+    /// - `owner_only`: only the configured `owner_id` can message the bot (most secure).
     /// - `pairing`: unknown senders receive a pairing-code reply; messages are
     ///   not forwarded until approved via `rustytalon pairing approve discord <code>`.
     /// - `open`: all senders are accepted without pairing.
@@ -195,9 +199,14 @@ impl Guest for DiscordChannel {
         let dm_policy = config
             .dm_policy
             .as_deref()
-            .unwrap_or("pairing")
+            .unwrap_or("owner_only")
             .to_string();
         let _ = channel_host::workspace_write(DM_POLICY_PATH, &dm_policy);
+
+        // Persist owner_id so handle_message can access it for owner_only policy
+        if let Some(ref owner_id) = config.owner_id {
+            let _ = channel_host::workspace_write(OWNER_ID_PATH, owner_id);
+        }
 
         let allow_from_json = serde_json::to_string(&config.allow_from.unwrap_or_default())
             .unwrap_or_else(|_| "[]".to_string());
@@ -429,9 +438,22 @@ impl Guest for DiscordChannel {
 /// Check message access policy and emit to the agent if allowed.
 fn handle_message(msg: &DiscordMessage, channel_id: &str) {
     let dm_policy = channel_host::workspace_read(DM_POLICY_PATH)
-        .unwrap_or_else(|| "pairing".to_string());
+        .unwrap_or_else(|| "owner_only".to_string());
 
-    if dm_policy != "open" {
+    if dm_policy == "owner_only" {
+        // Only the configured owner may send messages. Drop everything else silently.
+        let owner_id = channel_host::workspace_read(OWNER_ID_PATH).unwrap_or_default();
+        if owner_id.is_empty() || msg.author.id != owner_id {
+            channel_host::log(
+                channel_host::LogLevel::Debug,
+                &format!(
+                    "owner_only: dropping message from non-owner user {}",
+                    msg.author.id
+                ),
+            );
+            return;
+        }
+    } else if dm_policy != "open" {
         // Build effective allow list: config allow_from + pairing-approved store
         let mut allowed: Vec<String> = channel_host::workspace_read(ALLOW_FROM_PATH)
             .and_then(|s| serde_json::from_str(&s).ok())

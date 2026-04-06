@@ -62,6 +62,7 @@ impl ConnectionBroker {
         message_tx: Arc<RwLock<Option<mpsc::Sender<IncomingMessage>>>>,
         rate_limiter: Arc<RwLock<ChannelEmitRateLimiter>>,
         pairing_store: Arc<PairingStore>,
+        channel_state: Arc<std::sync::RwLock<std::collections::HashMap<String, String>>>,
         shutdown_rx: watch::Receiver<bool>,
     ) -> JoinHandle<()> {
         let (event_tx, event_rx) = mpsc::channel::<String>(config.event_queue_size);
@@ -123,6 +124,7 @@ impl ConnectionBroker {
                 &message_tx,
                 &rate_limiter,
                 pairing_store,
+                channel_state,
                 callback_timeout,
             )
             .await;
@@ -193,6 +195,37 @@ fn substitute_credentials(input: &str, credentials: &HashMap<String, String>) ->
         result = result.replace(&placeholder, value);
     }
     result
+}
+
+/// Returns true if the string still contains an unresolved `{SCREAMING_SNAKE_CASE}`
+/// placeholder (all-caps with underscores, wrapped in braces).
+fn regex_like_unresolved(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j] != b'}' {
+                j += 1;
+            }
+            if j < bytes.len() {
+                let inner = &s[start..j];
+                // Treat as unresolved if it looks like SCREAMING_SNAKE_CASE
+                if !inner.is_empty()
+                    && inner
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c == '_')
+                {
+                    return true;
+                }
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    false
 }
 
 // ============================================================================
@@ -435,7 +468,9 @@ async fn run_websocket_connection(
                                             let hs = config.handshake.as_ref().unwrap();
                                             let payload_str = serde_json::to_string(&hs.send).unwrap_or_default();
                                             let substituted = substitute_credentials(&payload_str, &creds_snapshot);
-                                            let has_unresolved = substituted.contains("{") && substituted.contains("}");
+                                            // Check for unresolved placeholders: look for {ALL_CAPS}
+                                            // patterns that suggest a credential wasn't substituted.
+                                            let has_unresolved = regex_like_unresolved(&substituted);
                                             tracing::info!(
                                                 channel = %channel_name,
                                                 trigger_op = wait_op,
@@ -642,6 +677,7 @@ async fn run_dispatch_loop(
     message_tx: &Arc<RwLock<Option<mpsc::Sender<IncomingMessage>>>>,
     rate_limiter: &Arc<RwLock<ChannelEmitRateLimiter>>,
     pairing_store: Arc<PairingStore>,
+    channel_state: Arc<std::sync::RwLock<std::collections::HashMap<String, String>>>,
     callback_timeout: Duration,
 ) {
     loop {
@@ -668,6 +704,7 @@ async fn run_dispatch_loop(
                     capabilities,
                     credentials,
                     pairing_store.clone(),
+                    Arc::clone(&channel_state),
                     callback_timeout,
                     &event_json,
                 ).await;

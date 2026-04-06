@@ -760,6 +760,8 @@ pub struct ChannelsConfig {
     pub telegram_owner_id: Option<i64>,
     /// Discord owner user ID. When set, the bot only responds to this user.
     pub discord_owner_id: Option<String>,
+    /// Discord DM policy override. Values: "pairing" (default), "open", "owner_only".
+    pub discord_dm_policy: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -857,6 +859,8 @@ impl ChannelsConfig {
                 .or(settings.channels.telegram_owner_id),
             discord_owner_id: optional_env("DISCORD_OWNER_ID")?
                 .or(settings.channels.discord_owner_id.clone()),
+            discord_dm_policy: optional_env("DISCORD_DM_POLICY")?
+                .or(settings.channels.discord_dm_policy.clone()),
         })
     }
 }
