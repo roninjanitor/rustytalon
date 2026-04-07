@@ -126,6 +126,9 @@ const DM_POLICY_PATH: &str = "state/dm_policy";
 /// Bot owner's Discord user ID — used by the "owner_only" policy.
 const OWNER_ID_PATH: &str = "state/owner_id";
 
+/// Prefix for per-user active thread IDs: `state/thread/<user_id>`.
+const THREAD_PATH_PREFIX: &str = "state/thread/";
+
 /// JSON array of allowed user IDs (from config `allow_from`).
 const ALLOW_FROM_PATH: &str = "state/allow_from";
 
@@ -422,6 +425,20 @@ impl Guest for DiscordChannel {
         // Ensure this DM channel is tracked for future polling/responses
         add_dm_channel(&msg.channel_id);
 
+        // Update last_message_ids so on_poll skips this message (prevents double-processing
+        // when both the WebSocket broker and REST polling are active simultaneously).
+        let mut last_ids: std::collections::HashMap<String, String> =
+            channel_host::workspace_read(LAST_MESSAGE_IDS_PATH)
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+        let current = last_ids.get(&msg.channel_id).cloned().unwrap_or_default();
+        if snowflake_gt(&msg.id, &current) {
+            last_ids.insert(msg.channel_id.clone(), msg.id.clone());
+            if let Ok(json) = serde_json::to_string(&last_ids) {
+                let _ = channel_host::workspace_write(LAST_MESSAGE_IDS_PATH, &json);
+            }
+        }
+
         let channel_id = msg.channel_id.clone();
         handle_message(&msg, &channel_id);
 
@@ -518,6 +535,23 @@ fn handle_message(msg: &DiscordMessage, channel_id: &str) {
         }
     }
 
+    // Handle thread reset command: `/new` or `!new` starts a fresh conversation.
+    let trimmed = msg.content.trim();
+    if trimmed.eq_ignore_ascii_case("/new") || trimmed.eq_ignore_ascii_case("!new") {
+        let new_thread = rotate_thread(&msg.author.id, &msg.id);
+        let reply = format!(
+            "Started a new conversation thread. Your history is preserved but I'm starting fresh. (thread: `{}`)",
+            new_thread
+        );
+        if let Err(e) = send_message(channel_id, &reply) {
+            channel_host::log(
+                channel_host::LogLevel::Error,
+                &format!("Failed to send /new confirmation: {}", e),
+            );
+        }
+        return;
+    }
+
     // Build user display name
     let user_name = msg
         .author
@@ -525,6 +559,8 @@ fn handle_message(msg: &DiscordMessage, channel_id: &str) {
         .as_deref()
         .unwrap_or(&msg.author.username)
         .to_string();
+
+    let thread_id = active_thread_id(&msg.author.id);
 
     let metadata = DiscordMessageMetadata {
         channel_id: channel_id.to_string(),
@@ -534,11 +570,12 @@ fn handle_message(msg: &DiscordMessage, channel_id: &str) {
 
     let metadata_json = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
 
+    // Each Discord user gets their own conversation thread, rotatable via `/new`.
     channel_host::emit_message(&EmittedMessage {
         user_id: msg.author.id.clone(),
         user_name: Some(user_name),
         content: msg.content.clone(),
-        thread_id: None,
+        thread_id: Some(thread_id),
         metadata_json,
     });
 
@@ -549,6 +586,34 @@ fn handle_message(msg: &DiscordMessage, channel_id: &str) {
             msg.author.id, channel_id
         ),
     );
+}
+
+// ============================================================================
+// Thread management
+// ============================================================================
+
+/// Returns the active thread ID for a user, creating a default one if none exists.
+fn active_thread_id(user_id: &str) -> String {
+    let path = format!("{}{}", THREAD_PATH_PREFIX, user_id);
+    channel_host::workspace_read(&path)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            // First-time: seed with the stable default and persist it.
+            let default = format!("discord:{}", user_id);
+            let _ = channel_host::workspace_write(&path, &default);
+            default
+        })
+}
+
+/// Creates a new thread for a user keyed by the triggering message's snowflake.
+///
+/// Discord snowflakes are monotonically increasing, so this guarantees a unique,
+/// chronologically ordered thread ID without needing a clock.
+fn rotate_thread(user_id: &str, trigger_snowflake: &str) -> String {
+    let new_id = format!("discord:{}:{}", user_id, trigger_snowflake);
+    let path = format!("{}{}", THREAD_PATH_PREFIX, user_id);
+    let _ = channel_host::workspace_write(&path, &new_id);
+    new_id
 }
 
 // ============================================================================
