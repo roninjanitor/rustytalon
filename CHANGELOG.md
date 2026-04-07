@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.27] - 2026-04-06
+
+### Fixed
+- Discord channel no longer sends 4004 Authentication failed in production — `DISCORD_OWNER_ID` and other config env vars (`*_DM_POLICY`, `*_ENABLED`) were being bootstrapped into the secrets store and then injected as WebSocket credentials alongside the bot token. Both `bootstrap_channel_secrets_from_env` and `inject_channel_credentials` now exclude these suffixes.
+- Discord DM conversations now appear in web UI thread list — messages were stored under the channel-specific Discord snowflake ID instead of the primary user ID (`GATEWAY_USER_ID`)
+- Discord channel no longer replays buffered messages on restart — `last_message_ids` is now seeded on `on_start` with the current latest snowflake
+- Web UI Discord settings panel now shows effective env var values (`DISCORD_OWNER_ID`, `DISCORD_DM_POLICY`) instead of blank fields
+- `list_conversations_with_preview` now accepts `None` for channel to return threads from all channels
+
 ## [0.1.26] - 2026-04-06
 
 ### Added

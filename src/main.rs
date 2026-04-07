@@ -1444,10 +1444,15 @@ async fn bootstrap_channel_secrets_from_env(
     use rustytalon::secrets::CreateSecretParams;
 
     let prefix = format!("{}_", channel_name.to_uppercase());
+    // These suffixes are config/policy vars, not credentials — skip them.
+    let excluded_suffixes = ["_OWNER_ID", "_DM_POLICY", "_ENABLED"];
     let mut bootstrapped = 0;
 
     for (key, value) in std::env::vars() {
         if !key.starts_with(&prefix) || value.is_empty() {
+            continue;
+        }
+        if excluded_suffixes.iter().any(|s| key.ends_with(s)) {
             continue;
         }
 
@@ -1500,11 +1505,20 @@ async fn inject_channel_credentials(
         .map_err(|e| anyhow::anyhow!("Failed to list secrets: {}", e))?;
 
     let prefix = format!("{}_", channel_name);
+    // These suffixes are config/policy vars, not credentials — never inject them.
+    let excluded_suffixes = ["_owner_id", "_dm_policy", "_enabled"];
     let mut count = 0;
 
     for secret_meta in all_secrets {
         // Only process secrets matching the channel prefix
         if !secret_meta.name.starts_with(&prefix) {
+            continue;
+        }
+        // Skip non-credential config vars that may have been accidentally bootstrapped.
+        if excluded_suffixes
+            .iter()
+            .any(|s| secret_meta.name.ends_with(s))
+        {
             continue;
         }
 
