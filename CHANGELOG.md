@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.28] - 2026-04-07
+
+### Fixed
+- Docker build: add `on_event` stub to telegram, slack, matrix, and whatsapp channels — WIT interface added `on_event` for Discord's WebSocket connection but other channels did not implement it, breaking compilation
+
 ## [0.1.27] - 2026-04-06
 
 ### Fixed
