@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.29] - 2026-04-07
+
 ### Fixed
 - Discord channel no longer delivers duplicate messages when both the WebSocket broker and REST polling are active — `on_event` now updates `last_message_ids` with the message snowflake so the next `on_poll` skips it
 
