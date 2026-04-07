@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Discord channel no longer delivers duplicate messages when both the WebSocket broker and REST polling are active — `on_event` now updates `last_message_ids` with the message snowflake so the next `on_poll` skips it
+
+### Added
+- Discord per-user conversation threads — each Discord user gets their own isolated thread (`discord:<user_id>`) so conversation history is maintained across sessions and stays separate from the web UI and other channels
+- Discord `/new` command (also `!new`) — starts a fresh conversation thread keyed by the triggering message snowflake; old history is preserved in the database but the agent starts with a clean context
+
 ## [0.1.28] - 2026-04-07
 
 ### Fixed
