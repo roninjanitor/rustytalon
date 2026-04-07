@@ -760,6 +760,8 @@ pub struct ChannelsConfig {
     pub telegram_owner_id: Option<i64>,
     /// Discord owner user ID. When set, the bot only responds to this user.
     pub discord_owner_id: Option<String>,
+    /// Discord DM policy override. Values: "pairing" (default), "open", "owner_only".
+    pub discord_dm_policy: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -857,6 +859,8 @@ impl ChannelsConfig {
                 .or(settings.channels.telegram_owner_id),
             discord_owner_id: optional_env("DISCORD_OWNER_ID")?
                 .or(settings.channels.discord_owner_id.clone()),
+            discord_dm_policy: optional_env("DISCORD_DM_POLICY")?
+                .or(settings.channels.discord_dm_policy.clone()),
         })
     }
 }
@@ -884,6 +888,11 @@ pub struct AgentConfig {
     pub session_idle_timeout: Duration,
     /// Allow chat to use filesystem/shell tools directly (bypass sandbox).
     pub allow_local_tools: bool,
+    /// Primary user ID for DB persistence (conversations, jobs).
+    /// Defaults to the gateway user ID ("default"). All channel conversations
+    /// are stored under this ID so they appear in the web UI regardless of
+    /// which channel they came from.
+    pub primary_user_id: String,
 }
 
 impl AgentConfig {
@@ -962,6 +971,8 @@ impl AgentConfig {
                     message: format!("must be 'true' or 'false': {e}"),
                 })?
                 .unwrap_or(false),
+            primary_user_id: optional_env("GATEWAY_USER_ID")?
+                .unwrap_or_else(|| "default".to_string()),
         })
     }
 }

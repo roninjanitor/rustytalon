@@ -39,7 +39,7 @@ wit_bindgen::generate!({
 use serde::{Deserialize, Serialize};
 
 use exports::near::agent::channel::{
-    AgentResponse, ChannelConfig, Guest, HttpEndpointConfig, IncomingHttpRequest,
+    AgentResponse, ChannelConfig, Guest, IncomingHttpRequest,
     OutgoingHttpResponse, PollConfig, StatusType, StatusUpdate,
 };
 use near::agent::channel_host::{self, EmittedMessage};
@@ -120,8 +120,11 @@ const LAST_MESSAGE_IDS_PATH: &str = "state/last_message_ids";
 /// JSON array of DM channel IDs the bot should poll.
 const DM_CHANNELS_PATH: &str = "state/dm_channels";
 
-/// DM policy persisted across callbacks: "pairing" | "open".
+/// DM policy persisted across callbacks: "owner_only" | "pairing" | "open".
 const DM_POLICY_PATH: &str = "state/dm_policy";
+
+/// Bot owner's Discord user ID — used by the "owner_only" policy.
+const OWNER_ID_PATH: &str = "state/owner_id";
 
 /// JSON array of allowed user IDs (from config `allow_from`).
 const ALLOW_FROM_PATH: &str = "state/allow_from";
@@ -160,8 +163,9 @@ struct DiscordConfig {
     #[serde(default)]
     owner_id: Option<String>,
 
-    /// DM policy: `"pairing"` (default) or `"open"`.
+    /// DM policy: `"owner_only"` (default), `"pairing"`, or `"open"`.
     ///
+    /// - `owner_only`: only the configured `owner_id` can message the bot (most secure).
     /// - `pairing`: unknown senders receive a pairing-code reply; messages are
     ///   not forwarded until approved via `rustytalon pairing approve discord <code>`.
     /// - `open`: all senders are accepted without pairing.
@@ -195,9 +199,14 @@ impl Guest for DiscordChannel {
         let dm_policy = config
             .dm_policy
             .as_deref()
-            .unwrap_or("pairing")
+            .unwrap_or("owner_only")
             .to_string();
         let _ = channel_host::workspace_write(DM_POLICY_PATH, &dm_policy);
+
+        // Persist owner_id so handle_message can access it for owner_only policy
+        if let Some(ref owner_id) = config.owner_id {
+            let _ = channel_host::workspace_write(OWNER_ID_PATH, owner_id);
+        }
 
         let allow_from_json = serde_json::to_string(&config.allow_from.unwrap_or_default())
             .unwrap_or_else(|_| "[]".to_string());
@@ -227,6 +236,11 @@ impl Guest for DiscordChannel {
                         &format!("DM channel with owner: {}", channel_id),
                     );
                     add_dm_channel(&channel_id);
+
+                    // Seed last_message_ids with the current latest snowflake so
+                    // that on_poll only delivers messages that arrive AFTER startup.
+                    // Without this, every restart would replay the last 50 messages.
+                    seed_last_message_id(&channel_id);
                 }
                 Err(e) => {
                     channel_host::log(
@@ -429,9 +443,22 @@ impl Guest for DiscordChannel {
 /// Check message access policy and emit to the agent if allowed.
 fn handle_message(msg: &DiscordMessage, channel_id: &str) {
     let dm_policy = channel_host::workspace_read(DM_POLICY_PATH)
-        .unwrap_or_else(|| "pairing".to_string());
+        .unwrap_or_else(|| "owner_only".to_string());
 
-    if dm_policy != "open" {
+    if dm_policy == "owner_only" {
+        // Only the configured owner may send messages. Drop everything else silently.
+        let owner_id = channel_host::workspace_read(OWNER_ID_PATH).unwrap_or_default();
+        if owner_id.is_empty() || msg.author.id != owner_id {
+            channel_host::log(
+                channel_host::LogLevel::Debug,
+                &format!(
+                    "owner_only: dropping message from non-owner user {}",
+                    msg.author.id
+                ),
+            );
+            return;
+        }
+    } else if dm_policy != "open" {
         // Build effective allow list: config allow_from + pairing-approved store
         let mut allowed: Vec<String> = channel_host::workspace_read(ALLOW_FROM_PATH)
             .and_then(|s| serde_json::from_str(&s).ok())
@@ -636,6 +663,74 @@ fn fetch_messages(channel_id: &str, after: &str) -> Result<Vec<DiscordMessage>, 
     let mut messages = messages;
     messages.reverse();
     Ok(messages)
+}
+
+/// Seed `last_message_ids` for a channel with the current latest snowflake.
+///
+/// Called once on `on_start` after opening the DM channel. This ensures that
+/// `on_poll` only processes messages that arrive after the bot starts — without
+/// this, every restart would replay the last 50 messages and reply to all of them.
+///
+/// If the channel is empty or the fetch fails, we skip seeding (the first poll
+/// will start from the beginning, which is acceptable for a fresh channel).
+fn seed_last_message_id(channel_id: &str) {
+    // Load existing map so we don't overwrite a position we already have
+    // (e.g. on_event may have updated it before on_start finishes).
+    let mut last_ids: std::collections::HashMap<String, String> =
+        channel_host::workspace_read(LAST_MESSAGE_IDS_PATH)
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+    // If we already have a position for this channel, leave it alone.
+    if last_ids.contains_key(channel_id) {
+        return;
+    }
+
+    // Fetch the single most recent message to get its snowflake.
+    let url = format!(
+        "https://discord.com/api/v10/channels/{}/messages?limit=1",
+        channel_id
+    );
+    let headers = serde_json::json!({ "Content-Type": "application/json" });
+
+    match channel_host::http_request("GET", &url, &headers.to_string(), None, None) {
+        Ok(resp) if resp.status == 200 => {
+            if let Ok(msgs) = serde_json::from_slice::<Vec<serde_json::Value>>(&resp.body) {
+                if let Some(latest_id) = msgs.first().and_then(|m| m["id"].as_str()) {
+                    channel_host::log(
+                        channel_host::LogLevel::Info,
+                        &format!(
+                            "Seeding last_message_id for channel {} to {}",
+                            channel_id, latest_id
+                        ),
+                    );
+                    last_ids.insert(channel_id.to_string(), latest_id.to_string());
+                    if let Ok(json) = serde_json::to_string(&last_ids) {
+                        let _ = channel_host::workspace_write(LAST_MESSAGE_IDS_PATH, &json);
+                    }
+                }
+                // Empty channel — no messages yet, leave unset (on_poll will fetch from beginning)
+            }
+        }
+        Ok(resp) => {
+            channel_host::log(
+                channel_host::LogLevel::Warn,
+                &format!(
+                    "Could not seed last_message_id for channel {} (status {}), will fetch from beginning on first poll",
+                    channel_id, resp.status
+                ),
+            );
+        }
+        Err(e) => {
+            channel_host::log(
+                channel_host::LogLevel::Warn,
+                &format!(
+                    "Could not seed last_message_id for channel {} ({}), will fetch from beginning on first poll",
+                    channel_id, e
+                ),
+            );
+        }
+    }
 }
 
 /// Post a text message to a Discord channel.

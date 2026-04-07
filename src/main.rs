@@ -1017,13 +1017,19 @@ async fn main() -> anyhow::Result<()> {
                                         serde_json::json!(owner_id),
                                     );
                                 }
-                                if channel_name == "discord"
-                                    && let Some(ref owner_id) = config.channels.discord_owner_id
-                                {
-                                    config_updates.insert(
-                                        "owner_id".to_string(),
-                                        serde_json::json!(owner_id),
-                                    );
+                                if channel_name == "discord" {
+                                    if let Some(ref owner_id) = config.channels.discord_owner_id {
+                                        config_updates.insert(
+                                            "owner_id".to_string(),
+                                            serde_json::json!(owner_id),
+                                        );
+                                    }
+                                    if let Some(ref dm_policy) = config.channels.discord_dm_policy {
+                                        config_updates.insert(
+                                            "dm_policy".to_string(),
+                                            serde_json::json!(dm_policy),
+                                        );
+                                    }
                                 }
 
                                 // Load per-extension config from DB (keys like
@@ -1115,9 +1121,14 @@ async fn main() -> anyhow::Result<()> {
                                 // No secrets store (no SECRETS_MASTER_KEY).
                                 // Fall back to injecting env var credentials directly so
                                 // Docker deployments work without encryption configured.
+                                // Exclude known non-credential config vars (owner_id, dm_policy, etc.)
+                                let excluded_suffixes = ["_OWNER_ID", "_DM_POLICY", "_ENABLED"];
                                 let prefix = format!("{}_", channel_name.to_uppercase());
                                 for (key, value) in std::env::vars() {
-                                    if key.starts_with(&prefix) && !value.is_empty() {
+                                    if key.starts_with(&prefix)
+                                        && !value.is_empty()
+                                        && !excluded_suffixes.iter().any(|s| key.ends_with(s))
+                                    {
                                         channel_arc.set_credential(&key, value).await;
                                         tracing::info!(
                                             channel = %channel_name,
@@ -1317,6 +1328,24 @@ async fn main() -> anyhow::Result<()> {
             gw = gw.with_smart_router(Arc::clone(router));
         }
         gw = gw.with_wasm_channels(loaded_wasm_channel_names.clone());
+
+        // Inject env-sourced channel config so the web UI shows effective values.
+        {
+            let mut discord_env = serde_json::json!({});
+            if let Some(ref v) = config.channels.discord_owner_id {
+                discord_env["owner_id"] = serde_json::json!(v);
+            }
+            if let Some(ref v) = config.channels.discord_dm_policy {
+                discord_env["dm_policy"] = serde_json::json!(v);
+            }
+            if discord_env
+                .as_object()
+                .map(|o| !o.is_empty())
+                .unwrap_or(false)
+            {
+                gw = gw.with_channel_env_config("discord", discord_env);
+            }
+        }
         if config.sandbox.enabled {
             gw = gw.with_prompt_queue(Arc::clone(&prompt_queue));
 

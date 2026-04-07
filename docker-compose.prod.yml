@@ -44,6 +44,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     # Mount Docker socket only if SANDBOX_ENABLED=true in .env.
     # Without this mount, sandbox jobs will fail at runtime.
     # volumes:

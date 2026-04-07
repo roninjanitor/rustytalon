@@ -358,12 +358,12 @@ impl Database for LibSqlBackend {
     async fn list_conversations_with_preview(
         &self,
         user_id: &str,
-        channel: &str,
+        channel: Option<&str>,
         limit: i64,
     ) -> Result<Vec<ConversationSummary>, DatabaseError> {
         let conn = self.connect()?;
-        let mut rows = conn
-            .query(
+        let mut rows = if let Some(channel) = channel {
+            conn.query(
                 r#"
                 SELECT
                     c.id,
@@ -385,7 +385,32 @@ impl Database for LibSqlBackend {
                 params![user_id, channel, limit],
             )
             .await
-            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+        } else {
+            conn.query(
+                r#"
+                SELECT
+                    c.id,
+                    c.started_at,
+                    c.last_activity,
+                    c.metadata,
+                    (SELECT COUNT(*) FROM conversation_messages m WHERE m.conversation_id = c.id) AS message_count,
+                    (SELECT substr(m2.content, 1, 100)
+                     FROM conversation_messages m2
+                     WHERE m2.conversation_id = c.id AND m2.role = 'user'
+                     ORDER BY m2.created_at ASC
+                     LIMIT 1
+                    ) AS title
+                FROM conversations c
+                WHERE c.user_id = ?1
+                ORDER BY c.last_activity DESC
+                LIMIT ?2
+                "#,
+                params![user_id, limit],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+        };
 
         let mut results = Vec::new();
         while let Some(row) = rows
@@ -2674,4 +2699,107 @@ fn row_to_routine_run_libsql(row: &libsql::Row) -> Result<RoutineRun, DatabaseEr
         job_id: get_opt_text(row, 9).and_then(|s| s.parse().ok()),
         created_at: get_ts(row, 10),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: open an in-memory libSQL DB, run migrations on the same connection,
+    /// and return that connection for direct testing.
+    ///
+    /// libSQL in-memory databases are per-connection, so we must run all DDL and DML
+    /// on the same connection rather than going through `connect()` each time.
+    async fn open_conn() -> Connection {
+        let db = libsql::Builder::new_local(":memory:")
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute_batch(crate::db::libsql_migrations::SCHEMA)
+            .await
+            .unwrap();
+        conn
+    }
+
+    async fn insert_conversation(conn: &Connection, id: Uuid, channel: &str, user_id: &str) {
+        conn.execute(
+            "INSERT OR IGNORE INTO conversations (id, channel, user_id, started_at, last_activity, metadata)
+             VALUES (?1, ?2, ?3, datetime('now'), datetime('now'), '{}')",
+            params![id.to_string(), channel, user_id],
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn list_preview(
+        conn: &Connection,
+        user_id: &str,
+        channel: Option<&str>,
+        limit: i64,
+    ) -> Vec<String> {
+        let mut rows = if let Some(ch) = channel {
+            conn.query(
+                "SELECT c.id FROM conversations c WHERE c.user_id = ?1 AND c.channel = ?2
+                 ORDER BY c.last_activity DESC LIMIT ?3",
+                params![user_id, ch, limit],
+            )
+            .await
+            .unwrap()
+        } else {
+            conn.query(
+                "SELECT c.id FROM conversations c WHERE c.user_id = ?1
+                 ORDER BY c.last_activity DESC LIMIT ?2",
+                params![user_id, limit],
+            )
+            .await
+            .unwrap()
+        };
+
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await.unwrap() {
+            ids.push(row.get::<String>(0).unwrap());
+        }
+        ids
+    }
+
+    #[tokio::test]
+    async fn test_list_conversations_channel_filter() {
+        let conn = open_conn().await;
+        let user = "user1";
+        let id_gw = Uuid::new_v4();
+        let id_dc = Uuid::new_v4();
+
+        insert_conversation(&conn, id_gw, "gateway", user).await;
+        insert_conversation(&conn, id_dc, "discord", user).await;
+
+        let gw_only = list_preview(&conn, user, Some("gateway"), 50).await;
+        assert_eq!(gw_only.len(), 1);
+        assert_eq!(gw_only[0], id_gw.to_string());
+
+        let dc_only = list_preview(&conn, user, Some("discord"), 50).await;
+        assert_eq!(dc_only.len(), 1);
+        assert_eq!(dc_only[0], id_dc.to_string());
+
+        let all = list_preview(&conn, user, None, 50).await;
+        assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_list_conversations_cross_user_isolation() {
+        let conn = open_conn().await;
+        let id_alice = Uuid::new_v4();
+        let id_bob = Uuid::new_v4();
+
+        insert_conversation(&conn, id_alice, "discord", "alice").await;
+        insert_conversation(&conn, id_bob, "discord", "bob").await;
+
+        let alice = list_preview(&conn, "alice", None, 50).await;
+        assert_eq!(alice.len(), 1);
+        assert_eq!(alice[0], id_alice.to_string());
+
+        let bob = list_preview(&conn, "bob", None, 50).await;
+        assert_eq!(bob.len(), 1);
+        assert_eq!(bob[0], id_bob.to_string());
+    }
 }

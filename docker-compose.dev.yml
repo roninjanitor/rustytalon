@@ -62,6 +62,9 @@ services:
     environment:
       GATEWAY_HOST: "0.0.0.0"
       GATEWAY_PORT: "3001"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     volumes:
       # Override baked-in WASM channels with locally built ones.
       # Run ./dev/build-channels.sh then restart to pick up changes.

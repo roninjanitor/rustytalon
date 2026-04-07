@@ -489,6 +489,7 @@ mod tests {
             smart_router: None,
             chat_rate_limiter: crate::channels::web::server::RateLimiter::new(30, 60),
             wasm_channels: vec![],
+            channel_env_config: std::collections::HashMap::new(),
         }
     }
 }

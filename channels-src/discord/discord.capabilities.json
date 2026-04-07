@@ -87,7 +87,7 @@
   },
   "config": {
     "owner_id": null,
-    "dm_policy": "pairing",
+    "dm_policy": "owner_only",
     "allow_from": []
   },
   "config_schema": {
@@ -96,13 +96,13 @@
       "owner_id": {
         "type": "string",
         "nullable": true,
-        "description": "Your Discord user ID. Only messages from this user will be processed. Leave blank to allow anyone."
+        "description": "Your Discord user ID. Required for owner_only policy (most secure default)."
       },
       "dm_policy": {
         "type": "string",
-        "enum": ["pairing", "owner_only", "anyone"],
-        "default": "pairing",
-        "description": "Who can send DMs to the bot. 'pairing' requires a /pair command first."
+        "enum": ["owner_only", "pairing", "open"],
+        "default": "owner_only",
+        "description": "Who can send DMs to the bot. 'owner_only' restricts to the configured owner_id only (most secure). 'pairing' requires approval. 'open' allows anyone."
       },
       "allow_from": {
         "type": "array",

@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.26] - 2026-04-06
+
+### Added
+- `owner_only` DM policy for Discord channel — only the configured `owner_id` can message the bot; all other senders are silently dropped (no pairing codes sent). This is now the default policy.
+- WASM channel workspace state persistence — `workspace_write` calls from WASM callbacks are now flushed to an in-memory store shared across all callbacks; `workspace_read` reads from that store. Previously all WASM state (dm_policy, bot_id, dm_channel list, last_message_ids) was lost between each callback invocation.
+- `DISCORD_DM_POLICY` environment variable — override the Discord `dm_policy` at runtime without editing capabilities files
+
+### Changed
+- Discord `dm_policy` default changed from `pairing` to `owner_only` — protects new deployments by default; set `DISCORD_DM_POLICY=pairing` or `DISCORD_DM_POLICY=open` to revert
+
+### Fixed
+- Discord bot no longer defaults to pairing-only flow when `DISCORD_DM_POLICY` env var is set but state was lost between WASM invocations
+
+## [0.1.25] - 2026-04-06
+
+### Fixed
+- Discord Gateway handshake now logs credential count, credential keys, and whether unresolved placeholders remain — diagnoses token injection failures that produce 4004 Authentication failed
+
 ## [0.1.24] - 2026-04-06
 
 ### Added
