@@ -610,6 +610,11 @@ impl Guest for TelegramChannel {
         }
     }
 
+    fn on_event(_event_json: String) -> Result<(), String> {
+        // This channel does not use persistent connections; events are delivered via polling.
+        Ok(())
+    }
+
     fn on_shutdown() {
         channel_host::log(
             channel_host::LogLevel::Info,
