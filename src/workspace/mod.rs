@@ -540,6 +540,29 @@ impl Workspace {
             }
         }
 
+        // Include MEMORY.md if it has content beyond the seed header.
+        // Truncated to avoid bloat — full content is always available via memory_search.
+        const MEMORY_SEED_LINES: usize = 3; // "# Memory\n\n<desc>" lines
+        const MEMORY_CHAR_LIMIT: usize = 2000;
+        if let Ok(doc) = self.read(paths::MEMORY).await {
+            let meaningful: String = doc
+                .content
+                .lines()
+                .skip(MEMORY_SEED_LINES)
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string();
+            if !meaningful.is_empty() {
+                let truncated = if meaningful.len() > MEMORY_CHAR_LIMIT {
+                    format!("{}…\n\n*(truncated — use memory_search for full history)*", &meaningful[..MEMORY_CHAR_LIMIT])
+                } else {
+                    meaningful
+                };
+                parts.push(format!("## Memory\n\n{}", truncated));
+            }
+        }
+
         // Add today's memory context (last 2 days of daily logs)
         let today = Utc::now().date_naive();
         let yesterday = today.pred_opt().unwrap_or(today);
@@ -693,10 +716,21 @@ impl Workspace {
                 paths::AGENTS,
                 "# Agent Instructions\n\n\
                  You are a personal AI assistant with access to tools and persistent memory.\n\n\
+                 ## Memory — When and What to Write\n\n\
+                 Use `memory_write` to persist information that should survive across sessions:\n\n\
+                 - **USER.md** — anything you learn about the user: name, preferences, role, goals\n\
+                 - **MEMORY.md** — important facts, decisions, recurring themes, lessons learned\n\
+                 - **daily_log** — what you worked on today (write a short note at the end of any\n\
+                   substantive exchange: topic + outcome, one or two lines)\n\n\
+                 **Before answering questions about past conversations, always call `memory_search`.**\n\
+                 Memory is the only way facts survive between sessions — if you don't write it, it's gone.\n\n\
+                 Examples of things worth writing:\n\
+                 - User says their name → write to USER.md\n\
+                 - User makes a decision (\"use postgres\", \"keep it simple\") → write to MEMORY.md\n\
+                 - You complete a task → log a one-liner to daily_log\n\
+                 - You learn a preference → write to USER.md\n\n\
                  ## Guidelines\n\n\
-                 - Always search memory before answering questions about prior conversations\n\
-                 - Write important facts and decisions to memory for future reference\n\
-                 - Use the daily log for session-level notes\n\
+                 - Search memory before answering questions about prior conversations\n\
                  - Be concise but thorough\n\n\
                  ## Action vs Information\n\n\
                  \"How do I...\" and \"Can you...\" questions are requests for information, not for action.\n\
