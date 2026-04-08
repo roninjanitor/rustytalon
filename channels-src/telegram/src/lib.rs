@@ -562,51 +562,79 @@ impl Guest for TelegramChannel {
     }
 
     fn on_status(update: StatusUpdate) {
-        // Only send typing indicator for Thinking status
-        if !matches!(update.status, StatusType::Thinking) {
-            return;
-        }
-
         // Parse chat_id from metadata
         let metadata: TelegramMessageMetadata = match serde_json::from_str(&update.metadata_json) {
             Ok(m) => m,
             Err(_) => {
                 channel_host::log(
                     channel_host::LogLevel::Debug,
-                    "on_status: no valid Telegram metadata, skipping typing indicator",
+                    "on_status: no valid Telegram metadata, skipping",
                 );
                 return;
             }
         };
 
-        // POST /sendChatAction with action "typing"
-        let payload = serde_json::json!({
-            "chat_id": metadata.chat_id,
-            "action": "typing"
-        });
+        match update.status {
+            StatusType::Thinking => {
+                // POST /sendChatAction with action "typing"
+                let payload = serde_json::json!({
+                    "chat_id": metadata.chat_id,
+                    "action": "typing"
+                });
 
-        let payload_bytes = match serde_json::to_vec(&payload) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
+                let payload_bytes = match serde_json::to_vec(&payload) {
+                    Ok(b) => b,
+                    Err(_) => return,
+                };
 
-        let headers = serde_json::json!({
-            "Content-Type": "application/json"
-        });
+                let headers = serde_json::json!({ "Content-Type": "application/json" });
 
-        let result = channel_host::http_request(
-            "POST",
-            "https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendChatAction",
-            &headers.to_string(),
-            Some(&payload_bytes),
-            None,
-        );
+                if let Err(e) = channel_host::http_request(
+                    "POST",
+                    "https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendChatAction",
+                    &headers.to_string(),
+                    Some(&payload_bytes),
+                    None,
+                ) {
+                    channel_host::log(
+                        channel_host::LogLevel::Debug,
+                        &format!("sendChatAction failed: {}", e),
+                    );
+                }
+            }
+            StatusType::ApprovalNeeded => {
+                // Parse the approval details from extra_json
+                let (tool_name, description) = update
+                    .extra_json
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                    .map(|v| {
+                        let tool = v["tool_name"].as_str().unwrap_or("unknown").to_string();
+                        let desc = v["description"].as_str().unwrap_or("").to_string();
+                        (tool, desc)
+                    })
+                    .unwrap_or_else(|| ("unknown".to_string(), String::new()));
 
-        if let Err(e) = result {
-            channel_host::log(
-                channel_host::LogLevel::Debug,
-                &format!("sendChatAction failed: {}", e),
-            );
+                let msg = if description.is_empty() {
+                    format!(
+                        "Approval required — tool: {}\nReply yes to approve, always to always approve, or no to deny.",
+                        tool_name
+                    )
+                } else {
+                    format!(
+                        "Approval required — tool: {}\n{}\nReply yes to approve, always to always approve, or no to deny.",
+                        tool_name, description
+                    )
+                };
+
+                if let Err(e) = send_message(metadata.chat_id, &msg, 0, None) {
+                    channel_host::log(
+                        channel_host::LogLevel::Warn,
+                        &format!("Failed to send approval prompt: {}", e),
+                    );
+                }
+            }
+            _ => {}
         }
     }
 
@@ -959,7 +987,7 @@ fn handle_message(message: TelegramMessage) {
             let username_opt = from.username.as_deref();
             let is_allowed = allowed.contains(&"*".to_string())
                 || allowed.contains(&id_str)
-                || username_opt.map_or(false, |u| allowed.contains(&u.to_string()));
+                || username_opt.is_some_and(|u| allowed.contains(&u.to_string()));
 
             if !is_allowed {
                 if dm_policy == "pairing" {

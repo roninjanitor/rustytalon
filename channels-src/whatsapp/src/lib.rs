@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 // Re-export generated types
 use exports::near::agent::channel::{
     AgentResponse, ChannelConfig, Guest, HttpEndpointConfig, IncomingHttpRequest,
-    OutgoingHttpResponse, StatusUpdate,
+    OutgoingHttpResponse, StatusType, StatusUpdate,
 };
 use near::agent::channel_host::{self, EmittedMessage};
 
@@ -418,7 +418,71 @@ impl Guest for WhatsAppChannel {
         }
     }
 
-    fn on_status(_update: StatusUpdate) {}
+    fn on_status(update: StatusUpdate) {
+        if !matches!(update.status, StatusType::ApprovalNeeded) {
+            return;
+        }
+
+        let metadata: WhatsAppMessageMetadata = match serde_json::from_str(&update.metadata_json) {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+
+        let (tool_name, description) = update
+            .extra_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            .map(|v| {
+                let tool = v["tool_name"].as_str().unwrap_or("unknown").to_string();
+                let desc = v["description"].as_str().unwrap_or("").to_string();
+                (tool, desc)
+            })
+            .unwrap_or_else(|| ("unknown".to_string(), String::new()));
+
+        let body = if description.is_empty() {
+            format!(
+                "Approval required — tool: {}\nReply yes to approve, always to always approve, or no to deny.",
+                tool_name
+            )
+        } else {
+            format!(
+                "Approval required — tool: {}\n{}\nReply yes to approve, always to always approve, or no to deny.",
+                tool_name, description
+            )
+        };
+
+        let api_url = format!(
+            "https://graph.facebook.com/v18.0/{}/messages",
+            metadata.phone_number_id
+        );
+        let payload = serde_json::json!({
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": metadata.sender_phone,
+            "type": "text",
+            "text": { "preview_url": false, "body": body }
+        });
+        let payload_bytes = match serde_json::to_vec(&payload) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let headers = serde_json::json!({
+            "Content-Type": "application/json",
+            "Authorization": "Bearer {WHATSAPP_ACCESS_TOKEN}"
+        });
+        if let Err(e) = channel_host::http_request(
+            "POST",
+            &api_url,
+            &headers.to_string(),
+            Some(&payload_bytes),
+            None,
+        ) {
+            channel_host::log(
+                channel_host::LogLevel::Warn,
+                &format!("Failed to send approval prompt: {}", e),
+            );
+        }
+    }
 
     fn on_event(_event_json: String) -> Result<(), String> {
         // This channel does not use persistent connections; events are delivered via polling.

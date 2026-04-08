@@ -261,6 +261,8 @@ interface channel {
         tool-started,
         /// A tool execution completed.
         tool-completed,
+        /// A tool requires user approval before execution.
+        approval-needed,
     }
 
     /// A status update from the agent.
@@ -271,6 +273,8 @@ interface channel {
         message: string,
         /// Channel-specific metadata as JSON string (e.g., contains chat_id for routing).
         metadata-json: string,
+        /// Extra payload as JSON string. For approval-needed: {"request_id","tool_name","description","parameters"}.
+        extra-json: option<string>,
     }
 
     // ==================== Lifecycle Callbacks ====================

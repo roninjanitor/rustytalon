@@ -2449,26 +2449,31 @@ fn status_to_wit(status: &StatusUpdate, metadata: &serde_json::Value) -> wit_cha
             status: wit_channel::StatusType::Thinking,
             message: msg.clone(),
             metadata_json,
+            extra_json: None,
         },
         StatusUpdate::ToolStarted { name } => wit_channel::StatusUpdate {
             status: wit_channel::StatusType::ToolStarted,
             message: name.clone(),
             metadata_json,
+            extra_json: None,
         },
         StatusUpdate::ToolCompleted { name, success } => wit_channel::StatusUpdate {
             status: wit_channel::StatusType::ToolCompleted,
             message: format!("{}: {}", name, if *success { "ok" } else { "failed" }),
             metadata_json,
+            extra_json: None,
         },
         StatusUpdate::ToolResult { name, preview } => wit_channel::StatusUpdate {
             status: wit_channel::StatusType::ToolCompleted,
             message: format!("{}: {}", name, preview),
             metadata_json,
+            extra_json: None,
         },
         StatusUpdate::StreamChunk(chunk) => wit_channel::StatusUpdate {
             status: wit_channel::StatusType::Thinking,
             message: chunk.clone(),
             metadata_json,
+            extra_json: None,
         },
         StatusUpdate::Status(msg) => {
             // Map well-known status strings to WIT types
@@ -2481,26 +2486,39 @@ fn status_to_wit(status: &StatusUpdate, metadata: &serde_json::Value) -> wit_cha
                 status: status_type,
                 message: msg.clone(),
                 metadata_json,
+                extra_json: None,
             }
         }
         StatusUpdate::ApprovalNeeded {
+            request_id,
             tool_name,
             description,
-            ..
-        } => wit_channel::StatusUpdate {
-            status: wit_channel::StatusType::Thinking,
-            message: format!("Approval needed: {} - {}", tool_name, description),
-            metadata_json,
-        },
+            parameters,
+        } => {
+            let extra = serde_json::json!({
+                "request_id": request_id,
+                "tool_name": tool_name,
+                "description": description,
+                "parameters": parameters,
+            });
+            wit_channel::StatusUpdate {
+                status: wit_channel::StatusType::ApprovalNeeded,
+                message: format!("Approval needed: {} — {}", tool_name, description),
+                metadata_json,
+                extra_json: Some(serde_json::to_string(&extra).unwrap_or_default()),
+            }
+        }
         StatusUpdate::JobStarted { job_id, title, .. } => wit_channel::StatusUpdate {
             status: wit_channel::StatusType::Thinking,
             message: format!("Job started: {} ({})", title, job_id),
             metadata_json,
+            extra_json: None,
         },
         StatusUpdate::AuthRequired { extension_name, .. } => wit_channel::StatusUpdate {
             status: wit_channel::StatusType::Thinking,
             message: format!("Auth required: {}", extension_name),
             metadata_json,
+            extra_json: None,
         },
         StatusUpdate::AuthCompleted {
             extension_name,
@@ -2514,6 +2532,7 @@ fn status_to_wit(status: &StatusUpdate, metadata: &serde_json::Value) -> wit_cha
                 extension_name
             ),
             metadata_json,
+            extra_json: None,
         },
     }
 }
@@ -2527,9 +2546,11 @@ fn clone_wit_status_update(update: &wit_channel::StatusUpdate) -> wit_channel::S
             wit_channel::StatusType::Interrupted => wit_channel::StatusType::Interrupted,
             wit_channel::StatusType::ToolStarted => wit_channel::StatusType::ToolStarted,
             wit_channel::StatusType::ToolCompleted => wit_channel::StatusType::ToolCompleted,
+            wit_channel::StatusType::ApprovalNeeded => wit_channel::StatusType::ApprovalNeeded,
         },
         message: update.message.clone(),
         metadata_json: update.metadata_json.clone(),
+        extra_json: update.extra_json.clone(),
     }
 }
 
@@ -3009,6 +3030,59 @@ mod tests {
     }
 
     #[test]
+    fn test_status_to_wit_approval_needed() {
+        use super::status_to_wit;
+
+        let metadata = serde_json::json!({"chat_id": 99});
+        let wit = status_to_wit(
+            &crate::channels::StatusUpdate::ApprovalNeeded {
+                request_id: "req-123".to_string(),
+                tool_name: "shell".to_string(),
+                description: "Run a shell command".to_string(),
+                parameters: serde_json::json!({"command": "ls"}),
+            },
+            &metadata,
+        );
+
+        assert!(matches!(
+            wit.status,
+            super::wit_channel::StatusType::ApprovalNeeded
+        ));
+        assert!(wit.message.contains("shell"));
+
+        // extra_json must carry structured approval data
+        let extra: serde_json::Value =
+            serde_json::from_str(wit.extra_json.as_deref().unwrap()).unwrap();
+        assert_eq!(extra["request_id"], "req-123");
+        assert_eq!(extra["tool_name"], "shell");
+        assert_eq!(extra["description"], "Run a shell command");
+        assert_eq!(extra["parameters"]["command"], "ls");
+    }
+
+    #[test]
+    fn test_status_to_wit_extra_json_none_for_other_variants() {
+        use super::status_to_wit;
+
+        let metadata = serde_json::json!(null);
+        for status in [
+            crate::channels::StatusUpdate::Thinking("t".into()),
+            crate::channels::StatusUpdate::Status("Done".into()),
+            crate::channels::StatusUpdate::ToolStarted { name: "x".into() },
+            crate::channels::StatusUpdate::ToolCompleted {
+                name: "x".into(),
+                success: true,
+            },
+        ] {
+            let wit = status_to_wit(&status, &metadata);
+            assert!(
+                wit.extra_json.is_none(),
+                "extra_json should be None for {:?}",
+                wit.status
+            );
+        }
+    }
+
+    #[test]
     fn test_clone_wit_status_update() {
         use super::{clone_wit_status_update, wit_channel};
 
@@ -3016,12 +3090,34 @@ mod tests {
             status: wit_channel::StatusType::Thinking,
             message: "hello".to_string(),
             metadata_json: "{\"a\":1}".to_string(),
+            extra_json: None,
         };
 
         let cloned = clone_wit_status_update(&original);
         assert!(matches!(cloned.status, wit_channel::StatusType::Thinking));
         assert_eq!(cloned.message, "hello");
         assert_eq!(cloned.metadata_json, "{\"a\":1}");
+        assert!(cloned.extra_json.is_none());
+    }
+
+    #[test]
+    fn test_clone_wit_status_update_approval_needed_preserves_extra_json() {
+        use super::{clone_wit_status_update, wit_channel};
+
+        let extra = r#"{"request_id":"r1","tool_name":"shell"}"#.to_string();
+        let original = wit_channel::StatusUpdate {
+            status: wit_channel::StatusType::ApprovalNeeded,
+            message: "Approval needed: shell".to_string(),
+            metadata_json: "{}".to_string(),
+            extra_json: Some(extra.clone()),
+        };
+
+        let cloned = clone_wit_status_update(&original);
+        assert!(matches!(
+            cloned.status,
+            wit_channel::StatusType::ApprovalNeeded
+        ));
+        assert_eq!(cloned.extra_json, Some(extra));
     }
 
     #[test]

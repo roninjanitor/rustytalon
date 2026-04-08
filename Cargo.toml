@@ -1,6 +1,6 @@
 [package]
 name = "rustytalon"
-version = "0.1.29"
+version = "0.1.30"
 edition = "2024"
 rust-version = "1.85"
 description = "Secure multi-provider AI assistant with smart routing and no vendor lock-in"
@@ -111,7 +111,7 @@ rand = "0.8"
 subtle = "2"  # Constant-time comparisons for token validation
 
 # Multi-provider LLM support
-rig-core = "0.33"
+rig-core = "0.34"
 
 # Docker sandbox
 bollard = "0.18"

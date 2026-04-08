@@ -447,6 +447,40 @@ impl Guest for MatrixChannel {
             Err(_) => return,
         };
 
+        if matches!(update.status, StatusType::ApprovalNeeded) {
+            let (tool_name, description) = update
+                .extra_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                .map(|v| {
+                    let tool = v["tool_name"].as_str().unwrap_or("unknown").to_string();
+                    let desc = v["description"].as_str().unwrap_or("").to_string();
+                    (tool, desc)
+                })
+                .unwrap_or_else(|| ("unknown".to_string(), String::new()));
+
+            let msg = if description.is_empty() {
+                format!(
+                    "Approval required — tool: {}\nReply yes to approve, always to always approve, or no to deny.",
+                    tool_name
+                )
+            } else {
+                format!(
+                    "Approval required — tool: {}\n{}\nReply yes to approve, always to always approve, or no to deny.",
+                    tool_name, description
+                )
+            };
+
+            let txn_id = next_txn_id();
+            if let Err(e) = send_message(&homeserver, &metadata.room_id, &msg, &txn_id) {
+                channel_host::log(
+                    channel_host::LogLevel::Warn,
+                    &format!("Failed to send approval prompt: {}", e),
+                );
+            }
+            return;
+        }
+
         let (typing, timeout) = match update.status {
             // Show typing indicator while the agent is thinking
             StatusType::Thinking => (true, Some(30_000u32)),
