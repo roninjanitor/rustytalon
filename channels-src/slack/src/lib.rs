@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 // Re-export generated types
 use exports::near::agent::channel::{
     AgentResponse, ChannelConfig, Guest, HttpEndpointConfig, IncomingHttpRequest,
-    OutgoingHttpResponse, StatusUpdate,
+    OutgoingHttpResponse, StatusType, StatusUpdate,
 };
 use near::agent::channel_host::{self, EmittedMessage};
 
@@ -270,7 +270,62 @@ impl Guest for SlackChannel {
         }
     }
 
-    fn on_status(_update: StatusUpdate) {}
+    fn on_status(update: StatusUpdate) {
+        if !matches!(update.status, StatusType::ApprovalNeeded) {
+            return;
+        }
+
+        let metadata: SlackMessageMetadata = match serde_json::from_str(&update.metadata_json) {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+
+        let (tool_name, description) = update
+            .extra_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            .map(|v| {
+                let tool = v["tool_name"].as_str().unwrap_or("unknown").to_string();
+                let desc = v["description"].as_str().unwrap_or("").to_string();
+                (tool, desc)
+            })
+            .unwrap_or_else(|| ("unknown".to_string(), String::new()));
+
+        let text = if description.is_empty() {
+            format!(
+                "Approval required — tool: `{}`\nReply *yes* to approve, *always* to always approve, or *no* to deny.",
+                tool_name
+            )
+        } else {
+            format!(
+                "Approval required — tool: `{}`\n{}\nReply *yes* to approve, *always* to always approve, or *no* to deny.",
+                tool_name, description
+            )
+        };
+
+        let mut payload = serde_json::json!({ "channel": metadata.channel, "text": text });
+        if let Some(thread_ts) = metadata.thread_ts {
+            payload["thread_ts"] = serde_json::Value::String(thread_ts);
+        }
+
+        let payload_bytes = match serde_json::to_vec(&payload) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let headers = serde_json::json!({ "Content-Type": "application/json" });
+        if let Err(e) = channel_host::http_request(
+            "POST",
+            "https://slack.com/api/chat.postMessage",
+            &headers.to_string(),
+            Some(&payload_bytes),
+            None,
+        ) {
+            channel_host::log(
+                channel_host::LogLevel::Warn,
+                &format!("Failed to send approval prompt: {}", e),
+            );
+        }
+    }
 
     fn on_event(_event_json: String) -> Result<(), String> {
         // This channel does not use persistent connections; events are delivered via polling.

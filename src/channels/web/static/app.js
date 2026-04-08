@@ -13,6 +13,9 @@ let jobEvents = new Map(); // job_id -> Array of events
 let jobListRefreshTimer = null;
 const JOB_EVENTS_CAP = 500;
 
+// Activity panel: tracks the live in-progress turn's collapsible activity log
+let pendingActivityEl = null; // the .activity-panel DOM node being built for the current turn
+
 // --- Auth ---
 
 function authenticate() {
@@ -107,6 +110,7 @@ function connectSSE() {
   eventSource.addEventListener('response', (e) => {
     const data = JSON.parse(e.data);
     if (!isCurrentThread(data.thread_id)) return;
+    sealActivityPanel();
     addMessage('assistant', data.content);
     setStatus('');
     enableChatInput();
@@ -117,12 +121,14 @@ function connectSSE() {
   eventSource.addEventListener('thinking', (e) => {
     const data = JSON.parse(e.data);
     if (!isCurrentThread(data.thread_id)) return;
+    addActivityEntry('thinking', data.message);
     setStatus(data.message, true);
   });
 
   eventSource.addEventListener('tool_started', (e) => {
     const data = JSON.parse(e.data);
     if (!isCurrentThread(data.thread_id)) return;
+    addActivityEntry('tool_started', 'Running: ' + data.name);
     setStatus('Running tool: ' + data.name, true);
   });
 
@@ -130,6 +136,7 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     if (!isCurrentThread(data.thread_id)) return;
     const icon = data.success ? '\u2713' : '\u2717';
+    addActivityEntry('tool_completed', data.name + ' ' + icon);
     setStatus('Tool ' + data.name + ' ' + icon);
   });
 
@@ -146,7 +153,11 @@ function connectSSE() {
     // "Done" and "Awaiting approval" are terminal signals from the agent:
     // the agentic loop finished, so re-enable input as a safety net in case
     // the response SSE event is empty or lost.
-    if (data.message === 'Done' || data.message === 'Awaiting approval') {
+    if (data.message === 'Done' || data.message === 'Interrupted') {
+      sealActivityPanel();
+      enableChatInput();
+    }
+    if (data.message === 'Awaiting approval') {
       enableChatInput();
     }
   });
@@ -158,6 +169,7 @@ function connectSSE() {
 
   eventSource.addEventListener('approval_needed', (e) => {
     const data = JSON.parse(e.data);
+    sealActivityPanel();
     showApproval(data);
   });
 
@@ -372,6 +384,63 @@ function setStatus(text, spinning) {
     return;
   }
   el.innerHTML = (spinning ? '<div class="spinner"></div>' : '') + escapeHtml(text);
+}
+
+// --- Activity panel (per-turn collapsible thinking/tool log) ---
+
+function ensureActivityPanel() {
+  if (pendingActivityEl) return pendingActivityEl;
+  const container = document.getElementById('chat-messages');
+  const panel = document.createElement('div');
+  panel.className = 'activity-panel';
+  const toggle = document.createElement('button');
+  toggle.className = 'activity-toggle';
+  toggle.textContent = 'Activity (0 steps) \u25B8';
+  const entries = document.createElement('div');
+  entries.className = 'activity-entries';
+  toggle.addEventListener('click', () => {
+    const open = entries.style.display !== 'none';
+    entries.style.display = open ? 'none' : 'block';
+    const count = entries.querySelectorAll('.activity-entry').length;
+    toggle.textContent = 'Activity (' + count + ' steps) ' + (open ? '\u25B8' : '\u25BE');
+  });
+  panel.appendChild(toggle);
+  panel.appendChild(entries);
+  container.appendChild(panel);
+  container.scrollTop = container.scrollHeight;
+  pendingActivityEl = panel;
+  return panel;
+}
+
+function addActivityEntry(type, label) {
+  const panel = ensureActivityPanel();
+  const entries = panel.querySelector('.activity-entries');
+  const entry = document.createElement('div');
+  entry.className = 'activity-entry activity-' + type;
+  entry.textContent = label;
+  entries.appendChild(entry);
+  const count = entries.querySelectorAll('.activity-entry').length;
+  const toggle = panel.querySelector('.activity-toggle');
+  const isOpen = entries.style.display !== 'none';
+  toggle.textContent = 'Activity (' + count + ' steps) ' + (isOpen ? '\u25BE' : '\u25B8');
+  const container = document.getElementById('chat-messages');
+  container.scrollTop = container.scrollHeight;
+}
+
+function sealActivityPanel() {
+  if (!pendingActivityEl) return;
+  const entries = pendingActivityEl.querySelector('.activity-entries');
+  const count = entries.querySelectorAll('.activity-entry').length;
+  if (count === 0) {
+    // Nothing logged — remove the empty panel
+    pendingActivityEl.remove();
+  } else {
+    // Collapse it (default closed after turn completes)
+    entries.style.display = 'none';
+    const toggle = pendingActivityEl.querySelector('.activity-toggle');
+    toggle.textContent = 'Activity (' + count + ' steps) \u25B8';
+  }
+  pendingActivityEl = null;
 }
 
 function showApproval(data) {
@@ -648,6 +717,7 @@ function loadHistory(before) {
 
     if (!isPaginating) {
       // Fresh load: clear and render
+      pendingActivityEl = null;
       container.innerHTML = '';
       for (const turn of data.turns) {
         addMessage('user', turn.user_input);
@@ -744,6 +814,7 @@ function loadThreads() {
 
 function switchToAssistant() {
   if (!assistantThreadId) return;
+  pendingActivityEl = null;
   currentThreadId = assistantThreadId;
   hasMore = false;
   oldestTimestamp = null;
@@ -752,6 +823,7 @@ function switchToAssistant() {
 }
 
 function switchThread(threadId) {
+  pendingActivityEl = null;
   currentThreadId = threadId;
   hasMore = false;
   oldestTimestamp = null;
@@ -761,6 +833,7 @@ function switchThread(threadId) {
 
 function createNewThread() {
   apiFetch('/api/chat/thread/new', { method: 'POST' }).then((data) => {
+    pendingActivityEl = null;
     currentThreadId = data.id || null;
     document.getElementById('chat-messages').innerHTML = '';
     setStatus('');

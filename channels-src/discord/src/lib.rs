@@ -358,42 +358,72 @@ impl Guest for DiscordChannel {
     }
 
     fn on_status(update: StatusUpdate) {
-        // Only send typing indicator while the agent is thinking
-        if !matches!(update.status, StatusType::Thinking) {
-            return;
-        }
-
         let metadata: DiscordMessageMetadata =
             match serde_json::from_str(&update.metadata_json) {
                 Ok(m) => m,
                 Err(_) => {
                     channel_host::log(
                         channel_host::LogLevel::Debug,
-                        "on_status: no valid Discord metadata, skipping typing indicator",
+                        "on_status: no valid Discord metadata, skipping",
                     );
                     return;
                 }
             };
 
-        let url = format!(
-            "https://discord.com/api/v10/channels/{}/typing",
-            metadata.channel_id
-        );
+        match update.status {
+            StatusType::Thinking => {
+                // POST with empty body — triggers the "Bot is typing…" indicator
+                let url = format!(
+                    "https://discord.com/api/v10/channels/{}/typing",
+                    metadata.channel_id
+                );
+                let headers = serde_json::json!({ "Content-Type": "application/json" });
+                if let Err(e) = channel_host::http_request(
+                    "POST",
+                    &url,
+                    &headers.to_string(),
+                    Some(&[]),
+                    None,
+                ) {
+                    channel_host::log(
+                        channel_host::LogLevel::Debug,
+                        &format!("Typing indicator failed: {}", e),
+                    );
+                }
+            }
+            StatusType::ApprovalNeeded => {
+                // Parse the approval details from extra_json
+                let (tool_name, description) = update
+                    .extra_json
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                    .map(|v| {
+                        let tool = v["tool_name"].as_str().unwrap_or("unknown").to_string();
+                        let desc = v["description"].as_str().unwrap_or("").to_string();
+                        (tool, desc)
+                    })
+                    .unwrap_or_else(|| ("unknown".to_string(), String::new()));
 
-        let headers = serde_json::json!({ "Content-Type": "application/json" });
+                let msg = if description.is_empty() {
+                    format!(
+                        "**Approval required** — tool `{}`\nReply **yes** to approve, **always** to always approve, or **no** to deny.",
+                        tool_name
+                    )
+                } else {
+                    format!(
+                        "**Approval required** — tool `{}`\n{}\nReply **yes** to approve, **always** to always approve, or **no** to deny.",
+                        tool_name, description
+                    )
+                };
 
-        // POST with empty body — triggers the "Bot is typing…" indicator
-        if let Err(e) = channel_host::http_request(
-            "POST",
-            &url,
-            &headers.to_string(),
-            Some(&[]),
-            None,
-        ) {
-            channel_host::log(
-                channel_host::LogLevel::Debug,
-                &format!("Typing indicator failed: {}", e),
-            );
+                if let Err(e) = send_message(&metadata.channel_id, &msg) {
+                    channel_host::log(
+                        channel_host::LogLevel::Warn,
+                        &format!("Failed to send approval prompt: {}", e),
+                    );
+                }
+            }
+            _ => {}
         }
     }
 

@@ -111,7 +111,7 @@ rand = "0.8"
 subtle = "2"  # Constant-time comparisons for token validation
 
 # Multi-provider LLM support
-rig-core = "0.33"
+rig-core = "0.34"
 
 # Docker sandbox
 bollard = "0.18"
