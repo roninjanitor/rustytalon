@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.30] - 2026-04-08
+
+### Added
+- Web UI activity panel — per-turn collapsible log (`Activity (N steps) ▸`) showing thinking, tool_started, and tool_completed steps; seals automatically when a response arrives
+- WIT: `approval-needed` StatusType and `extra-json` field on `StatusUpdate` so WASM channels receive structured approval request metadata (request_id, tool_name, description, parameters)
+- WASM wrapper forwards `ApprovalNeeded` status updates to WASM channels via the new `extra-json` payload
+- WASM channel scaffolding: discord, slack, telegram, matrix, whatsapp all receive `approval-needed` handling stubs
+
+### Changed
+- Bump rig-core 0.33 → 0.34
+- Web UI approval flow: chat input no longer re-enables prematurely on `Awaiting approval` status
+
 ## [0.1.29] - 2026-04-07
 
 ### Fixed
