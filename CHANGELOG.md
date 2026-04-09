@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.31] - 2026-04-09
+
+### Changed
+- Workspace daily logs are now written automatically after every successful agent turn (no longer depends on the LLM calling `memory_write`)
+- `MEMORY.md` content is passively injected into the system prompt (up to 2000 chars) so facts from prior sessions are visible without an explicit `memory_search` call
+- Strengthened default `AGENTS.md` seed with concrete instructions on when and where to write memory (USER.md, MEMORY.md, daily_log) with examples
+
 ## [0.1.30] - 2026-04-08
 
 ### Added
