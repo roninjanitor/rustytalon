@@ -902,6 +902,20 @@ impl Agent {
                     Some(&response),
                 );
 
+                // Fire-and-forget: write a brief entry to today's daily log so sessions
+                // leave a trace even when the LLM doesn't explicitly call memory_write.
+                if let Some(ws) = self.workspace() {
+                    let ws = ws.clone();
+                    let user_snippet = content.chars().take(120).collect::<String>();
+                    let agent_snippet = response.chars().take(120).collect::<String>();
+                    let entry = format!("user: {user_snippet}\nagent: {agent_snippet}");
+                    tokio::spawn(async move {
+                        if let Err(e) = ws.append_daily_log(&entry).await {
+                            tracing::warn!("Failed to write daily log entry: {}", e);
+                        }
+                    });
+                }
+
                 Ok(SubmissionResult::response(response))
             }
             Ok(AgenticLoopResult::NeedApproval { pending }) => {
