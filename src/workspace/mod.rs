@@ -555,7 +555,10 @@ impl Workspace {
                 .to_string();
             if !meaningful.is_empty() {
                 let truncated = if meaningful.len() > MEMORY_CHAR_LIMIT {
-                    format!("{}…\n\n*(truncated — use memory_search for full history)*", &meaningful[..MEMORY_CHAR_LIMIT])
+                    format!(
+                        "{}…\n\n*(truncated — use memory_search for full history)*",
+                        &meaningful[..MEMORY_CHAR_LIMIT]
+                    )
                 } else {
                     meaningful
                 };
