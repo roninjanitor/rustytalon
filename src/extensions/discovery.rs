@@ -164,11 +164,9 @@ impl OnlineDiscovery {
                     return None;
                 }
 
-                // Try to extract a homepage URL (which might be the MCP endpoint)
-                let url = item.homepage.filter(|h| !h.is_empty()).unwrap_or_else(|| {
-                    // Fall back to repo URL as a reference
-                    item.html_url.clone()
-                });
+                // Only use the homepage URL if set — the GitHub html_url is a web page,
+                // not an MCP endpoint, and POSTing JSON-RPC to it returns a 422.
+                let url = item.homepage.filter(|h| !h.is_empty())?;
 
                 Some(RegistryEntry {
                     name: item.name.clone(),
@@ -274,7 +272,6 @@ struct GitHubSearchResponse {
 struct GitHubRepo {
     name: String,
     full_name: String,
-    html_url: String,
     description: Option<String>,
     #[serde(default)]
     homepage: Option<String>,

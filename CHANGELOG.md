@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.32] - 2026-04-10
+
+### Fixed
+- MCP extension install: GitHub search results with no `homepage` URL are now skipped instead of using the repo's `html_url` as the MCP endpoint. This prevented a 422 error from GitHub when activating extensions discovered via search (e.g. searxng)
+- Clippy: removed dead `html_url` field from internal `GitHubRepo` struct; suppressed platform-gated dead code warnings in `secrets/keychain.rs` for constants and `hex_to_bytes` only used on macOS/Linux
+
 ## [0.1.31] - 2026-04-09
 
 ### Changed
