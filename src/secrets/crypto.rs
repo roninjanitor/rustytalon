@@ -17,8 +17,8 @@ use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
     aead::{Aead, AeadCore, OsRng},
 };
-use rand::RngExt;
 use hkdf::Hkdf;
+use rand::RngExt;
 use secrecy::{ExposeSecret, SecretString};
 use sha2::Sha256;
 

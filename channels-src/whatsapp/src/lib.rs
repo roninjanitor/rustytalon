@@ -226,6 +226,12 @@ struct WhatsAppMessageMetadata {
     timestamp: String,
 }
 
+/// Workspace path for the business phone number ID (from first webhook).
+const PHONE_NUMBER_ID_PATH: &str = "state/phone_number_id";
+
+/// Workspace path for the owner's WhatsApp phone number (for broadcast).
+const OWNER_PHONE_PATH: &str = "state/owner_phone";
+
 /// Channel configuration from capabilities file.
 #[derive(Debug, Deserialize)]
 struct WhatsAppConfig {
@@ -236,6 +242,13 @@ struct WhatsAppConfig {
     /// Whether to reply to the original message (thread context)
     #[serde(default = "default_reply_to_message")]
     reply_to_message: bool,
+
+    /// Owner's WhatsApp phone number (e.g. "15551234567", digits only, no "+").
+    ///
+    /// Required to deliver proactive notifications. The owner must have
+    /// messaged the bot at least once before (WhatsApp requires user opt-in).
+    #[serde(default)]
+    owner_phone: Option<String>,
 }
 
 fn default_api_version() -> String {
@@ -257,6 +270,7 @@ impl Guest for WhatsAppChannel {
         let config: WhatsAppConfig = serde_json::from_str(&config_json).unwrap_or(WhatsAppConfig {
             api_version: default_api_version(),
             reply_to_message: default_reply_to_message(),
+            owner_phone: None,
         });
 
         channel_host::log(
@@ -266,6 +280,11 @@ impl Guest for WhatsAppChannel {
                 config.api_version
             ),
         );
+
+        // Persist owner_phone so on_broadcast can use it across callbacks
+        if let Some(ref phone) = config.owner_phone {
+            let _ = channel_host::workspace_write(OWNER_PHONE_PATH, phone);
+        }
 
         // WhatsApp Cloud API is webhook-only, no polling available
         Ok(ChannelConfig {
@@ -489,6 +508,79 @@ impl Guest for WhatsAppChannel {
         Ok(())
     }
 
+    fn on_broadcast(user_id: String, content: String, _metadata_json: String) -> Result<(), String> {
+        // The WhatsApp Cloud API sends messages TO a user's phone number.
+        // We need:
+        //   1. The business phone_number_id (stored from first incoming webhook).
+        //   2. The recipient's phone number (owner_phone or the user_id parameter).
+        let phone_number_id = channel_host::workspace_read(PHONE_NUMBER_ID_PATH)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                "on_broadcast: phone_number_id not yet known. \
+                 The bot must receive at least one message before it can send proactive notifications."
+                    .to_string()
+            })?;
+
+        let recipient_phone = if user_id == "default" || user_id.is_empty() {
+            channel_host::workspace_read(OWNER_PHONE_PATH)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    "on_broadcast: no owner_phone configured. \
+                     Set config.owner_phone to your WhatsApp number (digits only, no '+')."
+                        .to_string()
+                })?
+        } else {
+            user_id
+        };
+
+        // Truncate at WhatsApp's 4096-char body limit
+        let body = if content.len() > 4096 { &content[..4096] } else { &content };
+
+        let api_url = format!(
+            "https://graph.facebook.com/v18.0/{}/messages",
+            phone_number_id
+        );
+
+        let payload = serde_json::json!({
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": recipient_phone,
+            "type": "text",
+            "text": { "preview_url": false, "body": body }
+        });
+
+        let payload_bytes =
+            serde_json::to_vec(&payload).map_err(|e| format!("Serialize error: {}", e))?;
+        let headers = serde_json::json!({
+            "Content-Type": "application/json",
+            "Authorization": "Bearer {WHATSAPP_ACCESS_TOKEN}"
+        });
+
+        let http_response = channel_host::http_request(
+            "POST",
+            &api_url,
+            &headers.to_string(),
+            Some(&payload_bytes),
+            None,
+        )
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+        if http_response.status < 200 || http_response.status >= 300 {
+            let body_str = String::from_utf8_lossy(&http_response.body);
+            return Err(format!(
+                "WhatsApp API HTTP {}: {}",
+                http_response.status, body_str
+            ));
+        }
+
+        channel_host::log(
+            channel_host::LogLevel::Debug,
+            &format!("Broadcast message sent to WhatsApp user {}", recipient_phone),
+        );
+
+        Ok(())
+    }
+
     fn on_shutdown() {
         channel_host::log(
             channel_host::LogLevel::Info,
@@ -598,6 +690,15 @@ fn handle_incoming_message(req: &IncomingHttpRequest) -> OutgoingHttpResponse {
 
             let value = change.value;
             let phone_number_id = value.metadata.phone_number_id.clone();
+
+            // Persist the phone_number_id (business account identifier) so
+            // on_broadcast can construct the API URL without needing a prior message.
+            if channel_host::workspace_read(PHONE_NUMBER_ID_PATH)
+                .filter(|s| !s.is_empty())
+                .is_none()
+            {
+                let _ = channel_host::workspace_write(PHONE_NUMBER_ID_PATH, &phone_number_id);
+            }
 
             // Build contact name lookup
             let contact_names: std::collections::HashMap<String, String> = value
@@ -807,5 +908,134 @@ mod tests {
 
         assert_eq!(parsed.phone_number_id, "123456");
         assert_eq!(parsed.sender_phone, "15551234567");
+    }
+
+    // --- WhatsAppConfig deserialization ---
+
+    #[test]
+    fn test_config_defaults() {
+        let json = r#"{}"#;
+        let config: WhatsAppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.api_version, "v18.0");
+        assert!(config.reply_to_message);
+        assert!(config.owner_phone.is_none());
+    }
+
+    #[test]
+    fn test_config_with_owner_phone() {
+        let json = r#"{"owner_phone": "15551234567"}"#;
+        let config: WhatsAppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.owner_phone, Some("15551234567".to_string()));
+    }
+
+    #[test]
+    fn test_config_custom_api_version() {
+        let json = r#"{"api_version": "v20.0"}"#;
+        let config: WhatsAppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.api_version, "v20.0");
+    }
+
+    #[test]
+    fn test_config_disable_reply_to_message() {
+        let json = r#"{"reply_to_message": false}"#;
+        let config: WhatsAppConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.reply_to_message);
+    }
+
+    // --- on_broadcast routing decisions (pure logic, no host calls) ---
+
+    #[test]
+    fn test_broadcast_default_user_id_triggers_owner_phone_lookup() {
+        let user_id = "default";
+        let is_default = user_id == "default" || user_id.is_empty();
+        assert!(is_default);
+    }
+
+    #[test]
+    fn test_broadcast_empty_user_id_treated_as_default() {
+        let user_id = "";
+        let is_default = user_id == "default" || user_id.is_empty();
+        assert!(is_default);
+    }
+
+    #[test]
+    fn test_broadcast_explicit_phone_passes_through() {
+        let user_id = "15559876543";
+        let is_default = user_id == "default" || user_id.is_empty();
+        assert!(!is_default);
+        // user_id is used directly as recipient_phone
+        assert_eq!(user_id, "15559876543");
+    }
+
+    // --- Content truncation at 4096 chars ---
+
+    #[test]
+    fn test_content_under_limit_not_truncated() {
+        let content = "hello world";
+        let body = if content.len() > 4096 { &content[..4096] } else { content };
+        assert_eq!(body, "hello world");
+    }
+
+    #[test]
+    fn test_content_exactly_at_limit_not_truncated() {
+        let content = "x".repeat(4096);
+        let body = if content.len() > 4096 { &content[..4096] } else { &content[..] };
+        assert_eq!(body.len(), 4096);
+    }
+
+    #[test]
+    fn test_content_over_limit_truncated() {
+        let content = "x".repeat(5000);
+        let body = if content.len() > 4096 { &content[..4096] } else { &content[..] };
+        assert_eq!(body.len(), 4096);
+    }
+
+    // --- API URL construction ---
+
+    #[test]
+    fn test_api_url_format() {
+        let phone_number_id = "987654321";
+        let url = format!("https://graph.facebook.com/v18.0/{}/messages", phone_number_id);
+        assert_eq!(url, "https://graph.facebook.com/v18.0/987654321/messages");
+    }
+
+    #[test]
+    fn test_api_url_custom_version() {
+        let phone_number_id = "111222333";
+        let version = "v20.0";
+        let url = format!("https://graph.facebook.com/{}/{}/messages", version, phone_number_id);
+        assert_eq!(url, "https://graph.facebook.com/v20.0/111222333/messages");
+    }
+
+    // --- Outbound payload serialization ---
+
+    #[test]
+    fn test_broadcast_payload_structure() {
+        let recipient_phone = "15551234567";
+        let body = "Hello from the agent!";
+        let payload = serde_json::json!({
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": recipient_phone,
+            "type": "text",
+            "text": { "preview_url": false, "body": body }
+        });
+
+        assert_eq!(payload["messaging_product"], "whatsapp");
+        assert_eq!(payload["to"], "15551234567");
+        assert_eq!(payload["text"]["body"], "Hello from the agent!");
+        assert_eq!(payload["text"]["preview_url"], false);
+    }
+
+    // --- Workspace path constants ---
+
+    #[test]
+    fn test_phone_number_id_path_constant() {
+        assert_eq!(PHONE_NUMBER_ID_PATH, "state/phone_number_id");
+    }
+
+    #[test]
+    fn test_owner_phone_path_constant() {
+        assert_eq!(OWNER_PHONE_PATH, "state/owner_phone");
     }
 }

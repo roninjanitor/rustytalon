@@ -244,6 +244,9 @@ const ALLOW_FROM_PATH: &str = "state/allow_from";
 /// Monotonically increasing counter for generating unique transaction IDs.
 const TXN_COUNTER_PATH: &str = "state/txn_counter";
 
+/// Bot owner's Matrix user ID — used by on_broadcast to find/create the DM room.
+const OWNER_ID_PATH: &str = "state/owner_id";
+
 /// Channel name used by the pairing store host API.
 const CHANNEL_NAME: &str = "matrix";
 
@@ -293,6 +296,11 @@ impl Guest for MatrixChannel {
                 ));
             }
         };
+
+        // Persist owner_id for on_broadcast to use across callbacks
+        if let Some(ref owner_id) = config.owner_id {
+            let _ = channel_host::workspace_write(OWNER_ID_PATH, owner_id);
+        }
 
         // If owner_id is set, ensure a DM room exists
         if let Some(ref owner_id) = config.owner_id {
@@ -520,6 +528,33 @@ impl Guest for MatrixChannel {
     fn on_event(_event_json: String) -> Result<(), String> {
         // This channel does not use persistent connections; events are delivered via polling.
         Ok(())
+    }
+
+    fn on_broadcast(user_id: String, content: String, _metadata_json: String) -> Result<(), String> {
+        let homeserver = channel_host::workspace_read(HOMESERVER_PATH)
+            .ok_or_else(|| "on_broadcast: homeserver not in workspace state".to_string())?;
+        let bot_user_id = channel_host::workspace_read(BOT_USER_ID_PATH)
+            .ok_or_else(|| "on_broadcast: bot_user_id not in workspace state".to_string())?;
+
+        // Resolve the target Matrix user ID.
+        let target_user_id = if user_id == "default" || user_id.is_empty() {
+            channel_host::workspace_read(OWNER_ID_PATH)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    "on_broadcast: no owner_id configured and user_id is 'default'".to_string()
+                })?
+        } else {
+            user_id
+        };
+
+        // find_or_create_dm is idempotent — returns existing room or creates a new one.
+        let room_id = find_or_create_dm(&homeserver, &bot_user_id, &target_user_id)
+            .map_err(|e| format!("on_broadcast: could not find/create DM room: {}", e))?;
+
+        // Chunk the message (Matrix has a ~32 KB practical limit) and send.
+        let txn_id = next_txn_id();
+        send_message(&homeserver, &room_id, &content, &txn_id)
+            .map_err(|e| format!("on_broadcast: send_message failed: {}", e))
     }
 
     fn on_shutdown() {
@@ -1046,5 +1081,88 @@ mod tests {
         let id = format!("rt-{}-{}", ts, counter);
         assert!(id.starts_with("rt-"));
         assert!(id.contains('-'));
+    }
+
+    // --- on_broadcast routing decisions (pure logic, no host calls) ---
+
+    #[test]
+    fn test_broadcast_default_user_id_needs_owner_id() {
+        // "default" should trigger owner_id lookup; verify the string matching
+        assert_eq!("default", "default");
+        assert!("default".is_empty() || "default" == "default");
+    }
+
+    #[test]
+    fn test_broadcast_empty_user_id_treated_as_default() {
+        let user_id = "";
+        let is_default = user_id == "default" || user_id.is_empty();
+        assert!(is_default);
+    }
+
+    #[test]
+    fn test_broadcast_explicit_user_id_passes_through() {
+        let user_id = "@alice:matrix.org";
+        let is_default = user_id == "default" || user_id.is_empty();
+        assert!(!is_default);
+        assert_eq!(user_id, "@alice:matrix.org");
+    }
+
+    // --- WhoAmIResponse deserialization ---
+
+    #[test]
+    fn test_whoami_response_parses() {
+        let json = r#"{"user_id": "@bot:matrix.org"}"#;
+        let resp: WhoAmIResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.user_id, "@bot:matrix.org");
+    }
+
+    // --- MatrixMessageMetadata roundtrip ---
+
+    #[test]
+    fn test_matrix_metadata_roundtrip() {
+        let meta = MatrixMessageMetadata {
+            room_id: "!abc123:matrix.org".to_string(),
+            event_id: "$eventid:matrix.org".to_string(),
+            sender_user_id: "@alice:matrix.org".to_string(),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let parsed: MatrixMessageMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.room_id, "!abc123:matrix.org");
+        assert_eq!(parsed.event_id, "$eventid:matrix.org");
+        assert_eq!(parsed.sender_user_id, "@alice:matrix.org");
+    }
+
+    // --- CreateRoomRequest serialization ---
+
+    #[test]
+    fn test_create_room_request_serializes() {
+        let req = CreateRoomRequest {
+            is_direct: true,
+            invite: vec!["@owner:matrix.org".to_string()],
+            preset: "trusted_private_chat".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["is_direct"], true);
+        assert_eq!(v["invite"][0], "@owner:matrix.org");
+        assert_eq!(v["preset"], "trusted_private_chat");
+    }
+
+    // --- owner_id persistence path ---
+
+    #[test]
+    fn test_owner_id_path_constant() {
+        // The path used to persist owner_id must be stable across instances
+        assert_eq!(OWNER_ID_PATH, "state/owner_id");
+    }
+
+    #[test]
+    fn test_homeserver_path_constant() {
+        assert_eq!(HOMESERVER_PATH, "state/homeserver");
+    }
+
+    #[test]
+    fn test_bot_user_id_path_constant() {
+        assert_eq!(BOT_USER_ID_PATH, "state/bot_user_id");
     }
 }

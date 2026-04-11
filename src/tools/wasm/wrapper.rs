@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use wasmtime::Store;
-use wasmtime::component::{Component, Linker};
 use wasmtime::component::ResourceTable;
+use wasmtime::component::{Component, Linker};
 use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 
 use crate::context::JobContext;
@@ -541,8 +541,11 @@ impl WasmToolWrapper {
             .map_err(|e| WasmError::ConfigError(format!("Failed to add WASI functions: {}", e)))?;
 
         // Add our custom host interface using the generated add_to_linker
-        near::agent::host::add_to_linker::<StoreData, wasmtime::component::HasSelf<StoreData>>(linker, |state| state)
-            .map_err(|e| WasmError::ConfigError(format!("Failed to add host functions: {}", e)))?;
+        near::agent::host::add_to_linker::<StoreData, wasmtime::component::HasSelf<StoreData>>(
+            linker,
+            |state| state,
+        )
+        .map_err(|e| WasmError::ConfigError(format!("Failed to add host functions: {}", e)))?;
 
         Ok(())
     }

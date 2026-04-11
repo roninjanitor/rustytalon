@@ -427,6 +427,47 @@ impl Guest for DiscordChannel {
         }
     }
 
+    fn on_broadcast(user_id: String, content: String, _metadata_json: String) -> Result<(), String> {
+        channel_host::log(
+            channel_host::LogLevel::Debug,
+            &format!(
+                "on_broadcast: delivering message to user {} (len={})",
+                user_id,
+                content.len()
+            ),
+        );
+
+        // Try to find the DM channel for this user.
+        // First check if user_id matches the owner_id (most common case for notifications).
+        let owner_id = channel_host::workspace_read(OWNER_ID_PATH).unwrap_or_default();
+
+        // Determine which DM channel to use:
+        // 1. If user_id is the owner, use their known DM channel
+        // 2. Otherwise, open (or retrieve) a DM channel with the user
+        let dm_channel_id = if user_id == owner_id || user_id == "default" {
+            // For "default" user or the owner, use the first known DM channel
+            // (which is the owner's DM channel opened during on_start)
+            let channels = load_dm_channels();
+            if let Some(ch) = channels.first() {
+                ch.clone()
+            } else {
+                // No DM channels at all — try to open one with the owner
+                if !owner_id.is_empty() {
+                    open_dm_channel(&owner_id)?
+                } else {
+                    return Err(
+                        "No DM channels available and no owner_id configured".to_string()
+                    );
+                }
+            }
+        } else {
+            // Open (or retrieve) a DM channel with the specified user
+            open_dm_channel(&user_id)?
+        };
+
+        send_message(&dm_channel_id, &content)
+    }
+
     fn on_event(event_json: String) -> Result<(), String> {
         // Parse the raw gateway event (already filtered to MESSAGE_CREATE by the broker)
         let event: serde_json::Value =

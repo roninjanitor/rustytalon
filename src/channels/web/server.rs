@@ -271,10 +271,7 @@ pub async fn start_server(
         // Skills
         .route("/api/skills", get(skills_list_handler))
         .route("/api/skills", post(skills_save_handler))
-        .route(
-            "/api/skills/{name}",
-            get(skills_get_handler),
-        )
+        .route("/api/skills/{name}", get(skills_get_handler))
         .route(
             "/api/skills/{name}",
             axum::routing::delete(skills_delete_handler),
@@ -2816,10 +2813,7 @@ async fn skills_list_handler(
         "Workspace not available".to_string(),
     ))?;
 
-    let entries = workspace
-        .list("skills")
-        .await
-        .unwrap_or_default();
+    let entries = workspace.list("skills").await.unwrap_or_default();
 
     let mut skills = Vec::new();
     for entry in &entries {
@@ -2871,11 +2865,16 @@ async fn skills_save_handler(
         "Workspace not available".to_string(),
     ))?;
 
-    let safe_name = sanitize_skill_name(&req.name)
-        .ok_or((StatusCode::BAD_REQUEST, "Invalid skill name: use lowercase letters, digits, and hyphens only".to_string()))?;
+    let safe_name = sanitize_skill_name(&req.name).ok_or((
+        StatusCode::BAD_REQUEST,
+        "Invalid skill name: use lowercase letters, digits, and hyphens only".to_string(),
+    ))?;
 
     if req.prompt.trim().is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "Prompt must not be empty".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Prompt must not be empty".to_string(),
+        ));
     }
 
     let path = format!("skills/{}.md", safe_name);
@@ -2886,7 +2885,10 @@ async fn skills_save_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(Json(ActionResponse::ok(format!("Skill '{}' saved", safe_name))))
+    Ok(Json(ActionResponse::ok(format!(
+        "Skill '{}' saved",
+        safe_name
+    ))))
 }
 
 async fn skills_delete_handler(
@@ -2907,7 +2909,10 @@ async fn skills_delete_handler(
         .await
         .map_err(|_| (StatusCode::NOT_FOUND, format!("Skill '{}' not found", name)))?;
 
-    Ok(Json(ActionResponse::ok(format!("Skill '{}' deleted", safe_name))))
+    Ok(Json(ActionResponse::ok(format!(
+        "Skill '{}' deleted",
+        safe_name
+    ))))
 }
 
 /// Validate and normalize a skill name: lowercase letters, digits, hyphens only.
@@ -3006,7 +3011,10 @@ mod tests {
 
     #[test]
     fn test_skill_to_doc_roundtrip() {
-        let doc = skill_to_doc("Draft an email", "Please draft a professional email about:\n\n{{topic}}");
+        let doc = skill_to_doc(
+            "Draft an email",
+            "Please draft a professional email about:\n\n{{topic}}",
+        );
         let skill = parse_skill_doc("draft-email", &doc, None);
         assert_eq!(skill.description, "Draft an email");
         assert_eq!(

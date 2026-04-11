@@ -386,7 +386,11 @@ impl ContainerJobManager {
         if let Err(e) = docker
             .stop_container(
                 &container_id,
-                Some(bollard::query_parameters::StopContainerOptionsBuilder::default().t(10).build()),
+                Some(
+                    bollard::query_parameters::StopContainerOptionsBuilder::default()
+                        .t(10)
+                        .build(),
+                ),
             )
             .await
         {
@@ -397,7 +401,11 @@ impl ContainerJobManager {
         if let Err(e) = docker
             .remove_container(
                 &container_id,
-                Some(bollard::query_parameters::RemoveContainerOptionsBuilder::default().force(true).build()),
+                Some(
+                    bollard::query_parameters::RemoveContainerOptionsBuilder::default()
+                        .force(true)
+                        .build(),
+                ),
             )
             .await
         {
@@ -446,7 +454,11 @@ impl ContainerJobManager {
                     if let Err(e) = docker
                         .stop_container(
                             &cid,
-                            Some(bollard::query_parameters::StopContainerOptionsBuilder::default().t(5).build()),
+                            Some(
+                                bollard::query_parameters::StopContainerOptionsBuilder::default()
+                                    .t(5)
+                                    .build(),
+                            ),
                         )
                         .await
                     {
@@ -455,7 +467,11 @@ impl ContainerJobManager {
                     if let Err(e) = docker
                         .remove_container(
                             &cid,
-                            Some(bollard::query_parameters::RemoveContainerOptionsBuilder::default().force(true).build()),
+                            Some(
+                                bollard::query_parameters::RemoveContainerOptionsBuilder::default()
+                                    .force(true)
+                                    .build(),
+                            ),
                         )
                         .await
                     {

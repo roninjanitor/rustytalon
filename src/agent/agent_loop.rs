@@ -174,10 +174,29 @@ impl Agent {
 
         // Never shadow built-in slash commands.
         const BUILTIN: &[&str] = &[
-            "undo", "redo", "interrupt", "stop", "compact", "clear",
-            "heartbeat", "summarize", "summary", "suggest", "thread",
-            "new", "resume", "quit", "exit", "shutdown", "help", "?",
-            "version", "tools", "ping", "debug", "model",
+            "undo",
+            "redo",
+            "interrupt",
+            "stop",
+            "compact",
+            "clear",
+            "heartbeat",
+            "summarize",
+            "summary",
+            "suggest",
+            "thread",
+            "new",
+            "resume",
+            "quit",
+            "exit",
+            "shutdown",
+            "help",
+            "?",
+            "version",
+            "tools",
+            "ping",
+            "debug",
+            "model",
         ];
         if BUILTIN.contains(&skill_name.as_str()) {
             return None;
@@ -417,14 +436,31 @@ impl Agent {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("default")
                                 .to_string();
-                            let results = channels.broadcast_all(&user, response).await;
-                            for (ch, result) in results {
-                                if let Err(e) = result {
+                            let target_channel = response
+                                .metadata
+                                .get("notify_channel")
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
+
+                            if let Some(ch_name) = target_channel {
+                                if let Err(e) = channels.broadcast(&ch_name, &user, response).await
+                                {
                                     tracing::warn!(
                                         "Failed to broadcast routine notification to {}: {}",
-                                        ch,
+                                        ch_name,
                                         e
                                     );
+                                }
+                            } else {
+                                let results = channels.broadcast_all(&user, response).await;
+                                for (ch, result) in results {
+                                    if let Err(e) = result {
+                                        tracing::warn!(
+                                            "Failed to broadcast routine notification to {}: {}",
+                                            ch,
+                                            e
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -852,10 +888,7 @@ impl Agent {
         let content = if let Some(expanded) = self.try_resolve_skill(content).await {
             tracing::info!(
                 "Expanding skill: {}",
-                content
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("/unknown")
+                content.split_whitespace().next().unwrap_or("/unknown")
             );
             skill_expanded = expanded;
             skill_expanded.as_str()
@@ -2865,17 +2898,33 @@ mod tests {
     /// Mirrors the name validation logic in `try_resolve_skill` so it can be
     /// unit-tested without constructing an Agent.
     fn is_valid_skill_name(name: &str) -> bool {
-        !name.is_empty()
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
     }
 
     const BUILTIN_COMMANDS: &[&str] = &[
-        "undo", "redo", "interrupt", "stop", "compact", "clear",
-        "heartbeat", "summarize", "summary", "suggest", "thread",
-        "new", "resume", "quit", "exit", "shutdown", "help", "?",
-        "version", "tools", "ping", "debug", "model",
+        "undo",
+        "redo",
+        "interrupt",
+        "stop",
+        "compact",
+        "clear",
+        "heartbeat",
+        "summarize",
+        "summary",
+        "suggest",
+        "thread",
+        "new",
+        "resume",
+        "quit",
+        "exit",
+        "shutdown",
+        "help",
+        "?",
+        "version",
+        "tools",
+        "ping",
+        "debug",
+        "model",
     ];
 
     fn would_intercept_as_skill(input: &str) -> bool {
@@ -2916,7 +2965,9 @@ mod tests {
     #[test]
     fn test_skill_interception_unknown_slash_intercepted() {
         assert!(would_intercept_as_skill("/my-skill"));
-        assert!(would_intercept_as_skill("/summarize-meeting some extra args"));
+        assert!(would_intercept_as_skill(
+            "/summarize-meeting some extra args"
+        ));
         assert!(would_intercept_as_skill("/draft-email topic goes here"));
     }
 

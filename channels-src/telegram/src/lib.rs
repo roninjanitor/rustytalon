@@ -643,6 +643,36 @@ impl Guest for TelegramChannel {
         Ok(())
     }
 
+    fn on_broadcast(user_id: String, content: String, _metadata_json: String) -> Result<(), String> {
+        // Resolve the target chat_id.
+        // For Telegram DMs the chat_id equals the user_id, so owner_id (stored as an i64 string)
+        // is directly usable as the chat_id.
+        let chat_id: i64 = if user_id == "default" || user_id.is_empty() {
+            let raw = channel_host::workspace_read(OWNER_ID_PATH)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    "on_broadcast: no owner_id configured and user_id is 'default'".to_string()
+                })?;
+            raw.parse::<i64>()
+                .map_err(|e| format!("on_broadcast: owner_id '{}' is not a valid i64: {}", raw, e))?
+        } else {
+            user_id
+                .parse::<i64>()
+                .map_err(|e| format!("on_broadcast: user_id '{}' is not a valid Telegram chat ID: {}", user_id, e))?
+        };
+
+        // Try Markdown first; fall back to plain text on entity-parse errors.
+        match send_message(chat_id, &content, 0, Some("Markdown")) {
+            Ok(_) => Ok(()),
+            Err(SendError::ParseEntities(_)) => {
+                send_message(chat_id, &content, 0, None)
+                    .map(|_| ())
+                    .map_err(|e| format!("on_broadcast plain-text fallback failed: {}", e))
+            }
+            Err(e) => Err(format!("on_broadcast failed: {}", e)),
+        }
+    }
+
     fn on_shutdown() {
         channel_host::log(
             channel_host::LogLevel::Info,
@@ -1279,5 +1309,30 @@ mod tests {
         let msg: TelegramMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg.text, None);
         assert_eq!(msg.caption.as_deref(), Some("What's in this image?"));
+    }
+
+    // --- on_broadcast chat_id parsing ---
+
+    #[test]
+    fn test_broadcast_user_id_parses_as_i64() {
+        // Verify that a numeric string user_id parses to the expected chat_id
+        let user_id = "123456789";
+        let chat_id: i64 = user_id.parse().expect("should parse");
+        assert_eq!(chat_id, 123_456_789_i64);
+    }
+
+    #[test]
+    fn test_broadcast_non_numeric_user_id_fails_parse() {
+        let user_id = "not-a-number";
+        assert!(user_id.parse::<i64>().is_err());
+    }
+
+    #[test]
+    fn test_broadcast_owner_id_round_trip() {
+        // Simulates what on_start persists and on_broadcast reads back
+        let owner_id: i64 = 987_654_321;
+        let persisted = owner_id.to_string();
+        let recovered: i64 = persisted.parse().expect("should parse");
+        assert_eq!(recovered, owner_id);
     }
 }

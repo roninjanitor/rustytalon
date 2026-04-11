@@ -333,7 +333,11 @@ impl ContainerRunner {
         // Wait for the container to finish
         let mut wait_stream = self.docker.wait_container(
             container_id,
-            Some(WaitContainerOptionsBuilder::default().condition("not-running").build()),
+            Some(
+                WaitContainerOptionsBuilder::default()
+                    .condition("not-running")
+                    .build(),
+            ),
         );
 
         let exit_code = match wait_stream.next().await {

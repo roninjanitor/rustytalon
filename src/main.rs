@@ -574,53 +574,54 @@ async fn main() -> anyhow::Result<()> {
     // When both `postgres` and `libsql` features are compiled, the runtime-selected
     // backend determines which store is created: whichever DB init branch ran will
     // have set its handle (pg_pool or libsql_db), and the or_else chain picks it up.
-    let secrets_store: Option<Arc<dyn SecretsStore + Send + Sync>> =
-        if let Some(master_key) = config.secrets.master_key() {
-            match SecretsCrypto::new(master_key.clone()) {
-                Ok(crypto) => {
-                    let crypto = Arc::new(crypto);
-                    let store: Option<Arc<dyn SecretsStore + Send + Sync>> = None;
+    let secrets_store: Option<Arc<dyn SecretsStore + Send + Sync>> = if let Some(master_key) =
+        config.secrets.master_key()
+    {
+        match SecretsCrypto::new(master_key.clone()) {
+            Ok(crypto) => {
+                let crypto = Arc::new(crypto);
+                let store: Option<Arc<dyn SecretsStore + Send + Sync>> = None;
 
-                    #[cfg(feature = "libsql")]
-                    let store = store.or_else(|| {
-                        libsql_db.take().map(|db| {
-                            Arc::new(LibSqlSecretsStore::new(db, Arc::clone(&crypto)))
-                                as Arc<dyn SecretsStore + Send + Sync>
-                        })
-                    });
+                #[cfg(feature = "libsql")]
+                let store = store.or_else(|| {
+                    libsql_db.take().map(|db| {
+                        Arc::new(LibSqlSecretsStore::new(db, Arc::clone(&crypto)))
+                            as Arc<dyn SecretsStore + Send + Sync>
+                    })
+                });
 
-                    #[cfg(feature = "postgres")]
-                    let store = store.or_else(|| {
-                        pg_pool.as_ref().map(|pool| {
-                            Arc::new(PostgresSecretsStore::new(pool.clone(), Arc::clone(&crypto)))
-                                as Arc<dyn SecretsStore + Send + Sync>
-                        })
-                    });
+                #[cfg(feature = "postgres")]
+                let store = store.or_else(|| {
+                    pg_pool.as_ref().map(|pool| {
+                        Arc::new(PostgresSecretsStore::new(pool.clone(), Arc::clone(&crypto)))
+                            as Arc<dyn SecretsStore + Send + Sync>
+                    })
+                });
 
-                    if store.is_none() {
-                        tracing::warn!(
-                            "SECRETS_MASTER_KEY is set but no database backend was available \
+                if store.is_none() {
+                    tracing::warn!(
+                        "SECRETS_MASTER_KEY is set but no database backend was available \
                              to create the secrets store. Extension manager will be disabled. \
                              Ensure DATABASE_URL (postgres) or LIBSQL_PATH (libsql) is configured."
-                        );
-                    } else {
-                        tracing::info!("Secrets store initialized");
-                    }
-                    store
+                    );
+                } else {
+                    tracing::info!("Secrets store initialized");
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to initialize secrets crypto: {}", e);
-                    #[cfg(feature = "libsql")]
-                    let _ = libsql_db.take();
-                    None
-                }
+                store
             }
-        } else {
-            tracing::debug!("SECRETS_MASTER_KEY not set; secrets store and extension manager disabled");
-            #[cfg(feature = "libsql")]
-            let _ = libsql_db.take();
-            None
-        };
+            Err(e) => {
+                tracing::warn!("Failed to initialize secrets crypto: {}", e);
+                #[cfg(feature = "libsql")]
+                let _ = libsql_db.take();
+                None
+            }
+        }
+    } else {
+        tracing::debug!("SECRETS_MASTER_KEY not set; secrets store and extension manager disabled");
+        #[cfg(feature = "libsql")]
+        let _ = libsql_db.take();
+        None
+    };
 
     let mcp_session_manager = Arc::new(McpSessionManager::new());
 
