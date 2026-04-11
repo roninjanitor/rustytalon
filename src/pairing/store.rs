@@ -8,8 +8,8 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fs4::FileExt;
-use rand::Rng;
+use fs4::fs_std::FileExt;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
 const PAIRING_CODE_LENGTH: usize = 8;
@@ -144,17 +144,17 @@ fn is_expired(req: &PairingRequest, now_secs: u64) -> bool {
 }
 
 fn random_code() -> String {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..PAIRING_CODE_LENGTH)
         .map(|_| {
-            let idx = rng.gen_range(0..PAIRING_ALPHABET.len());
+            let idx = rng.random_range(0..PAIRING_ALPHABET.len());
             PAIRING_ALPHABET[idx] as char
         })
         .collect()
 }
 
 fn generate_unique_code(existing: &HashSet<String>) -> String {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     for _ in 0..500 {
         let code = random_code();
         if !existing.contains(&code) {
@@ -162,7 +162,7 @@ fn generate_unique_code(existing: &HashSet<String>) -> String {
         }
     }
     // Fallback: add suffix
-    format!("{}{:04}", random_code(), rng.gen_range(0..10000))
+    format!("{}{:04}", random_code(), rng.random_range(0..10000))
 }
 
 /// Pairing store for a channel.
@@ -246,7 +246,7 @@ impl PairingStore {
         let now_secs = now_secs();
         let id = id.trim().to_string();
         if id.is_empty() {
-            fs4::FileExt::unlock(&file)?;
+            FileExt::unlock(&file)?;
             return Err(PairingStoreError::InvalidChannel("empty id".to_string()));
         }
 
@@ -270,7 +270,7 @@ impl PairingStore {
                 req.meta = Some(m);
             }
             self.write_pairing_file_locked(&mut file, channel, &store.requests)?;
-            fs4::FileExt::unlock(&file)?;
+            FileExt::unlock(&file)?;
             return Ok(UpsertResult {
                 code,
                 created: false,
@@ -278,7 +278,7 @@ impl PairingStore {
         }
 
         if store.requests.len() >= PAIRING_PENDING_MAX {
-            fs4::FileExt::unlock(&file)?;
+            FileExt::unlock(&file)?;
             return Ok(UpsertResult {
                 code: String::new(),
                 created: false,
@@ -295,7 +295,7 @@ impl PairingStore {
         });
 
         self.write_pairing_file_locked(&mut file, channel, &store.requests)?;
-        fs4::FileExt::unlock(&file)?;
+        FileExt::unlock(&file)?;
 
         Ok(UpsertResult {
             code,
@@ -343,7 +343,7 @@ impl PairingStore {
 
         let json = serde_json::to_string_pretty(&data)?;
         fs::write(&path, json)?;
-        fs4::FileExt::unlock(&file)?;
+        FileExt::unlock(&file)?;
         Ok(())
     }
 
@@ -396,14 +396,14 @@ impl PairingStore {
         let entry = match idx {
             Some(i) => store.requests.remove(i),
             None => {
-                fs4::FileExt::unlock(&file)?;
+                FileExt::unlock(&file)?;
                 self.record_failed_approve(channel)?;
                 return Ok(None);
             }
         };
 
         self.write_pairing_file_locked(&mut file, channel, &store.requests)?;
-        fs4::FileExt::unlock(&file)?;
+        FileExt::unlock(&file)?;
 
         self.add_allow_from(channel, &entry.id)?;
 
@@ -486,7 +486,7 @@ impl PairingStore {
             .iter()
             .any(|e| e.to_lowercase() == normalized)
         {
-            fs4::FileExt::unlock(&file)?;
+            FileExt::unlock(&file)?;
             return Ok(());
         }
 
@@ -494,7 +494,7 @@ impl PairingStore {
         let json = serde_json::to_string_pretty(&store)?;
         fs::write(&path, json)?;
 
-        fs4::FileExt::unlock(&file)?;
+        FileExt::unlock(&file)?;
         Ok(())
     }
 
@@ -511,7 +511,7 @@ impl PairingStore {
             .open(&path)?;
         file.lock_exclusive()?;
         self.write_pairing_file_locked(&mut file, channel, requests)?;
-        fs4::FileExt::unlock(&file)?;
+        FileExt::unlock(&file)?;
         Ok(())
     }
 

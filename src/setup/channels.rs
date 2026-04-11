@@ -497,10 +497,9 @@ pub async fn setup_http(secrets: &SecretsContext) -> Result<HttpSetupResult, Str
 
 /// Generate a random webhook secret.
 pub fn generate_webhook_secret() -> String {
-    use rand::RngCore;
-    let mut rng = rand::thread_rng();
+    use rand::RngExt;
     let mut bytes = [0u8; 32];
-    rng.fill_bytes(&mut bytes);
+    rand::rng().fill(&mut bytes[..]);
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
@@ -614,10 +613,9 @@ pub async fn setup_wasm_channel(
 /// Generate a random secret of specified length (in bytes).
 #[allow(dead_code)]
 fn generate_secret_with_length(length: usize) -> String {
-    use rand::RngCore;
-    let mut rng = rand::thread_rng();
+    use rand::RngExt;
     let mut bytes = vec![0u8; length];
-    rng.fill_bytes(&mut bytes);
+    rand::rng().fill(&mut bytes[..]);
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 

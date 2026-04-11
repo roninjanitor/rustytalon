@@ -13,7 +13,7 @@ use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
-use rand::Rng;
+use rand::RngExt;
 use subtle::ConstantTimeEq;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -69,7 +69,7 @@ impl Default for TokenStore {
 /// Generate a cryptographically random token (32 bytes, hex-encoded = 64 chars).
 fn generate_token() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill(&mut bytes);
+    rand::rng().fill(&mut bytes);
     hex_encode(&bytes)
 }
 

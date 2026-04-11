@@ -266,8 +266,8 @@ impl ContainerJobManager {
         };
 
         // Create the container
-        use bollard::container::{Config, CreateContainerOptions};
-        use bollard::models::HostConfig;
+        use bollard::models::{ContainerCreateBody, HostConfig};
+        use bollard::query_parameters::CreateContainerOptionsBuilder;
 
         let host_config = HostConfig {
             binds: if binds.is_empty() { None } else { Some(binds) },
@@ -308,7 +308,7 @@ impl ContainerJobManager {
             ],
         };
 
-        let container_config = Config {
+        let container_config = ContainerCreateBody {
             image: Some(self.config.image.clone()),
             cmd: Some(cmd),
             env: Some(env_vec),
@@ -322,10 +322,9 @@ impl ContainerJobManager {
             JobMode::Worker => format!("rustytalon-worker-{}", job_id),
             JobMode::ClaudeCode => format!("rustytalon-claude-{}", job_id),
         };
-        let options = CreateContainerOptions {
-            name: container_name,
-            ..Default::default()
-        };
+        let options = CreateContainerOptionsBuilder::default()
+            .name(&container_name)
+            .build();
 
         let response = docker
             .create_container(Some(options), container_config)
@@ -339,7 +338,7 @@ impl ContainerJobManager {
 
         // Start the container
         docker
-            .start_container::<String>(&container_id, None)
+            .start_container(&container_id, None)
             .await
             .map_err(|e| OrchestratorError::ContainerCreationFailed {
                 job_id,
@@ -387,7 +386,7 @@ impl ContainerJobManager {
         if let Err(e) = docker
             .stop_container(
                 &container_id,
-                Some(bollard::container::StopContainerOptions { t: 10 }),
+                Some(bollard::query_parameters::StopContainerOptionsBuilder::default().t(10).build()),
             )
             .await
         {
@@ -398,10 +397,7 @@ impl ContainerJobManager {
         if let Err(e) = docker
             .remove_container(
                 &container_id,
-                Some(bollard::container::RemoveContainerOptions {
-                    force: true,
-                    ..Default::default()
-                }),
+                Some(bollard::query_parameters::RemoveContainerOptionsBuilder::default().force(true).build()),
             )
             .await
         {
@@ -450,7 +446,7 @@ impl ContainerJobManager {
                     if let Err(e) = docker
                         .stop_container(
                             &cid,
-                            Some(bollard::container::StopContainerOptions { t: 5 }),
+                            Some(bollard::query_parameters::StopContainerOptionsBuilder::default().t(5).build()),
                         )
                         .await
                     {
@@ -459,10 +455,7 @@ impl ContainerJobManager {
                     if let Err(e) = docker
                         .remove_container(
                             &cid,
-                            Some(bollard::container::RemoveContainerOptions {
-                                force: true,
-                                ..Default::default()
-                            }),
+                            Some(bollard::query_parameters::RemoveContainerOptionsBuilder::default().force(true).build()),
                         )
                         .await
                     {

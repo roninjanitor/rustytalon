@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use rand::Rng;
+use rand::RngExt;
 
 /// Returns `true` if the HTTP status code is transient and worth retrying.
 #[allow(dead_code)]
@@ -23,7 +23,7 @@ pub(crate) fn retry_backoff_delay(attempt: u32) -> Duration {
     let base_ms: u64 = 1000u64.saturating_mul(2u64.saturating_pow(attempt));
     let jitter_range = base_ms / 4; // 25%
     let jitter = if jitter_range > 0 {
-        let offset = rand::thread_rng().gen_range(0..=jitter_range * 2);
+        let offset = rand::rng().random_range(0..=jitter_range * 2);
         offset as i64 - jitter_range as i64
     } else {
         0

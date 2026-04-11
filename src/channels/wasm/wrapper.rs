@@ -38,7 +38,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 use wasmtime::Store;
 use wasmtime::component::{Component, Linker};
-use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime::component::ResourceTable;
+use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 
 use crate::channels::wasm::capabilities::ChannelCapabilities;
 use crate::channels::wasm::error::WasmChannelError;
@@ -376,13 +377,15 @@ impl ChannelStoreData {
 }
 
 // Implement WasiView to provide WASI context and resource table
+impl IoView for ChannelStoreData {
+    fn table(&mut self) -> &mut ResourceTable {
+        &mut self.table
+    }
+}
+
 impl WasiView for ChannelStoreData {
     fn ctx(&mut self) -> &mut WasiCtx {
         &mut self.wasi
-    }
-
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
     }
 }
 
@@ -904,12 +907,12 @@ impl WasmChannel {
     /// to properly register all host functions with correct component model signatures.
     fn add_host_functions(linker: &mut Linker<ChannelStoreData>) -> Result<(), WasmChannelError> {
         // Add WASI support (required by the component adapter)
-        wasmtime_wasi::add_to_linker_sync(linker).map_err(|e| {
+        wasmtime_wasi::p2::add_to_linker_sync(linker).map_err(|e| {
             WasmChannelError::Config(format!("Failed to add WASI functions: {}", e))
         })?;
 
         // Use the generated add_to_linker function from bindgen for our custom interface
-        near::agent::channel_host::add_to_linker(linker, |state| state).map_err(|e| {
+        near::agent::channel_host::add_to_linker::<ChannelStoreData, wasmtime::component::HasSelf<ChannelStoreData>>(linker, |state| state).map_err(|e| {
             WasmChannelError::Config(format!("Failed to add host functions: {}", e))
         })?;
 

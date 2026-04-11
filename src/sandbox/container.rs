@@ -30,12 +30,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use bollard::Docker;
-use bollard::container::{
-    Config, CreateContainerOptions, LogOutput, LogsOptions, RemoveContainerOptions,
-    StartContainerOptions, WaitContainerOptions,
-};
+use bollard::container::LogOutput;
 use bollard::exec::{CreateExecOptions, StartExecResults};
-use bollard::models::HostConfig;
+use bollard::models::{ContainerCreateBody, HostConfig};
+use bollard::query_parameters::{
+    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, LogsOptionsBuilder,
+    RemoveContainerOptionsBuilder, WaitContainerOptionsBuilder,
+};
 use futures::StreamExt;
 
 use crate::sandbox::config::{ResourceLimits, SandboxPolicy};
@@ -85,14 +86,11 @@ impl ContainerRunner {
 
     /// Pull the sandbox image.
     pub async fn pull_image(&self) -> Result<()> {
-        use bollard::image::CreateImageOptions;
-
         tracing::info!("Pulling sandbox image: {}", self.image);
 
-        let options = CreateImageOptions {
-            from_image: self.image.clone(),
-            ..Default::default()
-        };
+        let options = CreateImageOptionsBuilder::default()
+            .from_image(&self.image)
+            .build();
 
         let mut stream = self.docker.create_image(Some(options), None, None);
 
@@ -133,7 +131,7 @@ impl ContainerRunner {
 
         // Start the container
         self.docker
-            .start_container(&container_id, None::<StartContainerOptions<String>>)
+            .start_container(&container_id, None)
             .await
             .map_err(|e| SandboxError::ContainerStartFailed {
                 reason: e.to_string(),
@@ -151,10 +149,7 @@ impl ContainerRunner {
             .docker
             .remove_container(
                 &container_id,
-                Some(RemoveContainerOptions {
-                    force: true,
-                    ..Default::default()
-                }),
+                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
             )
             .await;
 
@@ -299,7 +294,7 @@ impl ContainerRunner {
             ..Default::default()
         };
 
-        let config = Config {
+        let config = ContainerCreateBody {
             image: Some(self.image.clone()),
             cmd: Some(vec![
                 "sh".to_string(),
@@ -313,10 +308,10 @@ impl ContainerRunner {
             ..Default::default()
         };
 
-        let options = CreateContainerOptions {
-            name: format!("sandbox-{}", uuid::Uuid::new_v4()),
-            ..Default::default()
-        };
+        let container_name = format!("sandbox-{}", uuid::Uuid::new_v4());
+        let options = CreateContainerOptionsBuilder::default()
+            .name(&container_name)
+            .build();
 
         let response = self
             .docker
@@ -338,9 +333,7 @@ impl ContainerRunner {
         // Wait for the container to finish
         let mut wait_stream = self.docker.wait_container(
             container_id,
-            Some(WaitContainerOptions {
-                condition: "not-running",
-            }),
+            Some(WaitContainerOptionsBuilder::default().condition("not-running").build()),
         );
 
         let exit_code = match wait_stream.next().await {
@@ -375,12 +368,11 @@ impl ContainerRunner {
         container_id: &str,
         max_output: usize,
     ) -> Result<(String, String, bool)> {
-        let options = LogsOptions::<String> {
-            stdout: true,
-            stderr: true,
-            follow: false,
-            ..Default::default()
-        };
+        let options = LogsOptionsBuilder::default()
+            .stdout(true)
+            .stderr(true)
+            .follow(false)
+            .build();
 
         let mut stream = self.docker.logs(container_id, Some(options));
 
