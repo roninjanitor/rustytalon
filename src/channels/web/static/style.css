@@ -2081,6 +2081,32 @@ body {
 }
 .catalog-card-manage-btn:hover { color: var(--text); border-color: var(--text-secondary); }
 
+/* Catalog pagination */
+.catalog-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+.catalog-page-btn {
+  padding: 5px 14px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--accent);
+  font-size: 13px;
+  cursor: pointer;
+}
+.catalog-page-btn:hover:not(:disabled) { background: rgba(88,166,255,0.1); }
+.catalog-page-btn:disabled { opacity: 0.35; cursor: default; }
+.catalog-page-info {
+  font-size: 13px;
+  color: var(--text-secondary);
+  min-width: 60px;
+  text-align: center;
+}
+
 /* Wizard overlay & modal */
 .wizard-overlay {
   position: fixed;

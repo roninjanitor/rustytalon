@@ -1257,6 +1257,9 @@ let catalogSearchInit = false;
 let extManagerAvailable = true; // assume available until status check says otherwise
 let catalogKindFilter = 'all';
 let wizardState = null;
+let catalogAllEntries = [];
+let catalogPage = 0;
+const CATALOG_PAGE_SIZE = 12;
 
 async function checkExtensionManagerAvailable() {
   try {
@@ -1309,7 +1312,7 @@ function initCatalogSearch() {
       if (!q) { loadCatalog(); return; }
       const body = { query: q, kind: catalogKindFilter !== 'all' ? catalogKindFilter : undefined };
       apiFetch('/api/extensions/catalog/search', { method: 'POST', body })
-        .then((data) => renderCatalogGrid(data.entries || []))
+        .then((data) => { catalogPage = 0; renderCatalogGrid(data.entries || []); })
         .catch(() => {});
     }, 300);
   });
@@ -1330,21 +1333,60 @@ function loadCatalog() {
   grid.innerHTML = '<div class="empty-state">Loading...</div>';
   const qs = catalogKindFilter !== 'all' ? '?kind=' + catalogKindFilter : '';
   apiFetch('/api/extensions/catalog' + qs)
-    .then((data) => renderCatalogGrid(data.entries || []))
+    .then((data) => {
+      catalogPage = 0;
+      renderCatalogGrid(data.entries || []);
+    })
     .catch(() => { grid.innerHTML = '<div class="empty-state">Failed to load catalog</div>'; });
 }
 
 function renderCatalogGrid(entries) {
-  const grid = document.getElementById('catalog-grid');
   // Channels are managed in the Channels tab — exclude them from Extensions.
-  const filtered = entries.filter((e) => e.kind !== 'wasm_channel');
-  if (filtered.length === 0) {
+  catalogAllEntries = entries.filter((e) => e.kind !== 'wasm_channel');
+  renderCatalogPage();
+}
+
+function renderCatalogPage() {
+  const grid = document.getElementById('catalog-grid');
+  const pagination = document.getElementById('catalog-pagination');
+
+  if (catalogAllEntries.length === 0) {
     grid.innerHTML = '<div class="empty-state">No extensions found</div>';
+    if (pagination) pagination.innerHTML = '';
     return;
   }
+
+  const totalPages = Math.ceil(catalogAllEntries.length / CATALOG_PAGE_SIZE);
+  const start = catalogPage * CATALOG_PAGE_SIZE;
+  const page = catalogAllEntries.slice(start, start + CATALOG_PAGE_SIZE);
+
   grid.innerHTML = '';
-  for (const entry of filtered) {
+  for (const entry of page) {
     grid.appendChild(renderCatalogCard(entry));
+  }
+
+  if (pagination) {
+    pagination.innerHTML = '';
+    if (totalPages <= 1) return;
+
+    const prevBtn = document.createElement('button');
+    prevBtn.className = 'catalog-page-btn';
+    prevBtn.textContent = '\u2190 Prev';
+    prevBtn.disabled = catalogPage === 0;
+    prevBtn.addEventListener('click', () => { catalogPage--; renderCatalogPage(); });
+    pagination.appendChild(prevBtn);
+
+    const info = document.createElement('span');
+    info.className = 'catalog-page-info';
+    info.textContent = (catalogPage + 1) + ' / ' + totalPages;
+    pagination.appendChild(info);
+
+    const nextBtn = document.createElement('button');
+    nextBtn.className = 'catalog-page-btn';
+    nextBtn.textContent = 'Next \u2192';
+    nextBtn.disabled = catalogPage >= totalPages - 1;
+    nextBtn.addEventListener('click', () => { catalogPage++; renderCatalogPage(); });
+    pagination.appendChild(nextBtn);
   }
 }
 
