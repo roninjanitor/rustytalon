@@ -150,6 +150,74 @@ impl Agent {
         self.deps.workspace.as_ref()
     }
 
+    /// Try to resolve a `/skill-name [args]` invocation from the workspace.
+    ///
+    /// Returns `Some(expanded_prompt)` when the content starts with `/` and
+    /// `skills/<name>.md` exists in the workspace.  Built-in slash commands
+    /// (undo, redo, compact, …) are excluded so they are never shadowed by a
+    /// skill with the same name.
+    async fn try_resolve_skill(&self, content: &str) -> Option<String> {
+        let trimmed = content.trim();
+        if !trimmed.starts_with('/') {
+            return None;
+        }
+        let workspace = self.deps.workspace.as_ref()?;
+
+        // Split into `/name` and optional trailing args.
+        let rest = &trimmed[1..];
+        let (skill_name_raw, args) = rest
+            .split_once(char::is_whitespace)
+            .map(|(n, a)| (n, Some(a.trim())))
+            .unwrap_or((rest, None));
+
+        let skill_name = skill_name_raw.to_lowercase();
+
+        // Never shadow built-in slash commands.
+        const BUILTIN: &[&str] = &[
+            "undo", "redo", "interrupt", "stop", "compact", "clear",
+            "heartbeat", "summarize", "summary", "suggest", "thread",
+            "new", "resume", "quit", "exit", "shutdown", "help", "?",
+            "version", "tools", "ping", "debug", "model",
+        ];
+        if BUILTIN.contains(&skill_name.as_str()) {
+            return None;
+        }
+
+        // Only allow safe name characters to prevent path traversal.
+        if skill_name.is_empty()
+            || !skill_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+            return None;
+        }
+
+        let path = format!("skills/{}.md", skill_name);
+        let doc = workspace.read(&path).await.ok()?;
+
+        // Parse: first line is the description header, rest is the prompt.
+        let prompt = {
+            let mut lines = doc.content.lines();
+            // Skip the `# description` header line if present.
+            if doc.content.starts_with('#') {
+                lines.next();
+            }
+            lines
+                .skip_while(|l| l.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let prompt = prompt.trim();
+
+        let expanded = if let Some(extra) = args.filter(|a| !a.is_empty()) {
+            format!("{}\n\n{}", prompt, extra)
+        } else {
+            prompt.to_string()
+        };
+
+        Some(expanded)
+    }
+
     /// Run the agent main loop.
     pub async fn run(self) -> Result<(), Error> {
         // Start channels
@@ -776,6 +844,24 @@ impl Agent {
             // Explicit command like /status, /job, /list - handle directly
             return self.handle_job_or_command(intent, message).await;
         }
+
+        // Check if this is a skill invocation (/skill-name [args]).
+        // Skill expansion happens after safety validation and command routing so
+        // that built-in slash commands take precedence.
+        let skill_expanded;
+        let content = if let Some(expanded) = self.try_resolve_skill(content).await {
+            tracing::info!(
+                "Expanding skill: {}",
+                content
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("/unknown")
+            );
+            skill_expanded = expanded;
+            skill_expanded.as_str()
+        } else {
+            content
+        };
 
         // Natural language goes through the agentic loop
         // Job tools (create_job, list_jobs, etc.) are in the tool registry
@@ -2772,5 +2858,90 @@ mod tests {
         let result = truncate_for_preview(input, 8);
         // 'h','e','l','l','o',' ','世','界' = 8 chars
         assert_eq!(result, "hello 世界...");
+    }
+
+    // ── try_resolve_skill helpers ─────────────────────────────────────────
+
+    /// Mirrors the name validation logic in `try_resolve_skill` so it can be
+    /// unit-tested without constructing an Agent.
+    fn is_valid_skill_name(name: &str) -> bool {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    }
+
+    const BUILTIN_COMMANDS: &[&str] = &[
+        "undo", "redo", "interrupt", "stop", "compact", "clear",
+        "heartbeat", "summarize", "summary", "suggest", "thread",
+        "new", "resume", "quit", "exit", "shutdown", "help", "?",
+        "version", "tools", "ping", "debug", "model",
+    ];
+
+    fn would_intercept_as_skill(input: &str) -> bool {
+        let trimmed = input.trim();
+        if !trimmed.starts_with('/') {
+            return false;
+        }
+        let rest = &trimmed[1..];
+        let skill_name = rest
+            .split(char::is_whitespace)
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        if BUILTIN_COMMANDS.contains(&skill_name.as_str()) {
+            return false;
+        }
+        is_valid_skill_name(&skill_name)
+    }
+
+    #[test]
+    fn test_skill_interception_non_slash_input() {
+        assert!(!would_intercept_as_skill("hello world"));
+        assert!(!would_intercept_as_skill("tell me something"));
+    }
+
+    #[test]
+    fn test_skill_interception_builtin_commands_not_intercepted() {
+        for cmd in BUILTIN_COMMANDS {
+            let input = format!("/{}", cmd);
+            assert!(
+                !would_intercept_as_skill(&input),
+                "/{} should not be intercepted as skill",
+                cmd
+            );
+        }
+    }
+
+    #[test]
+    fn test_skill_interception_unknown_slash_intercepted() {
+        assert!(would_intercept_as_skill("/my-skill"));
+        assert!(would_intercept_as_skill("/summarize-meeting some extra args"));
+        assert!(would_intercept_as_skill("/draft-email topic goes here"));
+    }
+
+    #[test]
+    fn test_skill_interception_invalid_names_rejected() {
+        // Path traversal attempt
+        assert!(!would_intercept_as_skill("/../etc/passwd"));
+        // Dots not allowed in skill names
+        assert!(!would_intercept_as_skill("/skill.name"));
+        // Underscores not allowed
+        assert!(!would_intercept_as_skill("/skill_name"));
+        // Empty name after slash
+        assert!(!would_intercept_as_skill("/"));
+    }
+
+    #[test]
+    fn test_skill_name_character_rules() {
+        assert!(is_valid_skill_name("abc"));
+        assert!(is_valid_skill_name("my-skill"));
+        assert!(is_valid_skill_name("skill123"));
+        assert!(!is_valid_skill_name(""));
+        assert!(!is_valid_skill_name("with space"));
+        assert!(!is_valid_skill_name("with_under"));
+        assert!(!is_valid_skill_name("with.dot"));
+        assert!(!is_valid_skill_name("with/slash"));
+        assert!(!is_valid_skill_name("../traversal"));
     }
 }

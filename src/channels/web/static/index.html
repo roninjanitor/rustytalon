@@ -34,6 +34,7 @@
       <button data-tab="jobs">Jobs</button>
       <button data-tab="logs">Logs</button>
       <button data-tab="routines">Routines</button>
+      <button data-tab="skills">Skills</button>
       <button data-tab="channels">Channels</button>
       <button data-tab="extensions">Extensions</button>
       <div class="spacer"></div>
@@ -166,6 +167,42 @@
       </div>
     </div>
 
+    <!-- Skills Tab -->
+    <div class="tab-panel" id="tab-skills">
+      <div class="skills-container">
+        <div class="skills-toolbar">
+          <div class="skills-heading-group">
+            <h2 class="skills-heading">Skills</h2>
+            <p class="skills-subheading">Reusable prompt templates invoked with <code>/skill-name</code> in chat</p>
+          </div>
+          <button class="btn-add-skill" onclick="openSkillModal()">+ New Skill</button>
+        </div>
+        <div class="skills-grid" id="skills-grid">
+          <div class="empty-state">Loading skills...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Skill editor modal -->
+    <div class="wizard-overlay" id="skill-modal-overlay" style="display:none" onclick="skillModalOverlayClick(event)">
+      <div class="wizard-modal skill-modal" id="skill-modal">
+        <button class="wizard-close" onclick="closeSkillModal()">&times;</button>
+        <div id="skill-modal-title" class="wizard-step-title">New Skill</div>
+        <div class="skill-form">
+          <label class="wizard-step-label">Name <span class="skill-name-hint">(used as <code>/name</code> in chat, lowercase)</span></label>
+          <input type="text" id="skill-name-input" class="wizard-token-input" placeholder="e.g. summarize-meeting" autocomplete="off" spellcheck="false">
+          <label class="wizard-step-label">Description</label>
+          <input type="text" id="skill-desc-input" class="wizard-token-input" placeholder="Briefly describe what this skill does">
+          <label class="wizard-step-label">Prompt</label>
+          <textarea id="skill-prompt-input" class="skill-prompt-textarea" placeholder="The prompt that will be sent to the agent when you type /name in chat..." rows="7"></textarea>
+        </div>
+        <div class="wizard-actions">
+          <button class="wizard-btn-secondary" onclick="closeSkillModal()">Cancel</button>
+          <button class="wizard-btn-primary" id="skill-save-btn" onclick="saveSkill()">Save</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Extensions Tab -->
     <div class="tab-panel" id="tab-extensions">
       <div class="extensions-container">
@@ -196,6 +233,7 @@
               <button class="ext-kind-filter" data-kind="wasm_tool">WASM Tools</button>
               <button class="ext-kind-filter" data-kind="mcp_server">MCP</button>
             </div>
+            <button class="btn-add-custom-ext" onclick="openCustomInstallModal()">+ Add Custom</button>
           </div>
           <div class="catalog-grid" id="catalog-grid">
             <div class="empty-state">Loading catalog...</div>
@@ -222,6 +260,31 @@
             <tbody id="tools-tbody"></tbody>
           </table>
           <div class="empty-state" id="tools-empty" style="display:none">No tools registered</div>
+        </div>
+      </div>
+
+      <!-- Custom install modal -->
+      <div class="wizard-overlay" id="custom-install-overlay" style="display:none" onclick="customInstallOverlayClick(event)">
+        <div class="wizard-modal" id="custom-install-modal">
+          <button class="wizard-close" onclick="closeCustomInstallModal()">&times;</button>
+          <div class="wizard-step-title">Add Custom Extension</div>
+          <p class="wizard-step-desc">Install an MCP server by URL or a WASM tool from a direct download link. The type is detected automatically from the URL.</p>
+          <div class="skill-form">
+            <label class="wizard-step-label">Name</label>
+            <input type="text" id="custom-ext-name" class="wizard-token-input" placeholder="e.g. my-mcp-server" autocomplete="off" spellcheck="false">
+            <label class="wizard-step-label">URL</label>
+            <input type="text" id="custom-ext-url" class="wizard-token-input" placeholder="https://mcp.example.com/sse  or  https://example.com/tool.wasm">
+            <label class="wizard-step-label">Type</label>
+            <select id="custom-ext-kind" class="wizard-token-input">
+              <option value="">Auto-detect from URL</option>
+              <option value="mcp_server">MCP Server</option>
+              <option value="wasm_tool">WASM Tool</option>
+            </select>
+          </div>
+          <div class="wizard-actions">
+            <button class="wizard-btn-secondary" onclick="closeCustomInstallModal()">Cancel</button>
+            <button class="wizard-btn-primary" id="custom-install-btn" onclick="installCustomExtension()">Install</button>
+          </div>
         </div>
       </div>
 

@@ -901,12 +901,212 @@ function switchTab(tab) {
   if (tab === 'jobs') loadJobs();
   if (tab === 'routines') loadRoutines();
   if (tab === 'logs') applyLogFilters();
+  if (tab === 'skills') loadSkills();
   if (tab === 'extensions') {
     initExtSubTabs();
     initCatalogSearch();
     checkExtensionManagerAvailable().then(() => loadCatalog());
   }
   if (tab === 'channels') loadChannels();
+}
+
+// --- Skills ---
+
+let editingSkillName = null;
+
+function loadSkills() {
+  const grid = document.getElementById('skills-grid');
+  grid.innerHTML = '<div class="empty-state">Loading...</div>';
+  apiFetch('/api/skills')
+    .then((data) => renderSkillsGrid(data.skills || []))
+    .catch(() => { grid.innerHTML = '<div class="empty-state">Failed to load skills</div>'; });
+}
+
+function renderSkillsGrid(skills) {
+  const grid = document.getElementById('skills-grid');
+  if (skills.length === 0) {
+    grid.innerHTML = '<div class="skills-empty"><div class="skills-empty-icon">&#128214;</div><p>No skills yet.</p><p class="skills-empty-hint">Create a skill to invoke a reusable prompt with <code>/name</code> in chat.</p></div>';
+    return;
+  }
+  grid.innerHTML = '';
+  for (const skill of skills) {
+    grid.appendChild(renderSkillCard(skill));
+  }
+}
+
+function renderSkillCard(skill) {
+  const card = document.createElement('div');
+  card.className = 'skill-card';
+
+  const header = document.createElement('div');
+  header.className = 'skill-card-header';
+
+  const nameEl = document.createElement('div');
+  nameEl.className = 'skill-card-name';
+  nameEl.textContent = '/' + skill.name;
+
+  const badge = document.createElement('span');
+  badge.className = 'skill-card-badge';
+  badge.textContent = 'Skill';
+  header.append(nameEl, badge);
+
+  const desc = document.createElement('div');
+  desc.className = 'skill-card-desc';
+  desc.textContent = skill.description || 'No description';
+
+  const preview = document.createElement('div');
+  preview.className = 'skill-card-prompt';
+  const previewText = skill.prompt || '';
+  preview.textContent = previewText.length > 120 ? previewText.slice(0, 120) + '...' : previewText;
+
+  const actions = document.createElement('div');
+  actions.className = 'skill-card-actions';
+
+  const runBtn = document.createElement('button');
+  runBtn.className = 'skill-card-run-btn';
+  runBtn.textContent = 'Run';
+  runBtn.title = 'Switch to chat and pre-fill /' + skill.name;
+  runBtn.addEventListener('click', () => runSkill(skill.name));
+
+  const editBtn = document.createElement('button');
+  editBtn.className = 'skill-card-edit-btn';
+  editBtn.textContent = 'Edit';
+  editBtn.addEventListener('click', () => openSkillModal(skill));
+
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'skill-card-delete-btn';
+  deleteBtn.textContent = 'Delete';
+  deleteBtn.addEventListener('click', () => deleteSkill(skill.name));
+
+  actions.append(runBtn, editBtn, deleteBtn);
+  card.append(header, desc, preview, actions);
+  return card;
+}
+
+function openSkillModal(skill) {
+  skill = skill || null;
+  editingSkillName = skill ? skill.name : null;
+  document.getElementById('skill-modal-title').textContent = skill ? 'Edit Skill' : 'New Skill';
+  const nameInput = document.getElementById('skill-name-input');
+  nameInput.value = skill ? skill.name : '';
+  // Prevent renaming (name is the workspace path key)
+  nameInput.disabled = !!skill;
+  document.getElementById('skill-desc-input').value = skill ? (skill.description || '') : '';
+  document.getElementById('skill-prompt-input').value = skill ? (skill.prompt || '') : '';
+  document.getElementById('skill-save-btn').disabled = false;
+  document.getElementById('skill-save-btn').textContent = 'Save';
+  document.getElementById('skill-modal-overlay').style.display = 'flex';
+  if (!skill) nameInput.focus();
+  else document.getElementById('skill-prompt-input').focus();
+}
+
+function closeSkillModal() {
+  document.getElementById('skill-modal-overlay').style.display = 'none';
+  editingSkillName = null;
+}
+
+function skillModalOverlayClick(e) {
+  if (e.target === document.getElementById('skill-modal-overlay')) closeSkillModal();
+}
+
+function saveSkill() {
+  let name = document.getElementById('skill-name-input').value.trim().toLowerCase().replace(/\s+/g, '-');
+  const description = document.getElementById('skill-desc-input').value.trim();
+  const prompt = document.getElementById('skill-prompt-input').value.trim();
+
+  if (!name) { showToast('Skill name is required', 'error'); return; }
+  if (!/^[a-z0-9-]+$/.test(name)) { showToast('Name must use only lowercase letters, digits, and hyphens', 'error'); return; }
+  if (!prompt) { showToast('Prompt is required', 'error'); return; }
+
+  const saveBtn = document.getElementById('skill-save-btn');
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Saving...';
+
+  apiFetch('/api/skills', { method: 'POST', body: { name, description, prompt } })
+    .then(() => {
+      closeSkillModal();
+      loadSkills();
+      showToast('Skill saved', 'success');
+    })
+    .catch((err) => {
+      showToast('Failed to save skill: ' + err.message, 'error');
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save';
+    });
+}
+
+function deleteSkill(name) {
+  if (!confirm('Delete skill /' + name + '?')) return;
+  apiFetch('/api/skills/' + encodeURIComponent(name), { method: 'DELETE' })
+    .then(() => {
+      loadSkills();
+      showToast('Skill deleted', 'success');
+    })
+    .catch((err) => showToast('Delete failed: ' + err.message, 'error'));
+}
+
+function runSkill(name) {
+  switchTab('chat');
+  const input = document.getElementById('chat-input');
+  input.value = '/' + name + ' ';
+  input.focus();
+  autoResizeTextarea(input);
+  // Place cursor at end so user can append args naturally
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+// --- Custom extension install ---
+
+function openCustomInstallModal() {
+  document.getElementById('custom-ext-name').value = '';
+  document.getElementById('custom-ext-url').value = '';
+  document.getElementById('custom-ext-kind').value = '';
+  document.getElementById('custom-install-btn').disabled = false;
+  document.getElementById('custom-install-btn').textContent = 'Install';
+  document.getElementById('custom-install-overlay').style.display = 'flex';
+  document.getElementById('custom-ext-name').focus();
+}
+
+function closeCustomInstallModal() {
+  document.getElementById('custom-install-overlay').style.display = 'none';
+}
+
+function customInstallOverlayClick(e) {
+  if (e.target === document.getElementById('custom-install-overlay')) closeCustomInstallModal();
+}
+
+function installCustomExtension() {
+  const name = document.getElementById('custom-ext-name').value.trim();
+  const url = document.getElementById('custom-ext-url').value.trim();
+  const kind = document.getElementById('custom-ext-kind').value || undefined;
+
+  if (!name) { showToast('Name is required', 'error'); return; }
+  if (!url) { showToast('URL is required', 'error'); return; }
+
+  const btn = document.getElementById('custom-install-btn');
+  btn.disabled = true;
+  btn.textContent = 'Installing...';
+
+  apiFetch('/api/extensions/install', { method: 'POST', body: { name, url, kind } })
+    .then((res) => {
+      closeCustomInstallModal();
+      if (res.success) {
+        showToast(res.message || 'Extension installed', 'success');
+        // Switch to installed tab to show the result
+        document.querySelectorAll('.ext-sub-tab').forEach((b) => b.classList.remove('active'));
+        document.querySelectorAll('.ext-panel').forEach((p) => p.classList.remove('active'));
+        document.querySelector('.ext-sub-tab[data-subtab="installed"]').classList.add('active');
+        document.getElementById('ext-panel-installed').classList.add('active');
+        loadInstalledExtensions();
+      } else {
+        showToast(res.message || 'Install failed', 'error');
+      }
+    })
+    .catch((err) => {
+      showToast('Install failed: ' + err.message, 'error');
+      btn.disabled = false;
+      btn.textContent = 'Install';
+    });
 }
 
 // --- Memory (filesystem tree) ---
