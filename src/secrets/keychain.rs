@@ -264,7 +264,7 @@ pub use platform::{delete_master_key, get_master_key, has_master_key, store_mast
 /// Parse a hex string to bytes.
 #[allow(dead_code)]
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, SecretError> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(SecretError::KeychainError(
             "Invalid hex string length".to_string(),
         ));

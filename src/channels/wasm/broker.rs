@@ -326,30 +326,28 @@ async fn run_websocket_connection(
             .and_then(|h| h.wait_for_op)
             .is_some();
 
-        if !needs_deferred_handshake {
-            if let Some(handshake) = &config.handshake {
-                let creds_snapshot = credentials.read().await.clone();
-                let payload_str = serde_json::to_string(&handshake.send).unwrap_or_default();
-                let substituted = substitute_credentials(&payload_str, &creds_snapshot);
+        if !needs_deferred_handshake && let Some(handshake) = &config.handshake {
+            let creds_snapshot = credentials.read().await.clone();
+            let payload_str = serde_json::to_string(&handshake.send).unwrap_or_default();
+            let substituted = substitute_credentials(&payload_str, &creds_snapshot);
 
-                if let Err(e) = ws_sink.send(Message::Text(substituted.into())).await {
-                    tracing::warn!(
-                        channel = %channel_name,
-                        error = %e,
-                        "Failed to send handshake"
-                    );
-                    attempt += 1;
-                    if attempt > config.reconnect.max_retries {
-                        return Err(WasmChannelError::BrokerHandshakeFailed {
-                            name: channel_name.to_string(),
-                            reason: e.to_string(),
-                        });
-                    }
-                    let delay = backoff_duration(config.reconnect.backoff_ms, attempt - 1);
-                    tokio::select! {
-                        _ = tokio::time::sleep(delay) => continue,
-                        _ = shutdown_rx.changed() => return Ok(()),
-                    }
+            if let Err(e) = ws_sink.send(Message::Text(substituted.into())).await {
+                tracing::warn!(
+                    channel = %channel_name,
+                    error = %e,
+                    "Failed to send handshake"
+                );
+                attempt += 1;
+                if attempt > config.reconnect.max_retries {
+                    return Err(WasmChannelError::BrokerHandshakeFailed {
+                        name: channel_name.to_string(),
+                        reason: e.to_string(),
+                    });
+                }
+                let delay = backoff_duration(config.reconnect.backoff_ms, attempt - 1);
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => continue,
+                    _ = shutdown_rx.changed() => return Ok(()),
                 }
             }
         }
@@ -445,21 +443,19 @@ async fn run_websocket_connection(
                             };
 
                             // Check for heartbeat ACK
-                            if let Some(expect_op) = heartbeat_expect_op {
-                                if let Some(op) = event.get("op").and_then(|v| v.as_u64()) {
-                                    if op == expect_op {
+                            if let Some(expect_op) = heartbeat_expect_op
+                                && let Some(op) = event.get("op").and_then(|v| v.as_u64())
+                                    && op == expect_op {
                                         missed_heartbeats = 0;
                                         continue;
                                     }
-                                }
-                            }
 
                             // Check for deferred handshake trigger (wait_for_op).
                             // Example: Discord sends Hello (op 10) before we send IDENTIFY (op 2).
-                            if !handshake_sent {
-                                if let Some(wait_op) = config.handshake.as_ref().and_then(|h| h.wait_for_op) {
-                                    if let Some(op) = event.get("op").and_then(|v| v.as_u64()) {
-                                        if op == wait_op {
+                            if !handshake_sent
+                                && let Some(wait_op) = config.handshake.as_ref().and_then(|h| h.wait_for_op)
+                                    && let Some(op) = event.get("op").and_then(|v| v.as_u64())
+                                        && op == wait_op {
                                             let creds_snapshot = credentials.read().await.clone();
                                             let hs = config.handshake.as_ref().unwrap();
                                             let payload_str = serde_json::to_string(&hs.send).unwrap_or_default();
@@ -486,15 +482,12 @@ async fn run_websocket_connection(
                                             handshake_sent = true;
                                             // Still process this message (e.g., Hello contains heartbeat_interval)
                                         }
-                                    }
-                                }
-                            }
 
                             // Check for handshake response (e.g., Discord READY op 0)
-                            if !handshake_completed {
-                                if let Some(expect_op) = config.handshake.as_ref().and_then(|h| h.expect_op) {
-                                    if let Some(op) = event.get("op").and_then(|v| v.as_u64()) {
-                                        if op == expect_op {
+                            if !handshake_completed
+                                && let Some(expect_op) = config.handshake.as_ref().and_then(|h| h.expect_op)
+                                    && let Some(op) = event.get("op").and_then(|v| v.as_u64())
+                                        && op == expect_op {
                                             tracing::info!(
                                                 channel = %channel_name,
                                                 op = expect_op,
@@ -504,14 +497,11 @@ async fn run_websocket_connection(
                                             // Don't deliver handshake response as an event
                                             continue;
                                         }
-                                    }
-                                }
-                            }
 
                             // Extract heartbeat interval from Hello message if configured
-                            if let Some(keepalive) = &config.keepalive {
-                                if let Some(interval_field) = &keepalive.interval_field {
-                                    if let Some(interval_ms) = extract_nested_u64(&event, interval_field) {
+                            if let Some(keepalive) = &config.keepalive
+                                && let Some(interval_field) = &keepalive.interval_field
+                                    && let Some(interval_ms) = extract_nested_u64(&event, interval_field) {
                                         let new_interval = Duration::from_millis(interval_ms);
                                         tracing::info!(
                                             channel = %channel_name,
@@ -525,8 +515,6 @@ async fn run_websocket_connection(
                                         // Don't deliver Hello as an event
                                         continue;
                                     }
-                                }
-                            }
 
                             // Apply event filter
                             if !should_deliver_event(&event, &config.events) {
@@ -707,8 +695,8 @@ async fn run_dispatch_loop(
 
                 match result {
                     Ok(emitted_messages) => {
-                        if !emitted_messages.is_empty() {
-                            if let Err(e) = WasmChannel::dispatch_emitted_messages(
+                        if !emitted_messages.is_empty()
+                            && let Err(e) = WasmChannel::dispatch_emitted_messages(
                                 channel_name,
                                 emitted_messages,
                                 message_tx,
@@ -720,7 +708,6 @@ async fn run_dispatch_loop(
                                     "Failed to dispatch emitted messages from on_event"
                                 );
                             }
-                        }
                     }
                     Err(e) => {
                         tracing::warn!(

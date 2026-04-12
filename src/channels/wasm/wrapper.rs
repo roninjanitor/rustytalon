@@ -484,15 +484,15 @@ impl near::agent::channel_host::Host for ChannelStoreData {
         // This uses the credential mappings from capabilities.json to automatically
         // add auth headers based on the request's target host.
         let headers_before = headers.len();
-        if let Ok(parsed) = reqwest::Url::parse(&url) {
-            if let Some(host) = parsed.host_str() {
-                tracing::info!(
-                    url_host = %host,
-                    host_credentials_count = self.host_credentials.len(),
-                    "Host credential injection: checking"
-                );
-                self.inject_host_credentials(host, &mut headers, &mut url);
-            }
+        if let Ok(parsed) = reqwest::Url::parse(&url)
+            && let Some(host) = parsed.host_str()
+        {
+            tracing::info!(
+                url_host = %host,
+                host_credentials_count = self.host_credentials.len(),
+                "Host credential injection: checking"
+            );
+            self.inject_host_credentials(host, &mut headers, &mut url);
         }
         let host_headers_added = headers.len() - headers_before;
         if host_headers_added > 0 || !self.host_credentials.is_empty() {
