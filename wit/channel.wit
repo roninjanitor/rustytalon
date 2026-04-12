@@ -348,6 +348,23 @@ interface channel {
     /// - update: The status update
     on-status: func(update: status-update);
 
+    /// Deliver a proactive (agent-initiated) message to a user.
+    ///
+    /// Called when the agent wants to send a message without a prior incoming
+    /// message from the user (e.g., routine notifications, heartbeat alerts).
+    /// The channel should deliver this to the specified user via whatever
+    /// mechanism it supports (DM, push notification, etc.).
+    ///
+    /// Arguments:
+    /// - user-id: The user to notify (channel-specific identifier)
+    /// - content: The message content
+    /// - metadata-json: Optional routing metadata as JSON string
+    ///
+    /// Returns:
+    /// - Ok: Message delivered successfully
+    /// - Err(string): Delivery failure message
+    on-broadcast: func(user-id: string, content: string, metadata-json: string) -> result<_, string>;
+
     /// Clean up channel resources.
     ///
     /// Called when the channel is being unloaded.

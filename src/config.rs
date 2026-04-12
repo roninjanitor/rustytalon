@@ -1049,15 +1049,27 @@ impl SecretsConfig {
         use crate::settings::KeySource;
 
         let (master_key, source) = if let Some(env_key) = optional_env("SECRETS_MASTER_KEY")? {
+            tracing::debug!(
+                "SECRETS_MASTER_KEY found in environment ({} chars)",
+                env_key.len()
+            );
             (Some(SecretString::from(env_key)), KeySource::Env)
         } else {
+            tracing::debug!("SECRETS_MASTER_KEY not in environment, probing OS keychain");
             // Probe the OS keychain; if a key is stored, use it
             match crate::secrets::keychain::get_master_key().await {
                 Ok(key_bytes) => {
+                    tracing::debug!(
+                        "Master key found in OS keychain ({} bytes)",
+                        key_bytes.len()
+                    );
                     let key_hex: String = key_bytes.iter().map(|b| format!("{:02x}", b)).collect();
                     (Some(SecretString::from(key_hex)), KeySource::Keychain)
                 }
-                Err(_) => (None, KeySource::None),
+                Err(e) => {
+                    tracing::debug!("No master key in keychain: {}", e);
+                    (None, KeySource::None)
+                }
             }
         };
 

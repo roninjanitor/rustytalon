@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-11
+
+### Added
+- Skills system — extensible slash-command skills with per-skill prompts, enabling reusable agent behaviors (commit, review-pr, trace, ship, etc.)
+- Custom extension install UI — browse, install, and manage WASM/MCP extensions from the web UI with a dedicated catalog view
+- `on_broadcast` callback for WASM channels — channels can now receive host-initiated broadcast messages (e.g., agent responses, heartbeat alerts) directly without polling
+
+### Changed
+- Bumped all dependencies to latest versions
+- Updated minimum Rust version to 1.94
+
+### Fixed
+- Extensions catalog pagination — page navigation now correctly advances through large catalogs
+- Routine notification delivery — notifications from routines now reach the correct channel instead of being silently dropped
+- Secrets master key loading — fixes startup panic when `SECRETS_MASTER_KEY` was set but not yet loaded before first use
+- MCP extension install: GitHub search results with no `homepage` URL are now skipped instead of using the repo's `html_url` as the MCP endpoint. This prevented a 422 error from GitHub when activating extensions discovered via search (e.g. searxng)
+- Clippy: removed dead `html_url` field from internal `GitHubRepo` struct; suppressed platform-gated dead code warnings in `secrets/keychain.rs` for constants and `hex_to_bytes` only used on macOS/Linux
+
 ## [0.1.32] - 2026-04-10
 
 ### Fixed

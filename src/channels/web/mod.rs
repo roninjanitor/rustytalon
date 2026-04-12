@@ -59,9 +59,9 @@ impl GatewayChannel {
     /// If no auth token is configured, generates a random one and prints it.
     pub fn new(config: GatewayConfig) -> Self {
         let auth_token = config.auth_token.clone().unwrap_or_else(|| {
-            use rand::Rng;
-            let token: String = rand::thread_rng()
-                .sample_iter(&rand::distributions::Alphanumeric)
+            use rand::RngExt;
+            let token: String = rand::rng()
+                .sample_iter(rand::distr::Alphanumeric)
                 .take(32)
                 .map(char::from)
                 .collect();

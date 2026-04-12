@@ -533,6 +533,8 @@ async fn send_notification(
             "source": "routine",
             "routine_name": routine_name,
             "status": status.to_string(),
+            "notify_user": notify.user,
+            "notify_channel": notify.channel,
         }),
     };
 
@@ -569,7 +571,11 @@ fn truncate(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::mpsc;
+
+    use super::send_notification;
     use crate::agent::routine::{NotifyConfig, RunStatus};
+    use crate::channels::OutgoingResponse;
 
     #[test]
     fn test_notification_gating() {
@@ -597,5 +603,130 @@ mod tests {
         ] {
             let _ = status.to_string();
         }
+    }
+
+    #[tokio::test]
+    async fn test_send_notification_embeds_notify_user_and_channel() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingResponse>(4);
+
+        let notify = NotifyConfig {
+            channel: Some("discord".to_string()),
+            user: "owner123".to_string(),
+            on_attention: true,
+            on_failure: true,
+            on_success: false,
+        };
+
+        send_notification(
+            &tx,
+            &notify,
+            "morning_alert",
+            RunStatus::Attention,
+            Some("Time to wake up!"),
+        )
+        .await;
+
+        let response = rx.recv().await.expect("should receive notification");
+        assert!(response.content.contains("morning_alert"));
+        assert!(response.content.contains("Time to wake up!"));
+
+        // Verify metadata contains routing fields
+        assert_eq!(
+            response
+                .metadata
+                .get("notify_user")
+                .and_then(|v| v.as_str()),
+            Some("owner123")
+        );
+        assert_eq!(
+            response
+                .metadata
+                .get("notify_channel")
+                .and_then(|v| v.as_str()),
+            Some("discord")
+        );
+        assert_eq!(
+            response.metadata.get("source").and_then(|v| v.as_str()),
+            Some("routine")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_notification_null_channel_when_none() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingResponse>(4);
+
+        let notify = NotifyConfig {
+            channel: None,
+            user: "default".to_string(),
+            on_failure: true,
+            ..Default::default()
+        };
+
+        send_notification(
+            &tx,
+            &notify,
+            "test_routine",
+            RunStatus::Failed,
+            Some("error"),
+        )
+        .await;
+
+        let response = rx.recv().await.expect("should receive notification");
+        assert_eq!(
+            response
+                .metadata
+                .get("notify_user")
+                .and_then(|v| v.as_str()),
+            Some("default")
+        );
+        // When channel is None, it should be serialized as JSON null
+        assert!(
+            response
+                .metadata
+                .get("notify_channel")
+                .expect("notify_channel key should exist")
+                .is_null()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_notification_skipped_when_status_not_configured() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingResponse>(4);
+
+        let notify = NotifyConfig {
+            on_success: false, // Ok status should NOT notify
+            on_failure: true,
+            on_attention: true,
+            ..Default::default()
+        };
+
+        // Status is Ok, on_success is false → should not send
+        send_notification(&tx, &notify, "quiet_routine", RunStatus::Ok, None).await;
+
+        // Channel should be empty
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_send_notification_failure_includes_error_icon() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingResponse>(4);
+
+        let notify = NotifyConfig {
+            on_failure: true,
+            ..Default::default()
+        };
+
+        send_notification(
+            &tx,
+            &notify,
+            "broken_routine",
+            RunStatus::Failed,
+            Some("connection refused"),
+        )
+        .await;
+
+        let response = rx.recv().await.expect("should receive notification");
+        assert!(response.content.contains("❌"));
+        assert!(response.content.contains("connection refused"));
     }
 }

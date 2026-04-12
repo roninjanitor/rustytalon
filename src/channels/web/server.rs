@@ -268,6 +268,14 @@ pub async fn start_server(
             "/api/settings/{key}",
             axum::routing::delete(settings_delete_handler),
         )
+        // Skills
+        .route("/api/skills", get(skills_list_handler))
+        .route("/api/skills", post(skills_save_handler))
+        .route("/api/skills/{name}", get(skills_get_handler))
+        .route(
+            "/api/skills/{name}",
+            axum::routing::delete(skills_delete_handler),
+        )
         // Gateway control plane
         .route("/api/gateway/status", get(gateway_status_handler))
         .route("/api/docs/{name}", get(docs_handler))
@@ -2753,9 +2761,274 @@ async fn providers_costs_handler(State(state): State<Arc<GatewayState>>) -> impl
     }
 }
 
+// ── Skills handlers ──────────────────────────────────────────────────────────
+
+/// Parse a skill document stored as `skills/<name>.md`.
+///
+/// Format:
+/// ```text
+/// # <description>
+///
+/// <prompt>
+/// ```
+fn parse_skill_doc(name: &str, content: &str, updated_at: Option<String>) -> SkillInfo {
+    let mut lines = content.lines().peekable();
+
+    // Only treat the first line as the description when it starts with `#`.
+    let description = if lines.peek().map(|l| l.starts_with('#')).unwrap_or(false) {
+        lines
+            .next()
+            .unwrap_or("")
+            .trim_start_matches('#')
+            .trim()
+            .to_string()
+    } else {
+        String::new()
+    };
+
+    // Skip blank separator line after header (if any).
+    let prompt: String = lines
+        .skip_while(|l| l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    SkillInfo {
+        name: name.to_string(),
+        description,
+        prompt: prompt.trim().to_string(),
+        updated_at,
+    }
+}
+
+/// Serialize a skill into workspace document content.
+fn skill_to_doc(description: &str, prompt: &str) -> String {
+    format!("# {}\n\n{}\n", description.trim(), prompt.trim())
+}
+
+async fn skills_list_handler(
+    State(state): State<Arc<GatewayState>>,
+) -> Result<Json<SkillListResponse>, (StatusCode, String)> {
+    let workspace = state.workspace.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Workspace not available".to_string(),
+    ))?;
+
+    let entries = workspace.list("skills").await.unwrap_or_default();
+
+    let mut skills = Vec::new();
+    for entry in &entries {
+        if entry.is_directory {
+            continue;
+        }
+        // Name is the filename without `.md`
+        let file_name = entry.path.rsplit('/').next().unwrap_or(&entry.path);
+        let skill_name = file_name.trim_end_matches(".md");
+        if let Ok(doc) = workspace.read(&entry.path).await {
+            let updated_at = Some(doc.updated_at.to_rfc3339());
+            skills.push(parse_skill_doc(skill_name, &doc.content, updated_at));
+        }
+    }
+
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(Json(SkillListResponse { skills }))
+}
+
+async fn skills_get_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(name): Path<String>,
+) -> Result<Json<SkillInfo>, (StatusCode, String)> {
+    let workspace = state.workspace.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Workspace not available".to_string(),
+    ))?;
+
+    let safe_name = sanitize_skill_name(&name)
+        .ok_or((StatusCode::BAD_REQUEST, "Invalid skill name".to_string()))?;
+    let path = format!("skills/{}.md", safe_name);
+
+    let doc = workspace
+        .read(&path)
+        .await
+        .map_err(|_| (StatusCode::NOT_FOUND, format!("Skill '{}' not found", name)))?;
+
+    let updated_at = Some(doc.updated_at.to_rfc3339());
+    Ok(Json(parse_skill_doc(&safe_name, &doc.content, updated_at)))
+}
+
+async fn skills_save_handler(
+    State(state): State<Arc<GatewayState>>,
+    Json(req): Json<SaveSkillRequest>,
+) -> Result<Json<ActionResponse>, (StatusCode, String)> {
+    let workspace = state.workspace.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Workspace not available".to_string(),
+    ))?;
+
+    let safe_name = sanitize_skill_name(&req.name).ok_or((
+        StatusCode::BAD_REQUEST,
+        "Invalid skill name: use lowercase letters, digits, and hyphens only".to_string(),
+    ))?;
+
+    if req.prompt.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Prompt must not be empty".to_string(),
+        ));
+    }
+
+    let path = format!("skills/{}.md", safe_name);
+    let content = skill_to_doc(&req.description, &req.prompt);
+
+    workspace
+        .write(&path, &content)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(ActionResponse::ok(format!(
+        "Skill '{}' saved",
+        safe_name
+    ))))
+}
+
+async fn skills_delete_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(name): Path<String>,
+) -> Result<Json<ActionResponse>, (StatusCode, String)> {
+    let workspace = state.workspace.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Workspace not available".to_string(),
+    ))?;
+
+    let safe_name = sanitize_skill_name(&name)
+        .ok_or((StatusCode::BAD_REQUEST, "Invalid skill name".to_string()))?;
+    let path = format!("skills/{}.md", safe_name);
+
+    workspace
+        .delete(&path)
+        .await
+        .map_err(|_| (StatusCode::NOT_FOUND, format!("Skill '{}' not found", name)))?;
+
+    Ok(Json(ActionResponse::ok(format!(
+        "Skill '{}' deleted",
+        safe_name
+    ))))
+}
+
+/// Validate and normalize a skill name: lowercase letters, digits, hyphens only.
+/// Returns `None` if the name is invalid or empty.
+fn sanitize_skill_name(name: &str) -> Option<String> {
+    let normalized = name.trim().to_lowercase();
+    if normalized.is_empty() || normalized.len() > 64 {
+        return None;
+    }
+    if normalized
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── sanitize_skill_name ──────────────────────────────────────────────
+
+    #[test]
+    fn test_sanitize_skill_name_valid() {
+        assert_eq!(sanitize_skill_name("hello"), Some("hello".to_string()));
+        assert_eq!(
+            sanitize_skill_name("draft-email"),
+            Some("draft-email".to_string())
+        );
+        assert_eq!(
+            sanitize_skill_name("summarize123"),
+            Some("summarize123".to_string())
+        );
+        // Normalises to lowercase
+        assert_eq!(
+            sanitize_skill_name("  MySkill  "),
+            Some("myskill".to_string())
+        );
+    }
+
+    #[test]
+    fn test_sanitize_skill_name_invalid() {
+        assert!(sanitize_skill_name("").is_none());
+        assert!(sanitize_skill_name("   ").is_none());
+        assert!(sanitize_skill_name("with space").is_none());
+        assert!(sanitize_skill_name("with/slash").is_none());
+        assert!(sanitize_skill_name("with.dot").is_none());
+        assert!(sanitize_skill_name("with_under").is_none());
+        // 65 chars — too long
+        assert!(sanitize_skill_name(&"a".repeat(65)).is_none());
+        // 64 chars — exactly at limit
+        assert!(sanitize_skill_name(&"a".repeat(64)).is_some());
+    }
+
+    // ── parse_skill_doc ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_skill_doc_with_header() {
+        let content = "# Summarise a meeting\n\nPlease summarise the following meeting notes:\n";
+        let skill = parse_skill_doc("summarise", content, None);
+        assert_eq!(skill.name, "summarise");
+        assert_eq!(skill.description, "Summarise a meeting");
+        assert_eq!(
+            skill.prompt,
+            "Please summarise the following meeting notes:"
+        );
+    }
+
+    #[test]
+    fn test_parse_skill_doc_no_header() {
+        let content = "Just a prompt, no header.\n";
+        let skill = parse_skill_doc("plain", content, None);
+        assert_eq!(skill.description, "");
+        assert_eq!(skill.prompt, "Just a prompt, no header.");
+    }
+
+    #[test]
+    fn test_parse_skill_doc_empty() {
+        let skill = parse_skill_doc("empty", "", None);
+        assert_eq!(skill.description, "");
+        assert_eq!(skill.prompt, "");
+    }
+
+    #[test]
+    fn test_parse_skill_doc_multiline_prompt() {
+        let content = "# My Skill\n\nLine one.\nLine two.\nLine three.";
+        let skill = parse_skill_doc("multi", content, None);
+        assert_eq!(skill.description, "My Skill");
+        assert_eq!(skill.prompt, "Line one.\nLine two.\nLine three.");
+    }
+
+    // ── skill_to_doc ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_skill_to_doc_roundtrip() {
+        let doc = skill_to_doc(
+            "Draft an email",
+            "Please draft a professional email about:\n\n{{topic}}",
+        );
+        let skill = parse_skill_doc("draft-email", &doc, None);
+        assert_eq!(skill.description, "Draft an email");
+        assert_eq!(
+            skill.prompt,
+            "Please draft a professional email about:\n\n{{topic}}"
+        );
+    }
+
+    #[test]
+    fn test_skill_to_doc_trims_whitespace() {
+        let doc = skill_to_doc("  My Skill  ", "  My prompt  ");
+        assert!(doc.starts_with("# My Skill\n"));
+        assert!(doc.contains("\nMy prompt\n"));
+    }
 
     // ── parse_extension_kind ─────────────────────────────────────────────
 

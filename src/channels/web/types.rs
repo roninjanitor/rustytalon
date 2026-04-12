@@ -1067,3 +1067,27 @@ pub struct ProviderHealthResponse {
 pub struct LlmCostStatsResponse {
     pub stats: Vec<crate::llm::tracked::LlmCallStats>,
 }
+
+// --- Skills ---
+
+#[derive(Debug, Serialize)]
+pub struct SkillInfo {
+    pub name: String,
+    pub description: String,
+    pub prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SkillListResponse {
+    pub skills: Vec<SkillInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveSkillRequest {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub prompt: String,
+}

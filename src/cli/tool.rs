@@ -904,7 +904,7 @@ async fn auth_tool_oauth(
     oauth: &crate::tools::wasm::OAuthConfigSchema,
 ) -> anyhow::Result<()> {
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-    use rand::RngCore;
+    use rand::RngExt;
     use sha2::{Digest, Sha256};
 
     use crate::cli::oauth_defaults::{self, OAUTH_CALLBACK_PORT};
@@ -953,7 +953,7 @@ async fn auth_tool_oauth(
     // Generate PKCE verifier and challenge
     let (code_verifier, code_challenge) = if oauth.use_pkce {
         let mut verifier_bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut verifier_bytes);
+        rand::rng().fill(&mut verifier_bytes[..]);
         let verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
 
         let mut hasher = Sha256::new();

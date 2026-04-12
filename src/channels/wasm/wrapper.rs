@@ -37,8 +37,9 @@ use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 use wasmtime::Store;
+use wasmtime::component::ResourceTable;
 use wasmtime::component::{Component, Linker};
-use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::p2::{IoView, WasiCtx, WasiCtxBuilder, WasiView};
 
 use crate::channels::wasm::capabilities::ChannelCapabilities;
 use crate::channels::wasm::error::WasmChannelError;
@@ -376,13 +377,15 @@ impl ChannelStoreData {
 }
 
 // Implement WasiView to provide WASI context and resource table
+impl IoView for ChannelStoreData {
+    fn table(&mut self) -> &mut ResourceTable {
+        &mut self.table
+    }
+}
+
 impl WasiView for ChannelStoreData {
     fn ctx(&mut self) -> &mut WasiCtx {
         &mut self.wasi
-    }
-
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
     }
 }
 
@@ -904,14 +907,16 @@ impl WasmChannel {
     /// to properly register all host functions with correct component model signatures.
     fn add_host_functions(linker: &mut Linker<ChannelStoreData>) -> Result<(), WasmChannelError> {
         // Add WASI support (required by the component adapter)
-        wasmtime_wasi::add_to_linker_sync(linker).map_err(|e| {
+        wasmtime_wasi::p2::add_to_linker_sync(linker).map_err(|e| {
             WasmChannelError::Config(format!("Failed to add WASI functions: {}", e))
         })?;
 
         // Use the generated add_to_linker function from bindgen for our custom interface
-        near::agent::channel_host::add_to_linker(linker, |state| state).map_err(|e| {
-            WasmChannelError::Config(format!("Failed to add host functions: {}", e))
-        })?;
+        near::agent::channel_host::add_to_linker::<
+            ChannelStoreData,
+            wasmtime::component::HasSelf<ChannelStoreData>,
+        >(linker, |state| state)
+        .map_err(|e| WasmChannelError::Config(format!("Failed to add host functions: {}", e)))?;
 
         Ok(())
     }
@@ -1487,6 +1492,108 @@ impl WasmChannel {
             Err(_) => Err(WasmChannelError::Timeout {
                 name: channel_name,
                 callback: "on_respond".to_string(),
+            }),
+        }
+    }
+
+    /// Execute the on_broadcast callback.
+    ///
+    /// Called to deliver a proactive (agent-initiated) message to a user
+    /// without a prior incoming message (e.g., routine notifications, heartbeat alerts).
+    pub async fn call_on_broadcast(
+        &self,
+        user_id: &str,
+        content: &str,
+        metadata_json: &str,
+    ) -> Result<(), WasmChannelError> {
+        tracing::debug!(
+            channel = %self.name,
+            user_id = %user_id,
+            content_len = content.len(),
+            "call_on_broadcast invoked"
+        );
+
+        // If no WASM bytes, do nothing (for testing)
+        if self.prepared.component_bytes.is_empty() {
+            tracing::debug!(
+                channel = %self.name,
+                user_id = %user_id,
+                "WASM channel on_broadcast called (no WASM module)"
+            );
+            return Ok(());
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+        let prepared = Arc::clone(&self.prepared);
+        let capabilities = self.capabilities.clone();
+        let timeout = self.runtime.config().callback_timeout;
+        let channel_name = self.name.clone();
+        let credentials = self.get_credentials().await;
+        let pairing_store = self.pairing_store.clone();
+        let channel_state = Arc::clone(&self.channel_state);
+
+        let user_id = user_id.to_string();
+        let content = content.to_string();
+        let metadata_json = metadata_json.to_string();
+
+        let result = tokio::time::timeout(timeout, async move {
+            tokio::task::spawn_blocking(move || {
+                let channel_state_for_store = Arc::clone(&channel_state);
+                let mut store = Self::create_store(
+                    &runtime,
+                    &prepared,
+                    &capabilities,
+                    credentials,
+                    pairing_store,
+                    channel_state_for_store,
+                )?;
+
+                let instance = Self::instantiate_component(&runtime, &prepared, &mut store)?;
+
+                // Call on_broadcast using the generated typed interface
+                let channel_iface = instance.near_agent_channel();
+                let wasm_result = channel_iface
+                    .call_on_broadcast(&mut store, &user_id, &content, &metadata_json)
+                    .map_err(|e| {
+                        tracing::error!(error = %e, "WASM on_broadcast call failed");
+                        Self::map_wasm_error(e, &prepared.name, prepared.limits.fuel)
+                    })?;
+
+                // Check for WASM-level errors
+                if let Err(ref err_msg) = wasm_result {
+                    tracing::error!(error = %err_msg, "WASM on_broadcast returned error");
+                    return Err(WasmChannelError::CallbackFailed {
+                        name: prepared.name.clone(),
+                        reason: err_msg.clone(),
+                    });
+                }
+
+                let mut host_state =
+                    Self::extract_host_state(&mut store, &prepared.name, &capabilities);
+                Self::flush_pending_writes(&mut host_state, &channel_state);
+                Ok(((), host_state))
+            })
+            .await
+            .map_err(|e| WasmChannelError::ExecutionPanicked {
+                name: channel_name.clone(),
+                reason: e.to_string(),
+            })?
+        })
+        .await;
+
+        let channel_name = self.name.clone();
+        match result {
+            Ok(Ok(((), _host_state))) => {
+                tracing::debug!(
+                    channel = %channel_name,
+                    "WASM channel on_broadcast completed"
+                );
+                Ok(())
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(WasmChannelError::Timeout {
+                name: channel_name,
+                callback: "on_broadcast".to_string(),
             }),
         }
     }
@@ -2272,6 +2379,21 @@ impl Channel for WasmChannel {
         Ok(())
     }
 
+    async fn broadcast(
+        &self,
+        user_id: &str,
+        response: OutgoingResponse,
+    ) -> Result<(), ChannelError> {
+        let metadata_json =
+            serde_json::to_string(&response.metadata).unwrap_or_else(|_| "{}".to_string());
+        self.call_on_broadcast(user_id, &response.content, &metadata_json)
+            .await
+            .map_err(|e| ChannelError::SendFailed {
+                name: self.name.clone(),
+                reason: e.to_string(),
+            })
+    }
+
     async fn send_status(
         &self,
         status: StatusUpdate,
@@ -2380,6 +2502,14 @@ impl Channel for SharedWasmChannel {
         response: OutgoingResponse,
     ) -> Result<(), ChannelError> {
         self.inner.respond(msg, response).await
+    }
+
+    async fn broadcast(
+        &self,
+        user_id: &str,
+        response: OutgoingResponse,
+    ) -> Result<(), ChannelError> {
+        self.inner.broadcast(user_id, response).await
     }
 
     async fn send_status(
@@ -3484,5 +3614,68 @@ mod tests {
             store.host_credentials[0].headers.get("Authorization"),
             Some(&"Bot test-token-value".to_string()),
         );
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_no_wasm_succeeds() {
+        // When there's no WASM module (empty component_bytes), broadcast
+        // should succeed silently (no-op)
+        let channel = create_test_channel();
+        let _stream = channel.start().await.unwrap();
+
+        let response = crate::channels::OutgoingResponse::text("Hello from routine!");
+        let result = channel.broadcast("user123", response).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_with_metadata() {
+        // Verify metadata is serialized and passed through
+        let channel = create_test_channel();
+        let _stream = channel.start().await.unwrap();
+
+        let response = crate::channels::OutgoingResponse {
+            content: "Alert: something happened".to_string(),
+            thread_id: None,
+            metadata: serde_json::json!({
+                "source": "routine",
+                "routine_name": "morning_check",
+            }),
+        };
+
+        let result = channel.broadcast("default", response).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_shared_channel_broadcast_delegates() {
+        // SharedWasmChannel should delegate to inner channel
+        let config = WasmChannelRuntimeConfig::for_testing();
+        let runtime = Arc::new(WasmChannelRuntime::new(config).unwrap());
+
+        let prepared = Arc::new(PreparedChannelModule {
+            name: "shared-broadcast".to_string(),
+            description: "Test channel".to_string(),
+            component_bytes: Vec::new(),
+            limits: ResourceLimits::default(),
+        });
+
+        let capabilities =
+            ChannelCapabilities::for_channel("shared-broadcast").with_path("/webhook/test");
+
+        let channel = Arc::new(WasmChannel::new(
+            runtime,
+            prepared,
+            capabilities,
+            "{}".to_string(),
+            Arc::new(PairingStore::new()),
+        ));
+
+        let shared = super::SharedWasmChannel::new(channel);
+        let _stream = shared.start().await.unwrap();
+
+        let response = crate::channels::OutgoingResponse::text("Notification");
+        let result = shared.broadcast("user456", response).await;
+        assert!(result.is_ok());
     }
 }
