@@ -326,32 +326,31 @@ async fn run_websocket_connection(
             .and_then(|h| h.wait_for_op)
             .is_some();
 
-        if !needs_deferred_handshake
-            && let Some(handshake) = &config.handshake {
-                let creds_snapshot = credentials.read().await.clone();
-                let payload_str = serde_json::to_string(&handshake.send).unwrap_or_default();
-                let substituted = substitute_credentials(&payload_str, &creds_snapshot);
+        if !needs_deferred_handshake && let Some(handshake) = &config.handshake {
+            let creds_snapshot = credentials.read().await.clone();
+            let payload_str = serde_json::to_string(&handshake.send).unwrap_or_default();
+            let substituted = substitute_credentials(&payload_str, &creds_snapshot);
 
-                if let Err(e) = ws_sink.send(Message::Text(substituted.into())).await {
-                    tracing::warn!(
-                        channel = %channel_name,
-                        error = %e,
-                        "Failed to send handshake"
-                    );
-                    attempt += 1;
-                    if attempt > config.reconnect.max_retries {
-                        return Err(WasmChannelError::BrokerHandshakeFailed {
-                            name: channel_name.to_string(),
-                            reason: e.to_string(),
-                        });
-                    }
-                    let delay = backoff_duration(config.reconnect.backoff_ms, attempt - 1);
-                    tokio::select! {
-                        _ = tokio::time::sleep(delay) => continue,
-                        _ = shutdown_rx.changed() => return Ok(()),
-                    }
+            if let Err(e) = ws_sink.send(Message::Text(substituted.into())).await {
+                tracing::warn!(
+                    channel = %channel_name,
+                    error = %e,
+                    "Failed to send handshake"
+                );
+                attempt += 1;
+                if attempt > config.reconnect.max_retries {
+                    return Err(WasmChannelError::BrokerHandshakeFailed {
+                        name: channel_name.to_string(),
+                        reason: e.to_string(),
+                    });
+                }
+                let delay = backoff_duration(config.reconnect.backoff_ms, attempt - 1);
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => continue,
+                    _ = shutdown_rx.changed() => return Ok(()),
                 }
             }
+        }
 
         // Determine heartbeat config from keepalive
         let mut heartbeat_send: Option<serde_json::Value> = None;

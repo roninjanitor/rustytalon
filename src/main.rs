@@ -1060,10 +1060,11 @@ async fn main() -> anyhow::Result<()> {
                                     if let Ok(all) = db_ref.get_all_settings("default").await {
                                         for (key, value) in &all {
                                             if let Some(field) = key.strip_prefix(&prefix)
-                                                && !config_updates.contains_key(field) {
-                                                    config_updates
-                                                        .insert(field.to_string(), value.clone());
-                                                }
+                                                && !config_updates.contains_key(field)
+                                            {
+                                                config_updates
+                                                    .insert(field.to_string(), value.clone());
+                                            }
                                         }
                                     }
                                 }
