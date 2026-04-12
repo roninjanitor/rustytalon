@@ -10,7 +10,7 @@
 # run tests, and execute shell commands.
 
 # Stage 1: Install cargo-chef
-FROM rust:1.92-bookworm AS chef
+FROM rust:1.94-bookworm AS chef
 
 RUN cargo install cargo-chef --locked
 
@@ -67,7 +67,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0 \
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.94.0 \
     && chmod -R a+r /usr/local/rustup /usr/local/cargo
 
 # Install Claude Code CLI (for claude-bridge mode)

@@ -7,7 +7,7 @@
 #   docker run --env-file .env -p 3001:3001 rustytalon:latest
 
 # Stage 1: Install cargo-chef
-FROM rust:1.92-slim-bookworm AS chef
+FROM rust:1.94-slim-bookworm AS chef
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev cmake gcc g++ \
@@ -18,7 +18,7 @@ RUN cargo install cargo-chef --locked
 WORKDIR /app
 
 # Stage 2: Build WASM channels (pre-compiled for Docker deployments)
-FROM rust:1.92-slim-bookworm AS channels-builder
+FROM rust:1.94-slim-bookworm AS channels-builder
 
 RUN rustup target add wasm32-wasip2 && \
     cargo install wasm-tools --locked
