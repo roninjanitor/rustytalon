@@ -1901,11 +1901,10 @@ async fn extension_auth_info_handler(
     Path(name): Path<String>,
 ) -> Result<Json<ExtensionAuthInfoResponse>, (StatusCode, String)> {
     // Try the full manager first (can read installed capabilities files too).
-    if let Some(ext_mgr) = state.extension_manager.as_ref() {
-        if let Ok(info) = ext_mgr.get_auth_info(&name).await {
+    if let Some(ext_mgr) = state.extension_manager.as_ref()
+        && let Ok(info) = ext_mgr.get_auth_info(&name).await {
             return Ok(Json(ExtensionAuthInfoResponse { info }));
         }
-    }
 
     // Fall back to registry-only lookup so the wizard still works when the
     // extension manager isn't running.
@@ -2165,14 +2164,13 @@ async fn extension_config_put_handler(
             ));
         }
         // Reject fields not declared in the schema.
-        if let Some(ref allowed) = allowed_fields {
-            if !allowed.contains(field.as_str()) {
+        if let Some(ref allowed) = allowed_fields
+            && !allowed.contains(field.as_str()) {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     format!("Unknown config field '{}' for extension '{}'", field, name),
                 ));
             }
-        }
 
         let key = format!("extensions.{}.{}", name, field);
         if value.is_null() {

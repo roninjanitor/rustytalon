@@ -129,31 +129,28 @@ impl RoutingConfig {
     pub fn from_env() -> Self {
         let mut config = Self::default();
 
-        if let Ok(strategy) = std::env::var("ROUTING_STRATEGY") {
-            if let Some(s) = RoutingStrategy::parse(&strategy) {
+        if let Ok(strategy) = std::env::var("ROUTING_STRATEGY")
+            && let Some(s) = RoutingStrategy::parse(&strategy) {
                 config.strategy = s;
             }
-        }
 
         if let Ok(max_cost) = std::env::var("ROUTING_MAX_COST") {
             config.max_cost_per_request = max_cost.parse().ok();
         }
 
-        if let Ok(min_quality) = std::env::var("ROUTING_MIN_QUALITY") {
-            if let Ok(q) = min_quality.parse::<f32>() {
+        if let Ok(min_quality) = std::env::var("ROUTING_MIN_QUALITY")
+            && let Ok(q) = min_quality.parse::<f32>() {
                 config.min_quality_score = q.clamp(0.0, 1.0);
             }
-        }
 
         if let Ok(fallback) = std::env::var("ROUTING_ENABLE_FALLBACK") {
             config.enable_fallback = fallback.to_lowercase() == "true" || fallback == "1";
         }
 
-        if let Ok(retries) = std::env::var("ROUTING_MAX_RETRIES") {
-            if let Ok(r) = retries.parse::<u32>() {
+        if let Ok(retries) = std::env::var("ROUTING_MAX_RETRIES")
+            && let Ok(r) = retries.parse::<u32>() {
                 config.max_retries = r;
             }
-        }
 
         config
     }

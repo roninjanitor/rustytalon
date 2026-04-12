@@ -454,25 +454,21 @@ impl ExtensionManager {
         let cap_path = self
             .wasm_tools_dir
             .join(format!("{}.capabilities.json", name));
-        if cap_path.exists() {
-            if let Ok(data) = tokio::fs::read_to_string(&cap_path).await {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
+        if cap_path.exists()
+            && let Ok(data) = tokio::fs::read_to_string(&cap_path).await
+                && let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
                     return Ok(auth_info_from_capabilities(&json, name));
                 }
-            }
-        }
 
         // For installed WASM channels, try the channels dir
         let ch_cap_path = self
             .wasm_channels_dir
             .join(format!("{}.capabilities.json", name));
-        if ch_cap_path.exists() {
-            if let Ok(data) = tokio::fs::read_to_string(&ch_cap_path).await {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
+        if ch_cap_path.exists()
+            && let Ok(data) = tokio::fs::read_to_string(&ch_cap_path).await
+                && let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
                     return Ok(auth_info_from_capabilities(&json, name));
                 }
-            }
-        }
 
         Err(ExtensionError::NotFound(name.to_string()))
     }
@@ -486,25 +482,21 @@ impl ExtensionManager {
         let ch_cap_path = self
             .wasm_channels_dir
             .join(format!("{}.capabilities.json", name));
-        if ch_cap_path.exists() {
-            if let Ok(data) = tokio::fs::read_to_string(&ch_cap_path).await {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
+        if ch_cap_path.exists()
+            && let Ok(data) = tokio::fs::read_to_string(&ch_cap_path).await
+                && let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
                     return json.get("config_schema").cloned();
                 }
-            }
-        }
 
         // WASM tools dir
         let tool_cap_path = self
             .wasm_tools_dir
             .join(format!("{}.capabilities.json", name));
-        if tool_cap_path.exists() {
-            if let Ok(data) = tokio::fs::read_to_string(&tool_cap_path).await {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
+        if tool_cap_path.exists()
+            && let Ok(data) = tokio::fs::read_to_string(&tool_cap_path).await
+                && let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
                     return json.get("config_schema").cloned();
                 }
-            }
-        }
 
         None
     }
