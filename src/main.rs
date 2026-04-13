@@ -531,14 +531,22 @@ async fn main() -> anyhow::Result<()> {
                 base_url: url.clone(),
             })
             .or_else(|| {
-                config.search.brave_api_key.as_ref().map(|key| SearchBackend::Brave {
-                    api_key: key.expose_secret().to_string(),
-                })
+                config
+                    .search
+                    .brave_api_key
+                    .as_ref()
+                    .map(|key| SearchBackend::Brave {
+                        api_key: key.expose_secret().to_string(),
+                    })
             })
             .or_else(|| {
-                config.search.tavily_api_key.as_ref().map(|key| SearchBackend::Tavily {
-                    api_key: key.expose_secret().to_string(),
-                })
+                config
+                    .search
+                    .tavily_api_key
+                    .as_ref()
+                    .map(|key| SearchBackend::Tavily {
+                        api_key: key.expose_secret().to_string(),
+                    })
             });
         if let Some(backend) = search_backend {
             tools.register_web_search_tool(backend);
