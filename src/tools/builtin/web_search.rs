@@ -38,13 +38,9 @@ pub enum SearchBackend {
         base_url: String,
     },
     /// Brave Search REST API.
-    Brave {
-        api_key: String,
-    },
+    Brave { api_key: String },
     /// Tavily AI Search API.
-    Tavily {
-        api_key: String,
-    },
+    Tavily { api_key: String },
 }
 
 impl SearchBackend {
@@ -178,9 +174,7 @@ impl Tool for WebSearchTool {
         let query = params
             .get("query")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                ToolError::InvalidParameters("missing 'query' parameter".to_string())
-            })?;
+            .ok_or_else(|| ToolError::InvalidParameters("missing 'query' parameter".to_string()))?;
 
         if query.trim().is_empty() {
             return Err(ToolError::InvalidParameters(

@@ -1564,16 +1564,13 @@ impl SearchConfig {
             searxng_url: optional_env("SEARXNG_URL")?,
             brave_api_key: optional_env("BRAVE_SEARCH_API_KEY")?
                 .map(|s| SecretString::new(s.into())),
-            tavily_api_key: optional_env("TAVILY_API_KEY")?
-                .map(|s| SecretString::new(s.into())),
+            tavily_api_key: optional_env("TAVILY_API_KEY")?.map(|s| SecretString::new(s.into())),
         })
     }
 
     /// Whether web search is available.
     pub fn is_enabled(&self) -> bool {
-        self.searxng_url.is_some()
-            || self.brave_api_key.is_some()
-            || self.tavily_api_key.is_some()
+        self.searxng_url.is_some() || self.brave_api_key.is_some() || self.tavily_api_key.is_some()
     }
 }
 
