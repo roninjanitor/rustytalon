@@ -521,24 +521,28 @@ async fn main() -> anyhow::Result<()> {
     tools.register_builtin_tools();
     // Register web_search with whichever backend is configured.
     // Priority: SearXNG (self-hosted, no rate limits) > Brave > Tavily.
-    use secrecy::ExposeSecret as _;
-    let search_backend = if let Some(ref url) = config.search.searxng_url {
-        Some(SearchBackend::Searxng {
-            base_url: url.clone(),
-        })
-    } else if let Some(ref key) = config.search.brave_api_key {
-        Some(SearchBackend::Brave {
-            api_key: key.expose_secret().to_string(),
-        })
-    } else if let Some(ref key) = config.search.tavily_api_key {
-        Some(SearchBackend::Tavily {
-            api_key: key.expose_secret().to_string(),
-        })
-    } else {
-        None
-    };
-    if let Some(backend) = search_backend {
-        tools.register_web_search_tool(backend);
+    {
+        use secrecy::ExposeSecret as _;
+        let search_backend = config
+            .search
+            .searxng_url
+            .as_ref()
+            .map(|url| SearchBackend::Searxng {
+                base_url: url.clone(),
+            })
+            .or_else(|| {
+                config.search.brave_api_key.as_ref().map(|key| SearchBackend::Brave {
+                    api_key: key.expose_secret().to_string(),
+                })
+            })
+            .or_else(|| {
+                config.search.tavily_api_key.as_ref().map(|key| SearchBackend::Tavily {
+                    api_key: key.expose_secret().to_string(),
+                })
+            });
+        if let Some(backend) = search_backend {
+            tools.register_web_search_tool(backend);
+        }
     }
     tracing::info!("Registered {} built-in tools", tools.count());
 
