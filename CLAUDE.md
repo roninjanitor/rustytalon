@@ -310,6 +310,11 @@ ROUTING_STRATEGY=balanced               # balanced, cost, quality, local_first
 ROUTING_ENABLE_FALLBACK=true
 ROUTING_MAX_RETRIES=3
 
+# Web search (set any one to enable the web_search tool; priority: SearXNG > Brave > Tavily)
+SEARXNG_URL=http://localhost:8888        # Self-hosted SearXNG (HTTP and private IPs allowed)
+# BRAVE_SEARCH_API_KEY=...              # Brave Search API — free tier: 2 000 req/month, no credit card
+# TAVILY_API_KEY=...                    # Tavily AI Search — free tier: 1 000 req/month, AI-optimised
+
 # Embeddings (for semantic memory search)
 OPENAI_API_KEY=sk-...                   # For OpenAI embeddings
 EMBEDDING_ENABLED=true
