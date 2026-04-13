@@ -930,10 +930,13 @@ impl Tool for BuildSoftwareTool {
     }
 
     fn description(&self) -> &str {
-        "Build software from a description. IMPORTANT: For tools the agent will use, \
-         ALWAYS build Rust WASM tools (type: wasm_tool, language: rust). Only use cli_binary, \
-         script, or other types for software meant for human users. The builder scaffolds, \
-         implements, compiles, and tests iteratively."
+        "Build software or new tools from a natural language description. The builder runs \
+         entirely locally — no Docker or external services required. For tools the agent \
+         will use (integrations, APIs, automation), ALWAYS choose type: wasm_tool + \
+         language: rust; built WASM tools are sandboxed, credential-safe, and automatically \
+         registered so they are available in the same session. Use cli_binary, script, or \
+         other types only for software meant for human users. The builder scaffolds, \
+         implements, compiles, and tests iteratively using an LLM-driven loop."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {

@@ -144,6 +144,22 @@ The browser UI and HTTP API.
 
 ---
 
+## Web Search
+
+Enables the `web_search` tool so the agent can look up current information during conversations. Set **any one** of the variables below — only one backend is active at a time.
+
+| Variable | Backend | Description |
+|----------|---------|-------------|
+| `SEARXNG_URL` | SearXNG | Base URL of a self-hosted [SearXNG](https://docs.searxng.org/) instance. HTTP and private-network IPs are allowed. No API key needed. |
+| `BRAVE_SEARCH_API_KEY` | Brave Search | API key from [Brave Search API](https://brave.com/search/api/). Free tier: 2 000 queries/month, no credit card required. |
+| `TAVILY_API_KEY` | Tavily | API key from [Tavily](https://tavily.com/). Free tier: 1 000 queries/month, results optimised for AI agents. |
+
+When multiple variables are set the priority is: **SearXNG > Brave > Tavily**.
+
+If none are set, `web_search` is not registered and the agent will say it cannot search the web.
+
+---
+
 ## Embeddings (Semantic Memory Search)
 
 Required for vector-based similarity search in the workspace. Uses OpenAI's embedding API.

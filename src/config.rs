@@ -31,6 +31,7 @@ pub struct Config {
     pub routines: RoutineConfig,
     pub sandbox: SandboxModeConfig,
     pub claude_code: ClaudeCodeConfig,
+    pub search: SearchConfig,
 }
 
 impl Config {
@@ -90,6 +91,7 @@ impl Config {
             routines: RoutineConfig::resolve()?,
             sandbox: SandboxModeConfig::resolve()?,
             claude_code: ClaudeCodeConfig::resolve()?,
+            search: SearchConfig::resolve()?,
         })
     }
 }
@@ -1536,6 +1538,44 @@ impl ClaudeCodeConfig {
 }
 
 // Helper functions
+
+/// Web search configuration.
+///
+/// At least one of `searxng_url`, `brave_api_key`, or `tavily_api_key` must
+/// be set to enable the `web_search` tool. When multiple are set, priority is:
+/// SearXNG (self-hosted, no rate limits) > Brave > Tavily.
+///
+/// - `SEARXNG_URL` — base URL of a SearXNG instance (HTTP or HTTPS, may be local)
+/// - `BRAVE_SEARCH_API_KEY` — Brave Search API key (free tier: 2 000 queries/month)
+/// - `TAVILY_API_KEY` — Tavily AI Search key (free tier: 1 000 queries/month, AI-optimised)
+#[derive(Debug, Clone, Default)]
+pub struct SearchConfig {
+    /// Base URL of a SearXNG instance, e.g. `http://10.0.0.2:8888`.
+    pub searxng_url: Option<String>,
+    /// Brave Search API key (`X-Subscription-Token`).
+    pub brave_api_key: Option<SecretString>,
+    /// Tavily AI Search API key.
+    pub tavily_api_key: Option<SecretString>,
+}
+
+impl SearchConfig {
+    fn resolve() -> Result<Self, ConfigError> {
+        Ok(Self {
+            searxng_url: optional_env("SEARXNG_URL")?,
+            brave_api_key: optional_env("BRAVE_SEARCH_API_KEY")?
+                .map(|s| SecretString::new(s.into())),
+            tavily_api_key: optional_env("TAVILY_API_KEY")?
+                .map(|s| SecretString::new(s.into())),
+        })
+    }
+
+    /// Whether web search is available.
+    pub fn is_enabled(&self) -> bool {
+        self.searxng_url.is_some()
+            || self.brave_api_key.is_some()
+            || self.tavily_api_key.is_some()
+    }
+}
 
 fn optional_env(key: &str) -> Result<Option<String>, ConfigError> {
     match std::env::var(key) {

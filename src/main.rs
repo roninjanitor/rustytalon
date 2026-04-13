@@ -35,6 +35,7 @@ use rustytalon::{
     secrets::SecretsStore,
     tools::{
         ToolRegistry,
+        builtin::web_search::SearchBackend,
         mcp::{McpClient, McpSessionManager, config::load_mcp_servers_from_db, is_authenticated},
         wasm::{WasmToolLoader, WasmToolRuntime, load_dev_tools},
     },
@@ -518,6 +519,27 @@ async fn main() -> anyhow::Result<()> {
     // Initialize tool registry
     let tools = Arc::new(ToolRegistry::new());
     tools.register_builtin_tools();
+    // Register web_search with whichever backend is configured.
+    // Priority: SearXNG (self-hosted, no rate limits) > Brave > Tavily.
+    use secrecy::ExposeSecret as _;
+    let search_backend = if let Some(ref url) = config.search.searxng_url {
+        Some(SearchBackend::Searxng {
+            base_url: url.clone(),
+        })
+    } else if let Some(ref key) = config.search.brave_api_key {
+        Some(SearchBackend::Brave {
+            api_key: key.expose_secret().to_string(),
+        })
+    } else if let Some(ref key) = config.search.tavily_api_key {
+        Some(SearchBackend::Tavily {
+            api_key: key.expose_secret().to_string(),
+        })
+    } else {
+        None
+    };
+    if let Some(backend) = search_backend {
+        tools.register_web_search_tool(backend);
+    }
     tracing::info!("Registered {} built-in tools", tools.count());
 
     // Create embeddings provider if configured (OpenAI only)

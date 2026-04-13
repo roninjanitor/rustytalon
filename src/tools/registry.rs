@@ -17,8 +17,9 @@ use crate::tools::builtin::{
     ApplyPatchTool, CancelJobTool, CreateJobTool, EchoTool, HttpTool, JobStatusTool, JsonTool,
     ListDirTool, ListJobsTool, MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool,
     ReadFileTool, ShellTool, TimeTool, ToolActivateTool, ToolAuthTool, ToolInstallTool,
-    ToolListTool, ToolRemoveTool, ToolSearchTool, WriteFileTool,
+    ToolListTool, ToolRemoveTool, ToolSearchTool, WebSearchTool, WriteFileTool,
 };
+use crate::tools::builtin::web_search::SearchBackend;
 use crate::tools::tool::{Tool, ToolDomain};
 use crate::tools::wasm::{
     Capabilities, OAuthRefreshConfig, ResourceLimits, WasmError, WasmStorageError, WasmToolRuntime,
@@ -59,6 +60,7 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "routine_update",
     "routine_delete",
     "routine_history",
+    "web_search",
 ];
 
 /// Registry of available tools.
@@ -233,6 +235,17 @@ impl ToolRegistry {
         self.register_sync(Arc::new(MemoryTreeTool::new(workspace)));
 
         tracing::info!("Registered 4 memory tools");
+    }
+
+    /// Register the web search tool with the given backend.
+    ///
+    /// Call this after `register_builtin_tools()` when `config.search.is_enabled()`.
+    /// The backend is admin-configured so it bypasses the SSRF restrictions that
+    /// apply to the generic `http` tool.
+    pub fn register_web_search_tool(&self, backend: SearchBackend) {
+        let name = backend.name().to_string();
+        self.register_sync(Arc::new(WebSearchTool::new(backend)));
+        tracing::info!("Registered web_search tool (backend: {})", name);
     }
 
     /// Register job management tools.

@@ -14,6 +14,7 @@ pub mod routine;
 pub(crate) mod shell;
 mod taskrabbit;
 mod time;
+pub mod web_search;
 
 pub use echo::EchoTool;
 pub use ecommerce::EcommerceTool;
@@ -33,3 +34,4 @@ pub use routine::{
 pub use shell::ShellTool;
 pub use taskrabbit::TaskRabbitTool;
 pub use time::TimeTool;
+pub use web_search::WebSearchTool;

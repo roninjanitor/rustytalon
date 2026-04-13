@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-12
+
+### Added
+- `web_search` built-in tool with three pluggable backends — set one env var to enable it:
+  - `SEARXNG_URL` — self-hosted SearXNG (no rate limits, HTTP/private-network OK)
+  - `BRAVE_SEARCH_API_KEY` — Brave Search API (free tier: 2 000 req/month)
+  - `TAVILY_API_KEY` — Tavily AI Search (free tier: 1 000 req/month, AI-optimised)
+  - Priority when multiple are set: SearXNG > Brave > Tavily
+
+### Changed
+- Improved `build_software` tool description to explicitly state that the builder runs entirely locally (no Docker required) and that built WASM tools are available in the same session immediately after building.
+
 ## [0.2.0] - 2026-04-11
 
 ### Added
