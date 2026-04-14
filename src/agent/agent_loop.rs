@@ -27,6 +27,53 @@ use crate::safety::SafetyLayer;
 use crate::tools::ToolRegistry;
 use crate::workspace::Workspace;
 
+/// Extract URLs from a `web_search` tool result JSON string.
+///
+/// The web_search tool returns `{"query": "...", "results": [{"url": "https://...", ...}]}`.
+fn extract_web_search_urls(result_json: &str) -> Vec<String> {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(result_json) else {
+        return Vec::new();
+    };
+    val.get("results")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.get("url").and_then(|u| u.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Append a numbered "Sources:" section to a response if any URLs are present.
+///
+/// Uses bare URLs (no markdown link syntax) so output is readable across all
+/// channels: Telegram, Discord, WhatsApp, Slack, and the TUI all auto-linkify
+/// or display plain URLs correctly.
+fn append_sources(response: String, urls: &[String]) -> String {
+    if urls.is_empty() {
+        return response;
+    }
+    // Deduplicate while preserving insertion order.
+    let mut seen = std::collections::HashSet::new();
+    let unique: Vec<&str> = urls
+        .iter()
+        .filter_map(|u| {
+            if seen.insert(u.as_str()) {
+                Some(u.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut result = response;
+    result.push_str("\n\nSources:\n");
+    for (i, url) in unique.iter().enumerate() {
+        result.push_str(&format!("{}. {}\n", i + 1, url));
+    }
+    result
+}
+
 /// Collapse a tool output string into a single-line preview for display.
 pub(crate) fn truncate_for_preview(output: &str, max_chars: usize) -> String {
     let collapsed: String = output
@@ -1245,6 +1292,8 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
         const MAX_TOOL_ITERATIONS: usize = 10;
         let mut iteration = 0;
         let mut _tools_executed = resume_after_tool;
+        // Accumulate source URLs from web tool calls across all iterations of this turn.
+        let mut source_urls: Vec<String> = Vec::new();
 
         loop {
             iteration += 1;
@@ -1297,6 +1346,7 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                     // Return the response directly — the system prompt instructs the model
                     // to call tools when useful. Injecting a "please use tools" follow-up
                     // caused the model to misinterpret conversational messages as pending tasks.
+                    let text = append_sources(text, &source_urls);
                     return Ok(AgenticLoopResult::Response(text));
                 }
                 RespondResult::ToolCalls {
@@ -1407,6 +1457,23 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                         let tool_result = self
                             .execute_chat_tool(&tc.name, &tc.arguments, &job_ctx)
                             .await;
+
+                        // Collect source URLs for the references section appended to the final response.
+                        if let Ok(ref result_str) = tool_result {
+                            match tc.name.as_str() {
+                                "web_search" => {
+                                    source_urls.extend(extract_web_search_urls(result_str));
+                                }
+                                "http" => {
+                                    if let Some(url) =
+                                        tc.arguments.get("url").and_then(|u| u.as_str())
+                                    {
+                                        source_urls.push(url.to_string());
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
 
                         let _ = self
                             .channels
