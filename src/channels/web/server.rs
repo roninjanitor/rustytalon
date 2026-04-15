@@ -282,6 +282,8 @@ pub async fn start_server(
         // Provider health & cost tracking
         .route("/api/providers/health", get(providers_health_handler))
         .route("/api/providers/costs", get(providers_costs_handler))
+        // Analytics
+        .route("/api/analytics/models", get(analytics_models_handler))
         // OpenAI-compatible API
         .route(
             "/v1/chat/completions",
@@ -2755,6 +2757,70 @@ async fn providers_costs_handler(State(state): State<Arc<GatewayState>>) -> impl
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(LlmCostStatsResponse { stats: vec![] }),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ── Analytics handlers ────────────────────────────────────────────────────────
+
+async fn analytics_models_handler(State(state): State<Arc<GatewayState>>) -> impl IntoResponse {
+    let db = match state.store.as_ref() {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ModelAnalyticsResponse {
+                    models: vec![],
+                    total_input_tokens: 0,
+                    total_output_tokens: 0,
+                    total_cost_usd: "0".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match db.get_llm_call_stats().await {
+        Ok(stats) => {
+            let total_input_tokens: i64 = stats.iter().map(|s| s.total_input_tokens).sum();
+            let total_output_tokens: i64 = stats.iter().map(|s| s.total_output_tokens).sum();
+            let total_cost: rust_decimal::Decimal =
+                stats.iter().map(|s| s.total_cost).sum();
+
+            let models = stats
+                .into_iter()
+                .map(|s| ModelStats {
+                    provider: s.provider,
+                    model: s.model,
+                    total_calls: s.total_calls,
+                    total_input_tokens: s.total_input_tokens,
+                    total_output_tokens: s.total_output_tokens,
+                    total_cost_usd: s.total_cost.to_string(),
+                    avg_cost_per_call_usd: s.avg_cost_per_call.to_string(),
+                    avg_latency_ms: s.avg_latency_ms,
+                })
+                .collect();
+
+            Json(ModelAnalyticsResponse {
+                models,
+                total_input_tokens,
+                total_output_tokens,
+                total_cost_usd: total_cost.to_string(),
+            })
+            .into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch model analytics");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ModelAnalyticsResponse {
+                    models: vec![],
+                    total_input_tokens: 0,
+                    total_output_tokens: 0,
+                    total_cost_usd: "0".to_string(),
+                }),
             )
                 .into_response()
         }

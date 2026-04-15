@@ -1,7 +1,36 @@
 //! SQLite-dialect migrations for the libSQL/Turso backend.
 //!
-//! Consolidates all PostgreSQL migrations (V1-V8) into a single SQLite-compatible
-//! schema. Run once on database creation; idempotent via `IF NOT EXISTS`.
+//! # How migrations work
+//!
+//! - [`SCHEMA`] is the consolidated base schema (V1-V8 equivalent). It uses
+//!   `CREATE TABLE IF NOT EXISTS` so it is safe to re-run on every startup.
+//!   New installs get the full schema in one shot.
+//!
+//! - [`INCREMENTAL`] is a list of `(version, name, sql)` tuples for schema
+//!   changes added after the initial consolidation. [`run_migrations`] in
+//!   `libsql_backend.rs` checks the `_migrations` table and applies only the
+//!   ones that haven't been recorded yet, so they run exactly once on existing
+//!   databases.
+//!
+//! **Adding a new incremental migration:** append a new tuple to [`INCREMENTAL`]
+//! with the next version number, a short name, and the SQL to run. If the change
+//! is also captured in [`SCHEMA`] (e.g. a new column added to `CREATE TABLE`),
+//! the SQL in [`INCREMENTAL`] should be an `ALTER TABLE … ADD COLUMN IF NOT EXISTS`
+//! (or equivalent safe form) so it is idempotent on re-run.
+
+/// Incremental migrations applied after the base schema, in version order.
+///
+/// Each entry: `(version, name, sql)`.
+/// - `version` must be unique and monotonically increasing.
+/// - `sql` is executed as a single statement.
+/// - Entries are applied exactly once per database, tracked via `_migrations`.
+pub const INCREMENTAL: &[(i64, &str, &str)] = &[
+    (
+        9,
+        "add_latency_ms_to_llm_calls",
+        "ALTER TABLE llm_calls ADD COLUMN latency_ms INTEGER",
+    ),
+];
 
 /// Consolidated schema for libSQL.
 ///
@@ -144,6 +173,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     output_tokens INTEGER NOT NULL,
     cost TEXT NOT NULL,
     purpose TEXT,
+    latency_ms INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

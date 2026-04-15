@@ -1029,6 +1029,60 @@ mod tests {
         let req: ExtensionConfigWriteRequest = serde_json::from_str(json).unwrap();
         assert!(req.values.is_empty());
     }
+
+    // ── Analytics types ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_model_stats_serializes_with_latency() {
+        let stats = ModelStats {
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+            total_calls: 42,
+            total_input_tokens: 10_000,
+            total_output_tokens: 5_000,
+            total_cost_usd: "0.001234".to_string(),
+            avg_cost_per_call_usd: "0.000029".to_string(),
+            avg_latency_ms: Some(823.5),
+        };
+        let v = serde_json::to_value(&stats).unwrap();
+        assert_eq!(v["provider"], "anthropic");
+        assert_eq!(v["total_calls"], 42);
+        assert_eq!(v["avg_latency_ms"], 823.5);
+    }
+
+    #[test]
+    fn test_model_stats_omits_latency_when_none() {
+        // avg_latency_ms is skip_serializing_if = Option::is_none — must be absent,
+        // not null, when there's no latency data (pre-V9 calls).
+        let stats = ModelStats {
+            provider: "openai".to_string(),
+            model: "gpt-4o".to_string(),
+            total_calls: 1,
+            total_input_tokens: 100,
+            total_output_tokens: 50,
+            total_cost_usd: "0.000010".to_string(),
+            avg_cost_per_call_usd: "0.000010".to_string(),
+            avg_latency_ms: None,
+        };
+        let v = serde_json::to_value(&stats).unwrap();
+        assert!(!v.as_object().unwrap().contains_key("avg_latency_ms"),
+            "avg_latency_ms should be absent when None, not serialized as null");
+    }
+
+    #[test]
+    fn test_model_analytics_response_totals() {
+        let resp = ModelAnalyticsResponse {
+            models: vec![],
+            total_input_tokens: 1_000_000,
+            total_output_tokens: 500_000,
+            total_cost_usd: "1.5000".to_string(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["total_input_tokens"], 1_000_000);
+        assert_eq!(v["total_output_tokens"], 500_000);
+        assert_eq!(v["total_cost_usd"], "1.5000");
+        assert!(v["models"].as_array().unwrap().is_empty());
+    }
 }
 
 // --- Channels ---
@@ -1066,6 +1120,37 @@ pub struct ProviderHealthResponse {
 #[derive(Debug, Serialize)]
 pub struct LlmCostStatsResponse {
     pub stats: Vec<crate::llm::tracked::LlmCallStats>,
+}
+
+// --- Analytics ---
+
+/// Response for GET /api/analytics/models — per-model usage breakdown.
+#[derive(Debug, Serialize)]
+pub struct ModelAnalyticsResponse {
+    pub models: Vec<ModelStats>,
+    /// Grand total input tokens across all models.
+    pub total_input_tokens: i64,
+    /// Grand total output tokens across all models.
+    pub total_output_tokens: i64,
+    /// Grand total cost across all models (USD string).
+    pub total_cost_usd: String,
+}
+
+/// Per-model stats row returned by the analytics endpoint.
+#[derive(Debug, Serialize)]
+pub struct ModelStats {
+    pub provider: String,
+    pub model: String,
+    pub total_calls: i64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    /// Total cost formatted as a USD decimal string (e.g. "0.002341").
+    pub total_cost_usd: String,
+    /// Average cost per call formatted as a USD decimal string.
+    pub avg_cost_per_call_usd: String,
+    /// Average end-to-end latency in milliseconds, absent for calls recorded before V9.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avg_latency_ms: Option<f64>,
 }
 
 // --- Skills ---

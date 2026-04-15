@@ -278,9 +278,48 @@ fn get_opt_ts(row: &libsql::Row, idx: i32) -> Option<DateTime<Utc>> {
 impl Database for LibSqlBackend {
     async fn run_migrations(&self) -> Result<(), DatabaseError> {
         let conn = self.connect()?;
+
+        // Apply the consolidated base schema (idempotent — all CREATE IF NOT EXISTS).
         conn.execute_batch(libsql_migrations::SCHEMA)
             .await
-            .map_err(|e| DatabaseError::Migration(format!("libSQL migration failed: {}", e)))?;
+            .map_err(|e| DatabaseError::Migration(format!("libSQL base schema failed: {}", e)))?;
+
+        // Apply incremental migrations that haven't been recorded yet.
+        for (version, name, sql) in libsql_migrations::INCREMENTAL {
+            let already_applied: bool = conn
+                .query(
+                    "SELECT 1 FROM _migrations WHERE version = ?1",
+                    params![*version],
+                )
+                .await
+                .map_err(|e| DatabaseError::Migration(e.to_string()))?
+                .next()
+                .await
+                .map_err(|e| DatabaseError::Migration(e.to_string()))?
+                .is_some();
+
+            if already_applied {
+                continue;
+            }
+
+            tracing::info!(version, name, "Applying libSQL incremental migration");
+
+            conn.execute(sql, ())
+                .await
+                .map_err(|e| {
+                    DatabaseError::Migration(format!(
+                        "libSQL migration V{version} ({name}) failed: {e}"
+                    ))
+                })?;
+
+            conn.execute(
+                "INSERT INTO _migrations (version, name) VALUES (?1, ?2)",
+                params![*version, *name],
+            )
+            .await
+            .map_err(|e| DatabaseError::Migration(e.to_string()))?;
+        }
+
         Ok(())
     }
 
@@ -890,8 +929,8 @@ impl Database for LibSqlBackend {
         let id = Uuid::new_v4();
         conn.execute(
                 r#"
-                INSERT INTO llm_calls (id, job_id, conversation_id, provider, model, input_tokens, output_tokens, cost, purpose)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                INSERT INTO llm_calls (id, job_id, conversation_id, provider, model, input_tokens, output_tokens, cost, purpose, latency_ms)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                 "#,
                 params![
                     id.to_string(),
@@ -903,6 +942,7 @@ impl Database for LibSqlBackend {
                     record.output_tokens as i64,
                     record.cost.to_string(),
                     opt_text(record.purpose),
+                    record.latency_ms as i64,
                 ],
             )
             .await
@@ -925,7 +965,8 @@ impl Database for LibSqlBackend {
                     CASE WHEN COUNT(*) > 0
                         THEN COALESCE(SUM(CAST(cost AS REAL)), 0.0) / COUNT(*)
                         ELSE 0.0
-                    END AS avg_cost_per_call
+                    END AS avg_cost_per_call,
+                    AVG(CAST(latency_ms AS REAL)) AS avg_latency_ms
                 FROM llm_calls
                 GROUP BY provider, model
                 ORDER BY total_cost DESC
@@ -962,6 +1003,7 @@ impl Database for LibSqlBackend {
             let avg_cost_f64: f64 = row
                 .get(6)
                 .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let avg_latency_ms: Option<f64> = row.get(7).ok();
 
             stats.push(LlmCallStats {
                 provider,
@@ -971,6 +1013,7 @@ impl Database for LibSqlBackend {
                 total_output_tokens,
                 total_cost: Decimal::from_f64_retain(total_cost_f64).unwrap_or_default(),
                 avg_cost_per_call: Decimal::from_f64_retain(avg_cost_f64).unwrap_or_default(),
+                avg_latency_ms,
             });
         }
 
@@ -2801,5 +2844,97 @@ mod tests {
         let bob = list_preview(&conn, "bob", None, 50).await;
         assert_eq!(bob.len(), 1);
         assert_eq!(bob[0], id_bob.to_string());
+    }
+
+    // ── Incremental migrations ────────────────────────────────────────────────
+
+    /// Build a LibSqlBackend backed by an in-memory DB and run its full
+    /// migration logic (base schema + incremental).
+    async fn open_backend() -> LibSqlBackend {
+        use crate::db::Database;
+        let db = libsql::Builder::new_local(":memory:")
+            .build()
+            .await
+            .unwrap();
+        let backend = LibSqlBackend { db };
+        backend.run_migrations().await.unwrap();
+        backend
+    }
+
+    #[tokio::test]
+    async fn test_incremental_migrations_recorded() {
+        // After run_migrations, every entry in INCREMENTAL must appear in _migrations.
+        let backend = open_backend().await;
+        let conn = backend.connect().unwrap();
+
+        for (version, name, _sql) in crate::db::libsql_migrations::INCREMENTAL {
+            let mut rows = conn
+                .query(
+                    "SELECT name FROM _migrations WHERE version = ?1",
+                    params![*version],
+                )
+                .await
+                .unwrap();
+            let row = rows.next().await.unwrap();
+            assert!(
+                row.is_some(),
+                "migration V{version} ({name}) not recorded in _migrations"
+            );
+            let stored_name: String = row.unwrap().get(0).unwrap();
+            assert_eq!(stored_name, *name);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_incremental_migrations_idempotent() {
+        // Running run_migrations twice must not fail (no duplicate key errors).
+        use crate::db::Database;
+        let db = libsql::Builder::new_local(":memory:")
+            .build()
+            .await
+            .unwrap();
+        let backend = LibSqlBackend { db };
+        backend.run_migrations().await.unwrap();
+        backend.run_migrations().await.unwrap(); // second run — must succeed
+    }
+
+    #[tokio::test]
+    async fn test_llm_call_latency_round_trips() {
+        // record_llm_call stores latency_ms; get_llm_call_stats returns avg_latency_ms.
+        use crate::db::Database;
+        use crate::history::LlmCallRecord;
+        use rust_decimal::Decimal;
+
+        let backend = open_backend().await;
+
+        let record = LlmCallRecord {
+            job_id: None,
+            conversation_id: None,
+            provider: "test-provider",
+            model: "test-model",
+            input_tokens: 100,
+            output_tokens: 50,
+            cost: Decimal::new(5, 4), // 0.0005
+            purpose: Some("complete"),
+            latency_ms: 1234,
+        };
+        backend.record_llm_call(&record).await.unwrap();
+
+        let record2 = LlmCallRecord { latency_ms: 766, ..record };
+        backend.record_llm_call(&record2).await.unwrap();
+
+        let stats = backend.get_llm_call_stats().await.unwrap();
+        assert_eq!(stats.len(), 1);
+
+        let s = &stats[0];
+        assert_eq!(s.provider, "test-provider");
+        assert_eq!(s.model, "test-model");
+        assert_eq!(s.total_calls, 2);
+        assert_eq!(s.total_input_tokens, 200);
+        assert_eq!(s.total_output_tokens, 100);
+
+        // avg of 1234 and 766 = 1000
+        let avg = s.avg_latency_ms.expect("avg_latency_ms should be Some");
+        assert!((avg - 1000.0).abs() < 1.0, "expected avg ~1000 ms, got {avg}");
     }
 }

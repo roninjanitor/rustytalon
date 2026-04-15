@@ -3300,3 +3300,92 @@ mark {
 
 .btn-add-custom-ext:hover { background: rgba(88,166,255,0.1); }
 .catalog-status-badge.status-build-required:hover { opacity: 0.8; }
+
+/* ── Analytics tab ─────────────────────────────────────────────────────────── */
+
+.analytics-container {
+  padding: 20px;
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.analytics-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+/* Reuse .summary-card from jobs; add colour overrides for analytics context */
+.summary-card.accent .count { color: var(--accent); }
+.summary-card.cost   .count { color: var(--success); }
+
+.analytics-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  margin: 0 0 12px;
+}
+
+.analytics-table-wrap {
+  overflow-x: auto;
+}
+
+.analytics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.analytics-table th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.analytics-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.analytics-table tbody tr:hover { background: var(--bg-secondary); }
+
+.analytics-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.analytics-table td.cost { color: var(--success); }
+
+.analytics-table td.model-name {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(88,166,255,0.12);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.text-muted { color: var(--text-secondary); }
