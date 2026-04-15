@@ -1103,4 +1103,63 @@ mod tests {
     fn test_owner_phone_path_constant() {
         assert_eq!(OWNER_PHONE_PATH, "state/owner_phone");
     }
+
+    // --- format_params ---
+
+    #[test]
+    fn test_format_params_null() {
+        assert_eq!(format_params(&serde_json::Value::Null), "");
+    }
+
+    #[test]
+    fn test_format_params_empty_object() {
+        assert_eq!(format_params(&serde_json::json!({})), "");
+    }
+
+    #[test]
+    fn test_format_params_normal_object() {
+        let v = serde_json::json!({"query": "weather today"});
+        let result = format_params(&v);
+        assert_eq!(result, r#"{"query":"weather today"}"#);
+    }
+
+    #[test]
+    fn test_format_params_truncates_long_input() {
+        let long_str = "b".repeat(400);
+        let v = serde_json::json!({"data": long_str});
+        let result = format_params(&v);
+        assert!(result.ends_with('…'));
+        let without_ellipsis: String = result.chars().filter(|&c| c != '…').collect();
+        assert_eq!(without_ellipsis.len(), 300);
+    }
+
+    // --- InteractiveContent / ButtonReply parsing ---
+
+    #[test]
+    fn test_parse_interactive_button_reply() {
+        let json = serde_json::json!({
+            "type": "button_reply",
+            "button_reply": {
+                "id": "approve_yes",
+                "title": "Yes"
+            }
+        })
+        .to_string();
+        let ic: InteractiveContent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ic.interactive_type, "button_reply");
+        let br = ic.button_reply.unwrap();
+        assert_eq!(br.id, "approve_yes");
+        // title is in the wire format but not captured in the struct (only id is used for routing)
+    }
+
+    #[test]
+    fn test_parse_interactive_no_button_reply() {
+        let json = serde_json::json!({
+            "type": "list_reply"
+        })
+        .to_string();
+        let ic: InteractiveContent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ic.interactive_type, "list_reply");
+        assert!(ic.button_reply.is_none());
+    }
 }

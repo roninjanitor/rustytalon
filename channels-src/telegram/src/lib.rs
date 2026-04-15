@@ -1490,4 +1490,89 @@ mod tests {
         let recovered: i64 = persisted.parse().expect("should parse");
         assert_eq!(recovered, owner_id);
     }
+
+    // --- format_params ---
+
+    #[test]
+    fn test_format_params_null() {
+        assert_eq!(format_params(&serde_json::Value::Null), "");
+    }
+
+    #[test]
+    fn test_format_params_empty_object() {
+        assert_eq!(format_params(&serde_json::json!({})), "");
+    }
+
+    #[test]
+    fn test_format_params_normal_object() {
+        let v = serde_json::json!({"tool": "web_search", "query": "rust async"});
+        let result = format_params(&v);
+        assert!(result.contains("web_search"));
+        assert!(result.contains("rust async"));
+    }
+
+    #[test]
+    fn test_format_params_truncates_long_input() {
+        let long_str = "a".repeat(400);
+        let v = serde_json::json!({"data": long_str});
+        let result = format_params(&v);
+        assert!(result.ends_with('…'));
+        let without_ellipsis: String = result.chars().filter(|&c| c != '…').collect();
+        assert_eq!(without_ellipsis.len(), 300);
+    }
+
+    // --- TelegramCallbackQuery parsing ---
+
+    #[test]
+    fn test_parse_callback_query_with_data() {
+        let json = serde_json::json!({
+            "id": "cq_001",
+            "from": {
+                "id": 123456,
+                "is_bot": false,
+                "first_name": "Alice",
+                "last_name": "Smith"
+            },
+            "data": "yes",
+            "message": {
+                "message_id": 42,
+                "chat": {"id": 123456, "type": "private"},
+                "date": 1700000000
+            }
+        })
+        .to_string();
+        let cq: TelegramCallbackQuery = serde_json::from_str(&json).unwrap();
+        assert_eq!(cq.id, "cq_001");
+        assert_eq!(cq.data.as_deref(), Some("yes"));
+        assert_eq!(cq.from.first_name, "Alice");
+        assert_eq!(cq.from.last_name.as_deref(), Some("Smith"));
+        let msg = cq.message.unwrap();
+        assert_eq!(msg.message_id, 42);
+        assert_eq!(msg.chat.id, 123456);
+    }
+
+    #[test]
+    fn test_parse_callback_query_no_data() {
+        let json = serde_json::json!({
+            "id": "cq_002",
+            "from": {"id": 7, "is_bot": false, "first_name": "Bob"},
+        })
+        .to_string();
+        let cq: TelegramCallbackQuery = serde_json::from_str(&json).unwrap();
+        assert!(cq.data.is_none());
+        assert!(cq.message.is_none());
+    }
+
+    #[test]
+    fn test_parse_callback_query_no_last_name() {
+        let json = serde_json::json!({
+            "id": "cq_003",
+            "from": {"id": 99, "is_bot": false, "first_name": "Carol"},
+            "data": "always"
+        })
+        .to_string();
+        let cq: TelegramCallbackQuery = serde_json::from_str(&json).unwrap();
+        assert!(cq.from.last_name.is_none());
+        assert_eq!(cq.from.first_name, "Carol");
+    }
 }

@@ -1038,6 +1038,48 @@ mod tests {
         let req: ExtensionConfigWriteRequest = serde_json::from_str(json).unwrap();
         assert!(req.values.is_empty());
     }
+
+    // --- ConversationTokenStatsResponse ---
+
+    #[test]
+    fn test_conversation_token_stats_response_serializes() {
+        use rust_decimal::Decimal;
+        let resp = ConversationTokenStatsResponse {
+            thread_id: uuid::Uuid::nil(),
+            total_input_tokens: 1000,
+            total_output_tokens: 500,
+            total_tokens: 1500,
+            total_cost: Decimal::new(125, 4), // 0.0125
+            call_count: 3,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["total_input_tokens"], 1000);
+        assert_eq!(v["total_output_tokens"], 500);
+        assert_eq!(v["total_tokens"], 1500);
+        assert_eq!(v["call_count"], 3);
+        // thread_id should be a UUID string
+        assert_eq!(
+            v["thread_id"].as_str().unwrap(),
+            "00000000-0000-0000-0000-000000000000"
+        );
+    }
+
+    #[test]
+    fn test_conversation_token_stats_total_tokens_is_sum() {
+        use rust_decimal::Decimal;
+        let input = 800_i64;
+        let output = 200_i64;
+        let resp = ConversationTokenStatsResponse {
+            thread_id: uuid::Uuid::new_v4(),
+            total_input_tokens: input,
+            total_output_tokens: output,
+            total_tokens: input + output,
+            total_cost: Decimal::ZERO,
+            call_count: 1,
+        };
+        assert_eq!(resp.total_tokens, resp.total_input_tokens + resp.total_output_tokens);
+    }
 }
 
 // --- Channels ---

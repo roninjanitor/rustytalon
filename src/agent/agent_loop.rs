@@ -3075,4 +3075,108 @@ mod tests {
         assert!(!is_valid_skill_name("with/slash"));
         assert!(!is_valid_skill_name("../traversal"));
     }
+
+    // ── extract_web_search_urls ───────────────────────────────────────────────
+
+    use super::{append_sources, extract_web_search_urls};
+
+    #[test]
+    fn test_extract_urls_valid_results() {
+        let json = serde_json::json!({
+            "results": [
+                {"url": "https://example.com", "title": "Example"},
+                {"url": "https://another.org", "title": "Another"}
+            ]
+        })
+        .to_string();
+        let urls = extract_web_search_urls(&json);
+        assert_eq!(urls, vec!["https://example.com", "https://another.org"]);
+    }
+
+    #[test]
+    fn test_extract_urls_empty_results() {
+        let json = serde_json::json!({"results": []}).to_string();
+        assert!(extract_web_search_urls(&json).is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_missing_results_key() {
+        let json = serde_json::json!({"query": "foo", "answer": "bar"}).to_string();
+        assert!(extract_web_search_urls(&json).is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_invalid_json() {
+        assert!(extract_web_search_urls("not json at all").is_empty());
+        assert!(extract_web_search_urls("").is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_items_missing_url_field() {
+        let json = serde_json::json!({
+            "results": [
+                {"title": "No URL here"},
+                {"url": "https://good.com"},
+                {"url": null}
+            ]
+        })
+        .to_string();
+        let urls = extract_web_search_urls(&json);
+        assert_eq!(urls, vec!["https://good.com"]);
+    }
+
+    // ── append_sources ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_append_sources_empty_urls_is_noop() {
+        let response = "Some answer.".to_string();
+        assert_eq!(append_sources(response.clone(), &[]), response);
+    }
+
+    #[test]
+    fn test_append_sources_single_url() {
+        let result = append_sources("Answer.".to_string(), &["https://example.com".to_string()]);
+        assert!(result.contains("\n\nSources:\n"));
+        assert!(result.contains("1. https://example.com\n"));
+    }
+
+    #[test]
+    fn test_append_sources_multiple_urls_numbered() {
+        let urls: Vec<String> = vec![
+            "https://first.com".to_string(),
+            "https://second.com".to_string(),
+            "https://third.com".to_string(),
+        ];
+        let result = append_sources("Answer.".to_string(), &urls);
+        assert!(result.contains("1. https://first.com\n"));
+        assert!(result.contains("2. https://second.com\n"));
+        assert!(result.contains("3. https://third.com\n"));
+    }
+
+    #[test]
+    fn test_append_sources_deduplicates_urls() {
+        let urls: Vec<String> = vec![
+            "https://example.com".to_string(),
+            "https://other.com".to_string(),
+            "https://example.com".to_string(), // duplicate
+        ];
+        let result = append_sources("Answer.".to_string(), &urls);
+        let count = result.matches("https://example.com").count();
+        assert_eq!(count, 1, "duplicate URL should appear only once");
+        assert!(result.contains("1. https://example.com\n"));
+        assert!(result.contains("2. https://other.com\n"));
+    }
+
+    #[test]
+    fn test_append_sources_preserves_insertion_order_after_dedup() {
+        let urls: Vec<String> = vec![
+            "https://b.com".to_string(),
+            "https://a.com".to_string(),
+            "https://b.com".to_string(), // duplicate of first
+        ];
+        let result = append_sources(String::new(), &urls);
+        let pos_b = result.find("https://b.com").unwrap();
+        let pos_a = result.find("https://a.com").unwrap();
+        assert!(pos_b < pos_a, "b.com was seen first, so it should appear first");
+    }
 }
