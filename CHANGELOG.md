@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-04-14
+
+### Added
+- Source URLs appended to responses from `web_search` and `http` tools, so the LLM can cite where information came from
+- Button-based approval UI for Telegram, Slack, and WhatsApp — tool approval requests now show inline buttons instead of requiring a typed reply
+- Tool parameters shown in approval messages across all channels, giving users full context before approving a tool call
+
 ## [0.2.1] - 2026-04-12
 
 ### Added

@@ -104,6 +104,49 @@ struct SlackPostMessageResponse {
     ts: Option<String>,
 }
 
+/// Slack interactive payload (sent when a Block Kit button is clicked).
+/// https://api.slack.com/reference/interaction-payloads/block-actions
+#[derive(Debug, Deserialize)]
+struct SlackInteractivePayload {
+    /// Payload type ("block_actions" for button clicks).
+    #[serde(rename = "type")]
+    payload_type: String,
+
+    /// User who clicked the button.
+    user: SlackActionUser,
+
+    /// Channel where the interaction occurred.
+    channel: Option<SlackActionChannel>,
+
+    /// The actions that were triggered.
+    #[serde(default)]
+    actions: Vec<SlackAction>,
+
+    /// Team info.
+    team: Option<SlackActionTeam>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SlackActionUser {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SlackActionChannel {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SlackActionTeam {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SlackAction {
+    /// The action_id set on the button ("approve_yes", "approve_always", "approve_deny").
+    action_id: String,
+}
+
 /// Workspace path for persisting the proactive notification channel.
 const NOTIFY_CHANNEL_PATH: &str = "state/notify_channel";
 
@@ -176,6 +219,14 @@ impl Guest for SlackChannel {
                 return json_response(400, serde_json::json!({"error": "Invalid UTF-8 body"}));
             }
         };
+
+        // Slack interactive payloads (button clicks) arrive form-encoded as:
+        //   payload=<url-encoded JSON>
+        // Detect and handle these before trying to parse as an Events API payload.
+        if let Some(encoded) = body_str.strip_prefix("payload=") {
+            let decoded = percent_decode(encoded);
+            return handle_interactive_payload(&decoded);
+        }
 
         // Parse as Slack event
         let event_wrapper: SlackEventWrapper = match serde_json::from_str(body_str) {
@@ -308,30 +359,65 @@ impl Guest for SlackChannel {
             Err(_) => return,
         };
 
-        let (tool_name, description) = update
+        let (tool_name, description, params_str) = update
             .extra_json
             .as_deref()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
             .map(|v| {
                 let tool = v["tool_name"].as_str().unwrap_or("unknown").to_string();
                 let desc = v["description"].as_str().unwrap_or("").to_string();
-                (tool, desc)
+                let params = format_params(&v["parameters"]);
+                (tool, desc, params)
             })
-            .unwrap_or_else(|| ("unknown".to_string(), String::new()));
+            .unwrap_or_else(|| ("unknown".to_string(), String::new(), String::new()));
 
-        let text = if description.is_empty() {
-            format!(
-                "Approval required — tool: `{}`\nReply *yes* to approve, *always* to always approve, or *no* to deny.",
-                tool_name
-            )
-        } else {
-            format!(
-                "Approval required — tool: `{}`\n{}\nReply *yes* to approve, *always* to always approve, or *no* to deny.",
-                tool_name, description
-            )
-        };
+        // Build the section text (used as plain-text fallback too)
+        let mut section_text = format!("⚠️ *Approval required* — tool: `{}`", tool_name);
+        if !description.is_empty() {
+            section_text.push('\n');
+            section_text.push_str(&description);
+        }
+        if !params_str.is_empty() {
+            section_text.push_str("\nParameters: `");
+            section_text.push_str(&params_str);
+            section_text.push('`');
+        }
 
-        let mut payload = serde_json::json!({ "channel": metadata.channel, "text": text });
+        // Use Block Kit: section with the message + actions row with buttons
+        let blocks = serde_json::json!([
+            {
+                "type": "section",
+                "text": { "type": "mrkdwn", "text": section_text }
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "✅ Approve" },
+                        "action_id": "approve_yes",
+                        "style": "primary"
+                    },
+                    {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "🔁 Always" },
+                        "action_id": "approve_always"
+                    },
+                    {
+                        "type": "button",
+                        "text": { "type": "plain_text", "text": "❌ Deny" },
+                        "action_id": "approve_deny",
+                        "style": "danger"
+                    }
+                ]
+            }
+        ]);
+
+        let mut payload = serde_json::json!({
+            "channel": metadata.channel,
+            "text": section_text,  // plain-text fallback for notifications
+            "blocks": blocks,
+        });
         if let Some(thread_ts) = metadata.thread_ts {
             payload["thread_ts"] = serde_json::Value::String(thread_ts);
         }
@@ -389,6 +475,98 @@ impl Guest for SlackChannel {
 
     fn on_shutdown() {
         channel_host::log(channel_host::LogLevel::Info, "Slack channel shutting down");
+    }
+}
+
+/// Minimal percent-decode for Slack's `payload=` form field.
+/// Handles `%XX` sequences and `+` as space.
+fn percent_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                out.push((hi * 16 + lo) as u8 as char);
+                i += 3;
+                continue;
+            }
+        }
+        if bytes[i] == b'+' {
+            out.push(' ');
+        } else {
+            out.push(bytes[i] as char);
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Handle a Slack interactive payload (block_actions — button click).
+fn handle_interactive_payload(json: &str) -> OutgoingHttpResponse {
+    let payload: SlackInteractivePayload = match serde_json::from_str(json) {
+        Ok(p) => p,
+        Err(e) => {
+            channel_host::log(
+                channel_host::LogLevel::Error,
+                &format!("Failed to parse Slack interactive payload: {}", e),
+            );
+            return json_response(400, serde_json::json!({"error": "Invalid interactive payload"}));
+        }
+    };
+
+    if payload.payload_type != "block_actions" {
+        return json_response(200, serde_json::json!({"ok": true}));
+    }
+
+    let action = match payload.actions.first() {
+        Some(a) => a,
+        None => return json_response(200, serde_json::json!({"ok": true})),
+    };
+
+    // Map action_id to approval text
+    let content = match action.action_id.as_str() {
+        "approve_yes" => "yes",
+        "approve_always" => "always",
+        "approve_deny" => "no",
+        _ => return json_response(200, serde_json::json!({"ok": true})),
+    };
+
+    let channel_id = match &payload.channel {
+        Some(c) => c.id.clone(),
+        None => return json_response(200, serde_json::json!({"ok": true})),
+    };
+
+    let team_id = payload.team.as_ref().map(|t| t.id.clone());
+
+    // Emit as a regular message — the approval flow handles it identically to typed input
+    emit_message(
+        payload.user.id,
+        content.to_string(),
+        channel_id,
+        None,
+        team_id,
+    );
+
+    json_response(200, serde_json::json!({"ok": true}))
+}
+
+/// Format tool parameters as a compact, truncated string for display.
+fn format_params(params: &serde_json::Value) -> String {
+    if params.is_null() {
+        return String::new();
+    }
+    let s = params.to_string();
+    if s == "{}" || s == "null" {
+        return String::new();
+    }
+    if s.len() > 300 {
+        format!("{}…", &s[..300])
+    } else {
+        s
     }
 }
 

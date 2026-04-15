@@ -54,6 +54,26 @@ struct TelegramUpdate {
 
     /// Channel post (we ignore these for now).
     channel_post: Option<TelegramMessage>,
+
+    /// Inline keyboard button press.
+    callback_query: Option<TelegramCallbackQuery>,
+}
+
+/// Telegram CallbackQuery object (fired when an inline keyboard button is pressed).
+/// https://core.telegram.org/bots/api#callbackquery
+#[derive(Debug, Deserialize)]
+struct TelegramCallbackQuery {
+    /// Unique identifier for this query.
+    id: String,
+
+    /// User who pressed the button.
+    from: TelegramUser,
+
+    /// Message that contained the inline keyboard.
+    message: Option<TelegramMessage>,
+
+    /// Data associated with the callback button (set in the button's `callback_data`).
+    data: Option<String>,
 }
 
 /// Telegram Message object.
@@ -604,30 +624,37 @@ impl Guest for TelegramChannel {
             }
             StatusType::ApprovalNeeded => {
                 // Parse the approval details from extra_json
-                let (tool_name, description) = update
+                let (tool_name, description, params_str) = update
                     .extra_json
                     .as_deref()
                     .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
                     .map(|v| {
                         let tool = v["tool_name"].as_str().unwrap_or("unknown").to_string();
                         let desc = v["description"].as_str().unwrap_or("").to_string();
-                        (tool, desc)
+                        let params = format_params(&v["parameters"]);
+                        (tool, desc, params)
                     })
-                    .unwrap_or_else(|| ("unknown".to_string(), String::new()));
+                    .unwrap_or_else(|| ("unknown".to_string(), String::new(), String::new()));
 
-                let msg = if description.is_empty() {
-                    format!(
-                        "Approval required — tool: {}\nReply yes to approve, always to always approve, or no to deny.",
-                        tool_name
-                    )
-                } else {
-                    format!(
-                        "Approval required — tool: {}\n{}\nReply yes to approve, always to always approve, or no to deny.",
-                        tool_name, description
-                    )
-                };
+                let mut msg = format!("⚠️ Approval required — tool: {}", tool_name);
+                if !description.is_empty() {
+                    msg.push('\n');
+                    msg.push_str(&description);
+                }
+                if !params_str.is_empty() {
+                    msg.push_str("\nParameters: ");
+                    msg.push_str(&params_str);
+                }
 
-                if let Err(e) = send_message(metadata.chat_id, &msg, 0, None) {
+                let keyboard = serde_json::json!({
+                    "inline_keyboard": [[
+                        {"text": "✅ Approve", "callback_data": "yes"},
+                        {"text": "🔁 Always", "callback_data": "always"},
+                        {"text": "❌ Deny", "callback_data": "no"}
+                    ]]
+                });
+
+                if let Err(e) = send_message_with_keyboard(metadata.chat_id, &msg, keyboard) {
                     channel_host::log(
                         channel_host::LogLevel::Warn,
                         &format!("Failed to send approval prompt: {}", e),
@@ -704,6 +731,129 @@ impl std::fmt::Display for SendError {
 
 /// Send a message via the Telegram Bot API.
 ///
+/// Handle an inline keyboard button press (callback query).
+///
+/// Acknowledges the query (clears the button loading state) then emits the
+/// button's data ("yes", "always", or "no") as a regular message so the agent's
+/// approval flow handles it identically to a typed reply.
+fn handle_callback_query(cq: TelegramCallbackQuery) {
+    // Acknowledge immediately so Telegram removes the loading spinner.
+    answer_callback_query(&cq.id);
+
+    let data = match cq.data {
+        Some(d) if !d.is_empty() => d,
+        _ => return,
+    };
+
+    let (chat_id, message_id) = match &cq.message {
+        Some(m) => (m.chat.id, m.message_id),
+        None => (cq.from.id, 0),
+    };
+
+    let user_name = match &cq.from.last_name {
+        Some(last) => format!("{} {}", cq.from.first_name, last),
+        None => cq.from.first_name.clone(),
+    };
+
+    let metadata = TelegramMessageMetadata {
+        chat_id,
+        message_id,
+        user_id: cq.from.id,
+        is_private: true,
+    };
+    let metadata_json = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
+
+    channel_host::emit_message(&EmittedMessage {
+        user_id: cq.from.id.to_string(),
+        user_name: Some(user_name),
+        content: data,
+        thread_id: None,
+        metadata_json,
+    });
+}
+
+/// Call Telegram's answerCallbackQuery to remove the loading spinner on buttons.
+fn answer_callback_query(callback_query_id: &str) {
+    let payload = serde_json::json!({ "callback_query_id": callback_query_id });
+    let Ok(payload_bytes) = serde_json::to_vec(&payload) else {
+        return;
+    };
+    let headers = serde_json::json!({ "Content-Type": "application/json" });
+    let _ = channel_host::http_request(
+        "POST",
+        "https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+        &headers.to_string(),
+        Some(&payload_bytes),
+        None,
+    );
+}
+
+/// Send a message with an inline keyboard attached.
+fn send_message_with_keyboard(
+    chat_id: i64,
+    text: &str,
+    keyboard: serde_json::Value,
+) -> Result<i64, SendError> {
+    let payload = serde_json::json!({
+        "chat_id": chat_id,
+        "text": text,
+        "reply_markup": keyboard,
+    });
+
+    let payload_bytes = serde_json::to_vec(&payload)
+        .map_err(|e| SendError::Other(format!("Failed to serialize payload: {}", e)))?;
+    let headers = serde_json::json!({ "Content-Type": "application/json" });
+
+    let result = channel_host::http_request(
+        "POST",
+        "https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+        &headers.to_string(),
+        Some(&payload_bytes),
+        None,
+    );
+
+    match result {
+        Ok(http_response) => {
+            if http_response.status != 200 {
+                let body_str = String::from_utf8_lossy(&http_response.body);
+                return Err(SendError::Other(format!(
+                    "Telegram API returned status {}: {}",
+                    http_response.status, body_str
+                )));
+            }
+            let api_response: TelegramApiResponse<SentMessage> =
+                serde_json::from_slice(&http_response.body)
+                    .map_err(|e| SendError::Other(format!("Failed to parse response: {}", e)))?;
+            if !api_response.ok {
+                return Err(SendError::Other(format!(
+                    "Telegram API error: {}",
+                    api_response
+                        .description
+                        .unwrap_or_else(|| "unknown".to_string())
+                )));
+            }
+            Ok(api_response.result.map(|r| r.message_id).unwrap_or(0))
+        }
+        Err(e) => Err(SendError::Other(format!("HTTP request failed: {}", e))),
+    }
+}
+
+/// Format tool parameters as a compact, truncated string for display.
+fn format_params(params: &serde_json::Value) -> String {
+    if params.is_null() {
+        return String::new();
+    }
+    let s = params.to_string();
+    if s == "{}" || s == "null" {
+        return String::new();
+    }
+    if s.len() > 300 {
+        format!("{}…", &s[..300])
+    } else {
+        s
+    }
+}
+
 /// Returns the sent message_id on success. When `parse_mode` is set and
 /// Telegram returns a 400 "can't parse entities" error, returns
 /// `SendError::ParseEntities` so the caller can retry without formatting.
@@ -948,6 +1098,11 @@ fn handle_update(update: TelegramUpdate) {
     // Optionally handle edited messages the same way
     if let Some(message) = update.edited_message {
         handle_message(message);
+    }
+
+    // Handle inline keyboard button presses (approval buttons)
+    if let Some(cq) = update.callback_query {
+        handle_callback_query(cq);
     }
 }
 

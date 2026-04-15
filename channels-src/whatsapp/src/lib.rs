@@ -130,15 +130,36 @@ struct WhatsAppMessage {
     /// Unix timestamp
     timestamp: String,
 
-    /// Message type: text, image, audio, video, document, etc.
+    /// Message type: text, image, audio, video, document, interactive, etc.
     #[serde(rename = "type")]
     message_type: String,
 
     /// Text content (if type is "text")
     text: Option<TextContent>,
 
+    /// Interactive content (if type is "interactive" — button replies)
+    interactive: Option<InteractiveContent>,
+
     /// Context for replies
     context: Option<MessageContext>,
+}
+
+/// Interactive message content (button replies, list replies).
+#[derive(Debug, Deserialize)]
+struct InteractiveContent {
+    /// Interactive type: "button_reply", "list_reply"
+    #[serde(rename = "type")]
+    interactive_type: String,
+
+    /// Button reply payload (when type is "button_reply")
+    button_reply: Option<ButtonReply>,
+}
+
+/// WhatsApp button reply (user tapped one of the approval buttons).
+#[derive(Debug, Deserialize)]
+struct ButtonReply {
+    /// The id set on the button ("yes", "always", "no")
+    id: String,
 }
 
 /// Text message content.
@@ -447,39 +468,56 @@ impl Guest for WhatsAppChannel {
             Err(_) => return,
         };
 
-        let (tool_name, description) = update
+        let (tool_name, description, params_str) = update
             .extra_json
             .as_deref()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
             .map(|v| {
                 let tool = v["tool_name"].as_str().unwrap_or("unknown").to_string();
                 let desc = v["description"].as_str().unwrap_or("").to_string();
-                (tool, desc)
+                let params = format_params(&v["parameters"]);
+                (tool, desc, params)
             })
-            .unwrap_or_else(|| ("unknown".to_string(), String::new()));
+            .unwrap_or_else(|| ("unknown".to_string(), String::new(), String::new()));
 
-        let body = if description.is_empty() {
-            format!(
-                "Approval required — tool: {}\nReply yes to approve, always to always approve, or no to deny.",
-                tool_name
-            )
+        let mut body_text = format!("⚠️ Approval required — tool: {}", tool_name);
+        if !description.is_empty() {
+            body_text.push('\n');
+            body_text.push_str(&description);
+        }
+        if !params_str.is_empty() {
+            body_text.push_str("\nParameters: ");
+            body_text.push_str(&params_str);
+        }
+        // WhatsApp button body text has a 1024-char limit; titles have a 20-char limit.
+        let body_text = if body_text.len() > 1024 {
+            format!("{}…", &body_text[..1023])
         } else {
-            format!(
-                "Approval required — tool: {}\n{}\nReply yes to approve, always to always approve, or no to deny.",
-                tool_name, description
-            )
+            body_text
         };
 
         let api_url = format!(
             "https://graph.facebook.com/v18.0/{}/messages",
             metadata.phone_number_id
         );
+        // Use an interactive button message so the user can tap instead of type.
+        // WhatsApp button titles are capped at 20 characters.
         let payload = serde_json::json!({
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
             "to": metadata.sender_phone,
-            "type": "text",
-            "text": { "preview_url": false, "body": body }
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": { "text": body_text },
+                "action": {
+                    "buttons": [
+                        { "type": "reply", "reply": { "id": "yes",    "title": "✅ Approve" } },
+                        { "type": "reply", "reply": { "id": "always", "title": "🔁 Always" } },
+                        { "type": "reply", "reply": { "id": "no",     "title": "❌ Deny" } }
+                    ]
+                }
+            }
         });
         let payload_bytes = match serde_json::to_vec(&payload) {
             Ok(b) => b,
@@ -598,6 +636,22 @@ impl Guest for WhatsAppChannel {
 /// Meta sends a GET request with:
 /// - hub.mode=subscribe
 /// - hub.challenge=<random string>
+/// Format tool parameters as a compact, truncated string for display.
+fn format_params(params: &serde_json::Value) -> String {
+    if params.is_null() {
+        return String::new();
+    }
+    let s = params.to_string();
+    if s == "{}" || s == "null" {
+        return String::new();
+    }
+    if s.len() > 300 {
+        format!("{}…", &s[..300])
+    } else {
+        s
+    }
+}
+
 /// - hub.verify_token=<your configured token>
 ///
 /// We must respond with the challenge value to verify.
@@ -738,20 +792,31 @@ fn handle_message(
     phone_number_id: &str,
     contact_names: &std::collections::HashMap<String, String>,
 ) {
-    // Only handle text messages for now
-    // TODO: Add support for image, audio, video, document, etc.
-    if message.message_type != "text" {
-        channel_host::log(
-            channel_host::LogLevel::Debug,
-            &format!("Skipping non-text message type: {}", message.message_type),
-        );
-        return;
-    }
-
-    // Extract text content
-    let text = match &message.text {
-        Some(t) if !t.body.is_empty() => t.body.clone(),
-        _ => return,
+    // Extract text from text messages or interactive button replies
+    let text = match message.message_type.as_str() {
+        "text" => match &message.text {
+            Some(t) if !t.body.is_empty() => t.body.clone(),
+            _ => return,
+        },
+        "interactive" => {
+            // Handle button_reply (tapping an approval button)
+            match &message.interactive {
+                Some(ic) if ic.interactive_type == "button_reply" => {
+                    match &ic.button_reply {
+                        Some(br) if !br.id.is_empty() => br.id.clone(),
+                        _ => return,
+                    }
+                }
+                _ => return,
+            }
+        }
+        other => {
+            channel_host::log(
+                channel_host::LogLevel::Debug,
+                &format!("Skipping unsupported message type: {}", other),
+            );
+            return;
+        }
     };
 
     // Look up sender's name from contacts

@@ -456,28 +456,28 @@ impl Guest for MatrixChannel {
         };
 
         if matches!(update.status, StatusType::ApprovalNeeded) {
-            let (tool_name, description) = update
+            let (tool_name, description, params_str) = update
                 .extra_json
                 .as_deref()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
                 .map(|v| {
                     let tool = v["tool_name"].as_str().unwrap_or("unknown").to_string();
                     let desc = v["description"].as_str().unwrap_or("").to_string();
-                    (tool, desc)
+                    let params = format_params(&v["parameters"]);
+                    (tool, desc, params)
                 })
-                .unwrap_or_else(|| ("unknown".to_string(), String::new()));
+                .unwrap_or_else(|| ("unknown".to_string(), String::new(), String::new()));
 
-            let msg = if description.is_empty() {
-                format!(
-                    "Approval required — tool: {}\nReply yes to approve, always to always approve, or no to deny.",
-                    tool_name
-                )
-            } else {
-                format!(
-                    "Approval required — tool: {}\n{}\nReply yes to approve, always to always approve, or no to deny.",
-                    tool_name, description
-                )
-            };
+            let mut msg = format!("Approval required — tool: {}", tool_name);
+            if !description.is_empty() {
+                msg.push('\n');
+                msg.push_str(&description);
+            }
+            if !params_str.is_empty() {
+                msg.push_str("\nParameters: ");
+                msg.push_str(&params_str);
+            }
+            msg.push_str("\nReply yes to approve, always to always approve, or no to deny.");
 
             let txn_id = next_txn_id();
             if let Err(e) = send_message(&homeserver, &metadata.room_id, &msg, &txn_id) {
@@ -867,6 +867,22 @@ fn find_or_create_dm(
     );
 
     Ok(created.room_id)
+}
+
+/// Format tool parameters as a compact, truncated string for display.
+fn format_params(params: &serde_json::Value) -> String {
+    if params.is_null() {
+        return String::new();
+    }
+    let s = params.to_string();
+    if s == "{}" || s == "null" {
+        return String::new();
+    }
+    if s.len() > 300 {
+        format!("{}…", &s[..300])
+    } else {
+        s
+    }
 }
 
 /// Post a plain-text `m.text` message to a room.
