@@ -299,6 +299,16 @@ body {
 .message th { background: var(--bg-tertiary); }
 
 /* Status bar */
+.chat-token-stats {
+  padding: 3px 16px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  opacity: 0.6;
+  letter-spacing: 0.02em;
+}
+
 .chat-status {
   padding: 6px 16px;
   font-size: 12px;
@@ -389,6 +399,71 @@ body {
 
 .activity-entry.activity-tool_started { color: var(--accent); }
 .activity-entry.activity-tool_completed { color: var(--success); }
+
+/* Expandable tool entries */
+.activity-entry.activity-tool {
+  white-space: normal;
+  overflow: visible;
+  margin: 2px 0;
+}
+
+.activity-tool-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  outline: none;
+}
+
+.activity-tool-summary::-webkit-details-marker { display: none; }
+
+.activity-tool-name {
+  font-family: var(--font-mono, monospace);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.activity-tool-snippet {
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+  flex-shrink: 1;
+}
+
+.activity-tool-status {
+  font-size: 11px;
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.activity-tool-status.tool-ok { color: var(--success); }
+.activity-tool-status.tool-err { color: var(--error, #e74c3c); }
+
+.activity-tool-input,
+.activity-tool-result {
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+  background: var(--bg-secondary);
+  border-radius: 3px;
+  padding: 4px 6px;
+  margin-top: 3px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow-y: auto;
+  color: var(--text-secondary);
+}
+
+.activity-tool-result {
+  color: var(--text);
+  border-left: 2px solid var(--success);
+}
 
 /* Approval card (inline in chat) */
 .approval-card {

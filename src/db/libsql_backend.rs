@@ -977,6 +977,58 @@ impl Database for LibSqlBackend {
         Ok(stats)
     }
 
+    async fn get_conversation_token_stats(
+        &self,
+        conversation_id: Uuid,
+    ) -> Result<crate::db::ConversationTokenStats, DatabaseError> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT
+                    COALESCE(SUM(input_tokens), 0),
+                    COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(CAST(cost AS REAL)), 0.0),
+                    COUNT(*)
+                FROM llm_calls
+                WHERE conversation_id = ?1
+                "#,
+                params![conversation_id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            let total_input_tokens: i64 =
+                row.get(0).map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let total_output_tokens: i64 =
+                row.get(1).map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let total_cost_f64: f64 =
+                row.get(2).map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let call_count: i64 =
+                row.get(3).map_err(|e| DatabaseError::Query(e.to_string()))?;
+            Ok(crate::db::ConversationTokenStats {
+                conversation_id,
+                total_input_tokens,
+                total_output_tokens,
+                total_cost: Decimal::from_f64_retain(total_cost_f64).unwrap_or_default(),
+                call_count,
+            })
+        } else {
+            Ok(crate::db::ConversationTokenStats {
+                conversation_id,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                total_cost: Decimal::ZERO,
+                call_count: 0,
+            })
+        }
+    }
+
     // ==================== Estimation Snapshots ====================
 
     async fn save_estimation_snapshot(

@@ -72,10 +72,11 @@ impl TrackedProvider {
         cost: Decimal,
         purpose: &str,
         latency_ms: u64,
+        conversation_id: Option<uuid::Uuid>,
     ) {
         let record = crate::history::LlmCallRecord {
             job_id: None,
-            conversation_id: None,
+            conversation_id,
             provider: &self.provider_name,
             model: self.inner.model_name(),
             input_tokens,
@@ -144,6 +145,7 @@ impl LlmProvider for TrackedProvider {
                         cost,
                         "complete",
                         latency_ms,
+                        None,
                     )
                     .await;
                     return Ok(response);
@@ -176,6 +178,10 @@ impl LlmProvider for TrackedProvider {
     ) -> Result<ToolCompletionResponse, LlmError> {
         let start = Instant::now();
         let mut last_error = None;
+        let conversation_id = request
+            .metadata
+            .get("thread_id")
+            .and_then(|id| uuid::Uuid::parse_str(id).ok());
 
         for attempt in 0..=self.max_retries {
             if attempt > 0 {
@@ -201,6 +207,7 @@ impl LlmProvider for TrackedProvider {
                         cost,
                         "complete_with_tools",
                         latency_ms,
+                        conversation_id,
                     )
                     .await;
                     return Ok(response);

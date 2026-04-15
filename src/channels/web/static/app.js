@@ -15,6 +15,13 @@ const JOB_EVENTS_CAP = 500;
 
 // Activity panel: tracks the live in-progress turn's collapsible activity log
 let pendingActivityEl = null; // the .activity-panel DOM node being built for the current turn
+let lastToolEntryEl = null;   // the last <details> tool entry, for attaching results
+let pendingTokensIn = 0;      // accumulated input tokens for current turn
+let pendingTokensOut = 0;     // accumulated output tokens for current turn
+
+// Conversation-level token tracking (persists across turns for the current thread)
+let convTokensIn = 0;   // total input tokens for current conversation (from DB + live)
+let convTokensOut = 0;  // total output tokens for current conversation (from DB + live)
 
 // --- Auth ---
 
@@ -121,23 +128,41 @@ function connectSSE() {
   eventSource.addEventListener('thinking', (e) => {
     const data = JSON.parse(e.data);
     if (!isCurrentThread(data.thread_id)) return;
-    addActivityEntry('thinking', data.message);
     setStatus(data.message, true);
   });
 
   eventSource.addEventListener('tool_started', (e) => {
     const data = JSON.parse(e.data);
     if (!isCurrentThread(data.thread_id)) return;
-    addActivityEntry('tool_started', 'Running: ' + data.name);
-    setStatus('Running tool: ' + data.name, true);
+    addToolEntry(data.name, data.input);
+    setStatus('Running: ' + data.name, true);
   });
 
   eventSource.addEventListener('tool_completed', (e) => {
     const data = JSON.parse(e.data);
     if (!isCurrentThread(data.thread_id)) return;
     const icon = data.success ? '\u2713' : '\u2717';
-    addActivityEntry('tool_completed', data.name + ' ' + icon);
+    markLastToolCompleted(data.success);
     setStatus('Tool ' + data.name + ' ' + icon);
+  });
+
+  eventSource.addEventListener('tool_result', (e) => {
+    const data = JSON.parse(e.data);
+    if (!isCurrentThread(data.thread_id)) return;
+    updateLastToolResult(data.preview);
+  });
+
+  eventSource.addEventListener('tokens_used', (e) => {
+    const data = JSON.parse(e.data);
+    if (!isCurrentThread(data.thread_id)) return;
+    const inTok = data.input_tokens || 0;
+    const outTok = data.output_tokens || 0;
+    pendingTokensIn += inTok;
+    pendingTokensOut += outTok;
+    convTokensIn += inTok;
+    convTokensOut += outTok;
+    updateActivityPanelLabel();
+    renderConversationTokenStats();
   });
 
   eventSource.addEventListener('stream_chunk', (e) => {
@@ -401,8 +426,7 @@ function ensureActivityPanel() {
   toggle.addEventListener('click', () => {
     const open = entries.style.display !== 'none';
     entries.style.display = open ? 'none' : 'block';
-    const count = entries.querySelectorAll('.activity-entry').length;
-    toggle.textContent = 'Activity (' + count + ' steps) ' + (open ? '\u25B8' : '\u25BE');
+    toggle.textContent = buildActivityLabel(entries, !open);
   });
   panel.appendChild(toggle);
   panel.appendChild(entries);
@@ -412,6 +436,30 @@ function ensureActivityPanel() {
   return panel;
 }
 
+function buildActivityLabel(entries, isOpen) {
+  const count = entries.querySelectorAll('.activity-entry').length;
+  const totalTokens = pendingTokensIn + pendingTokensOut;
+  const tokenStr = totalTokens > 0 ? formatTokenCount(totalTokens) + ' tok' : '';
+  if (count === 0 && tokenStr) {
+    return tokenStr + ' ' + (isOpen ? '\u25BE' : '\u25B8');
+  }
+  const sep = tokenStr ? ' \u00B7 ' + tokenStr : '';
+  return 'Activity (' + count + ' steps' + sep + ') ' + (isOpen ? '\u25BE' : '\u25B8');
+}
+
+function formatTokenCount(n) {
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return String(n);
+}
+
+function updateActivityPanelLabel() {
+  if (!pendingActivityEl) return;
+  const entries = pendingActivityEl.querySelector('.activity-entries');
+  const toggle = pendingActivityEl.querySelector('.activity-toggle');
+  const isOpen = entries.style.display !== 'none';
+  toggle.textContent = buildActivityLabel(entries, isOpen);
+}
+
 function addActivityEntry(type, label) {
   const panel = ensureActivityPanel();
   const entries = panel.querySelector('.activity-entries');
@@ -419,28 +467,111 @@ function addActivityEntry(type, label) {
   entry.className = 'activity-entry activity-' + type;
   entry.textContent = label;
   entries.appendChild(entry);
-  const count = entries.querySelectorAll('.activity-entry').length;
-  const toggle = panel.querySelector('.activity-toggle');
-  const isOpen = entries.style.display !== 'none';
-  toggle.textContent = 'Activity (' + count + ' steps) ' + (isOpen ? '\u25BE' : '\u25B8');
-  const container = document.getElementById('chat-messages');
-  container.scrollTop = container.scrollHeight;
+  updateActivityPanelLabel();
+  document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+}
+
+// Extract the most meaningful single-line param value from tool input for inline display.
+function extractKeyParam(input) {
+  if (!input || typeof input !== 'object') return null;
+  for (const k of ['query', 'url', 'command', 'path', 'message', 'content', 'text', 'name']) {
+    if (typeof input[k] === 'string' && input[k].length > 0) {
+      const v = input[k];
+      return v.length > 60 ? v.slice(0, 57) + '\u2026' : v;
+    }
+  }
+  for (const v of Object.values(input)) {
+    if (typeof v === 'string' && v.length > 0) {
+      return v.length > 60 ? v.slice(0, 57) + '\u2026' : v;
+    }
+  }
+  return null;
+}
+
+function addToolEntry(name, input) {
+  const panel = ensureActivityPanel();
+  const entries = panel.querySelector('.activity-entries');
+
+  const details = document.createElement('details');
+  details.className = 'activity-entry activity-tool';
+
+  const summary = document.createElement('summary');
+  summary.className = 'activity-tool-summary';
+
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'activity-tool-name';
+  nameSpan.textContent = name;
+  summary.appendChild(nameSpan);
+
+  const snippet = extractKeyParam(input);
+  if (snippet) {
+    const snippetSpan = document.createElement('span');
+    snippetSpan.className = 'activity-tool-snippet';
+    snippetSpan.textContent = snippet;
+    summary.appendChild(snippetSpan);
+  }
+
+  const statusSpan = document.createElement('span');
+  statusSpan.className = 'activity-tool-status';
+  statusSpan.textContent = '\u25CB'; // running indicator
+  summary.appendChild(statusSpan);
+
+  details.appendChild(summary);
+
+  if (input && typeof input === 'object' && Object.keys(input).length > 0) {
+    const pre = document.createElement('pre');
+    pre.className = 'activity-tool-input';
+    pre.textContent = JSON.stringify(input, null, 2);
+    details.appendChild(pre);
+  }
+
+  const resultEl = document.createElement('pre');
+  resultEl.className = 'activity-tool-result';
+  resultEl.style.display = 'none';
+  details.appendChild(resultEl);
+
+  entries.appendChild(details);
+  lastToolEntryEl = details;
+
+  updateActivityPanelLabel();
+  document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+}
+
+function markLastToolCompleted(success) {
+  if (!lastToolEntryEl) return;
+  const statusSpan = lastToolEntryEl.querySelector('.activity-tool-status');
+  if (!statusSpan) return;
+  statusSpan.textContent = success ? '\u2713' : '\u2717';
+  statusSpan.className = 'activity-tool-status ' + (success ? 'tool-ok' : 'tool-err');
+}
+
+function updateLastToolResult(preview) {
+  if (!lastToolEntryEl) return;
+  const resultEl = lastToolEntryEl.querySelector('.activity-tool-result');
+  if (!resultEl) return;
+  const trimmed = preview && preview.length > 300 ? preview.slice(0, 297) + '\u2026' : (preview || '');
+  resultEl.textContent = trimmed;
+  resultEl.style.display = trimmed ? '' : 'none';
 }
 
 function sealActivityPanel() {
   if (!pendingActivityEl) return;
   const entries = pendingActivityEl.querySelector('.activity-entries');
   const count = entries.querySelectorAll('.activity-entry').length;
-  if (count === 0) {
+  const hasTokens = (pendingTokensIn + pendingTokensOut) > 0;
+  if (count === 0 && !hasTokens) {
     // Nothing logged — remove the empty panel
     pendingActivityEl.remove();
   } else {
     // Collapse it (default closed after turn completes)
     entries.style.display = 'none';
     const toggle = pendingActivityEl.querySelector('.activity-toggle');
-    toggle.textContent = 'Activity (' + count + ' steps) \u25B8';
+    toggle.textContent = buildActivityLabel(entries, false);
   }
   pendingActivityEl = null;
+  lastToolEntryEl = null;
+  pendingTokensIn = 0;
+  pendingTokensOut = 0;
 }
 
 function showApproval(data) {
@@ -818,8 +949,12 @@ function switchToAssistant() {
   currentThreadId = assistantThreadId;
   hasMore = false;
   oldestTimestamp = null;
+  convTokensIn = 0;
+  convTokensOut = 0;
+  renderConversationTokenStats();
   loadHistory();
   loadThreads();
+  loadConversationTokenStats(assistantThreadId);
 }
 
 function switchThread(threadId) {
@@ -827,8 +962,39 @@ function switchThread(threadId) {
   currentThreadId = threadId;
   hasMore = false;
   oldestTimestamp = null;
+  convTokensIn = 0;
+  convTokensOut = 0;
+  renderConversationTokenStats();
   loadHistory();
   loadThreads();
+  if (threadId) loadConversationTokenStats(threadId);
+}
+
+function loadConversationTokenStats(threadId) {
+  apiFetch('/api/chat/threads/' + encodeURIComponent(threadId) + '/tokens')
+    .then((data) => {
+      // Only apply if still viewing the same thread
+      if (currentThreadId !== threadId) return;
+      convTokensIn = data.total_input_tokens || 0;
+      convTokensOut = data.total_output_tokens || 0;
+      renderConversationTokenStats();
+    })
+    .catch(() => {}); // best-effort, silently ignore
+}
+
+function renderConversationTokenStats() {
+  const el = document.getElementById('chat-token-stats');
+  if (!el) return;
+  const total = convTokensIn + convTokensOut;
+  if (total === 0) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  el.textContent =
+    formatTokenCount(convTokensIn) + ' in \u00B7 ' +
+    formatTokenCount(convTokensOut) + ' out \u00B7 ' +
+    formatTokenCount(total) + ' total';
 }
 
 function createNewThread() {

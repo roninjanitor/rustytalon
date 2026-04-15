@@ -188,6 +188,7 @@ pub async fn start_server(
         .route("/api/chat/ws", get(chat_ws_handler))
         .route("/api/chat/history", get(chat_history_handler))
         .route("/api/chat/threads", get(chat_threads_handler))
+        .route("/api/chat/threads/{id}/tokens", get(chat_thread_tokens_handler))
         .route("/api/chat/thread/new", post(chat_new_thread_handler))
         // Memory
         .route("/api/memory/tree", get(memory_tree_handler))
@@ -895,6 +896,31 @@ async fn chat_threads_handler(
         threads,
         active_thread: sess.active_thread,
     }))
+}
+
+async fn chat_thread_tokens_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<crate::channels::web::types::ConversationTokenStatsResponse>, (StatusCode, String)>
+{
+    let db = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
+    let stats = db
+        .get_conversation_token_stats(id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(
+        crate::channels::web::types::ConversationTokenStatsResponse {
+            thread_id: id,
+            total_input_tokens: stats.total_input_tokens,
+            total_output_tokens: stats.total_output_tokens,
+            total_tokens: stats.total_input_tokens + stats.total_output_tokens,
+            total_cost: stats.total_cost,
+            call_count: stats.call_count,
+        },
+    ))
 }
 
 async fn chat_new_thread_handler(

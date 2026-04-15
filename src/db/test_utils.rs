@@ -58,6 +58,19 @@ impl Database for MockDatabase {
         Ok(vec![])
     }
 
+    async fn get_conversation_token_stats(
+        &self,
+        conversation_id: Uuid,
+    ) -> Result<crate::db::ConversationTokenStats, DatabaseError> {
+        Ok(crate::db::ConversationTokenStats {
+            conversation_id,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_cost: rust_decimal::Decimal::ZERO,
+            call_count: 0,
+        })
+    }
+
     // === Everything below is stubbed ===
 
     async fn create_conversation(

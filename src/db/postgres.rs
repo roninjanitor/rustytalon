@@ -261,6 +261,34 @@ impl Database for PgBackend {
         Ok(stats)
     }
 
+    async fn get_conversation_token_stats(
+        &self,
+        conversation_id: Uuid,
+    ) -> Result<crate::db::ConversationTokenStats, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let row = conn
+            .query_one(
+                r#"
+                SELECT
+                    COALESCE(SUM(input_tokens), 0)::bigint AS total_input_tokens,
+                    COALESCE(SUM(output_tokens), 0)::bigint AS total_output_tokens,
+                    COALESCE(SUM(cost), 0) AS total_cost,
+                    COUNT(*)::bigint AS call_count
+                FROM llm_calls
+                WHERE conversation_id = $1
+                "#,
+                &[&conversation_id],
+            )
+            .await?;
+        Ok(crate::db::ConversationTokenStats {
+            conversation_id,
+            total_input_tokens: row.get("total_input_tokens"),
+            total_output_tokens: row.get("total_output_tokens"),
+            total_cost: row.get("total_cost"),
+            call_count: row.get("call_count"),
+        })
+    }
+
     // ==================== Estimation Snapshots ====================
 
     async fn save_estimation_snapshot(

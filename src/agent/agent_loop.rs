@@ -1340,6 +1340,17 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                 output.usage.input_tokens,
                 output.usage.output_tokens
             );
+            let _ = self
+                .channels
+                .send_status(
+                    &message.channel,
+                    StatusUpdate::TokensUsed {
+                        input_tokens: output.usage.input_tokens,
+                        output_tokens: output.usage.output_tokens,
+                    },
+                    &message.metadata,
+                )
+                .await;
 
             match output.result {
                 RespondResult::Text(text) => {
@@ -1449,6 +1460,7 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                                 &message.channel,
                                 StatusUpdate::ToolStarted {
                                     name: tc.name.clone(),
+                                    input: tc.arguments.clone(),
                                 },
                                 &message.metadata,
                             )
@@ -1940,6 +1952,7 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                     &message.channel,
                     StatusUpdate::ToolStarted {
                         name: pending.tool_name.clone(),
+                        input: pending.parameters.clone(),
                     },
                     &message.metadata,
                 )

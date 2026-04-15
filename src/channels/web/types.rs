@@ -96,6 +96,14 @@ pub enum SseEvent {
     #[serde(rename = "tool_started")]
     ToolStarted {
         name: String,
+        input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thread_id: Option<String>,
+    },
+    #[serde(rename = "tokens_used")]
+    TokensUsed {
+        input_tokens: u32,
+        output_tokens: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         thread_id: Option<String>,
     },
@@ -571,6 +579,7 @@ impl WsServerMessage {
             SseEvent::Response { .. } => "response",
             SseEvent::Thinking { .. } => "thinking",
             SseEvent::ToolStarted { .. } => "tool_started",
+            SseEvent::TokensUsed { .. } => "tokens_used",
             SseEvent::ToolCompleted { .. } => "tool_completed",
             SseEvent::ToolResult { .. } => "tool_result",
             SseEvent::StreamChunk { .. } => "stream_chunk",
@@ -1052,6 +1061,18 @@ pub struct ChannelToggleResponse {
     pub name: String,
     pub enabled: bool,
     pub message: String,
+}
+
+// --- Conversation Token Stats ---
+
+#[derive(Debug, Serialize)]
+pub struct ConversationTokenStatsResponse {
+    pub thread_id: Uuid,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_tokens: i64,
+    pub total_cost: rust_decimal::Decimal,
+    pub call_count: i64,
 }
 
 // --- Provider Health & Costs ---

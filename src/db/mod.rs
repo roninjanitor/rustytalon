@@ -42,6 +42,16 @@ use crate::llm::tracked::LlmCallStats;
 use crate::workspace::{MemoryChunk, MemoryDocument, WorkspaceEntry};
 use crate::workspace::{SearchConfig, SearchResult};
 
+/// Cumulative token and cost totals for a single conversation (thread).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ConversationTokenStats {
+    pub conversation_id: Uuid,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_cost: Decimal,
+    pub call_count: i64,
+}
+
 /// Create a database backend from configuration, run migrations, and return it.
 ///
 /// This is the shared helper for CLI commands and other call sites that need
@@ -233,6 +243,12 @@ pub trait Database: Send + Sync {
     ///
     /// Returns cost, token, and call count summaries for dashboard display.
     async fn get_llm_call_stats(&self) -> Result<Vec<LlmCallStats>, DatabaseError>;
+
+    /// Get cumulative token and cost totals for a single conversation (thread).
+    async fn get_conversation_token_stats(
+        &self,
+        conversation_id: Uuid,
+    ) -> Result<ConversationTokenStats, DatabaseError>;
 
     // ==================== Estimation Snapshots ====================
 
