@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-04-15
+
+### Added
+- **Analytics tab** in the web UI — per-model usage dashboard showing total calls, input/output tokens, avg latency, avg cost per call, and total cost with top-line summary cards
+- `GET /api/analytics/models` endpoint returning per-model LLM usage breakdown with grand totals
+- `latency_ms` column on `llm_calls` table (Postgres migration V9, libSQL incremental migration) — tracks end-to-end LLM call latency; existing rows show no latency data (pre-V9), new calls record it automatically
+- Incremental migration system for libSQL — `_migrations` table now tracks applied schema changes so `ALTER TABLE` statements run exactly once on existing databases; previously the table existed but was unused
+
+### Changed
+- `LlmCallStats` now includes `avg_latency_ms: Option<f64>` — `None` for calls recorded before V9, present and omitted from JSON responses via `skip_serializing_if`
+- `MockDatabase` in test utils now captures full `LlmCallRecord` fields (not just call count) via `captured_calls()` accessor
+
 ## [0.2.2] - 2026-04-14
 
 ### Added

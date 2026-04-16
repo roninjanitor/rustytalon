@@ -37,6 +37,7 @@
       <button data-tab="skills">Skills</button>
       <button data-tab="channels">Channels</button>
       <button data-tab="extensions">Extensions</button>
+      <button data-tab="analytics">Analytics</button>
       <div class="spacer"></div>
       <div class="status" id="gateway-status-trigger">
         <div class="dot" id="sse-dot"></div>
@@ -294,6 +295,35 @@
         <div class="wizard-modal" id="wizard-modal">
           <button class="wizard-close" id="wizard-close-btn">&times;</button>
           <div class="wizard-steps" id="wizard-steps"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Analytics Tab -->
+    <div class="tab-panel" id="tab-analytics">
+      <div class="analytics-container">
+        <!-- Top-line summary cards -->
+        <div class="analytics-summary" id="analytics-summary"></div>
+
+        <!-- Per-model breakdown table -->
+        <h3 class="analytics-section-title">Model Usage</h3>
+        <div class="analytics-table-wrap">
+          <table class="analytics-table" id="analytics-table">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Model</th>
+                <th>Calls</th>
+                <th>Input Tokens</th>
+                <th>Output Tokens</th>
+                <th>Avg Latency</th>
+                <th>Avg Cost / Call</th>
+                <th>Total Cost</th>
+              </tr>
+            </thead>
+            <tbody id="analytics-tbody"></tbody>
+          </table>
+          <div class="empty-state" id="analytics-empty" style="display:none">No LLM calls recorded yet.</div>
         </div>
       </div>
     </div>

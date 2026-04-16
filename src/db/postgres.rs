@@ -236,7 +236,8 @@ impl Database for PgBackend {
                     CASE WHEN COUNT(*) > 0
                         THEN COALESCE(SUM(cost), 0) / COUNT(*)
                         ELSE 0
-                    END AS avg_cost_per_call
+                    END AS avg_cost_per_call,
+                    AVG(latency_ms)::float8 AS avg_latency_ms
                 FROM llm_calls
                 GROUP BY provider, model
                 ORDER BY total_cost DESC
@@ -255,6 +256,7 @@ impl Database for PgBackend {
                 total_output_tokens: row.get("total_output_tokens"),
                 total_cost: row.get("total_cost"),
                 avg_cost_per_call: row.get("avg_cost_per_call"),
+                avg_latency_ms: row.get("avg_latency_ms"),
             })
             .collect();
 

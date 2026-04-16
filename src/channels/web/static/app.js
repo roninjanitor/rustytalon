@@ -1074,6 +1074,7 @@ function switchTab(tab) {
     checkExtensionManagerAvailable().then(() => loadCatalog());
   }
   if (tab === 'channels') loadChannels();
+  if (tab === 'analytics') loadAnalytics();
 }
 
 // --- Skills ---
@@ -3545,4 +3546,91 @@ function formatDate(isoString) {
   if (!isoString) return '-';
   const d = new Date(isoString);
   return d.toLocaleString();
+}
+
+// --- Analytics tab ---
+
+async function loadAnalytics() {
+  try {
+    const res = await fetch('/api/analytics/models', { headers: authHeaders() });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    renderAnalyticsSummary(data);
+    renderAnalyticsTable(data.models);
+  } catch (e) {
+    document.getElementById('analytics-summary').innerHTML =
+      '<div class="empty-state">Failed to load analytics: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderAnalyticsSummary(data) {
+  const totalTokens = data.total_input_tokens + data.total_output_tokens;
+  const totalModels = data.models.length;
+  const totalCalls = data.models.reduce((s, m) => s + m.total_calls, 0);
+
+  document.getElementById('analytics-summary').innerHTML =
+      analyticsCard('Models', totalModels, '')
+    + analyticsCard('Total Calls', totalCalls.toLocaleString(), '')
+    + analyticsCard('Input Tokens', fmtTokens(data.total_input_tokens), 'accent')
+    + analyticsCard('Output Tokens', fmtTokens(data.total_output_tokens), 'accent')
+    + analyticsCard('Total Tokens', fmtTokens(totalTokens), '')
+    + analyticsCard('Total Cost', '$' + fmtCost(data.total_cost_usd), 'cost');
+}
+
+function analyticsCard(label, value, cls) {
+  return '<div class="summary-card ' + cls + '">'
+    + '<div class="count">' + value + '</div>'
+    + '<div class="label">' + label + '</div>'
+    + '</div>';
+}
+
+function renderAnalyticsTable(models) {
+  const tbody = document.getElementById('analytics-tbody');
+  const empty = document.getElementById('analytics-empty');
+  tbody.innerHTML = '';
+
+  if (!models || models.length === 0) {
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  for (const m of models) {
+    const latency = m.avg_latency_ms != null
+      ? Math.round(m.avg_latency_ms) + ' ms'
+      : '<span class="text-muted">—</span>';
+
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+        '<td><span class="provider-badge">' + escapeHtml(m.provider) + '</span></td>'
+      + '<td class="model-name">' + escapeHtml(m.model) + '</td>'
+      + '<td class="num">' + m.total_calls.toLocaleString() + '</td>'
+      + '<td class="num">' + fmtTokens(m.total_input_tokens) + '</td>'
+      + '<td class="num">' + fmtTokens(m.total_output_tokens) + '</td>'
+      + '<td class="num">' + latency + '</td>'
+      + '<td class="num cost">' + fmtCostCell(m.avg_cost_per_call_usd) + '</td>'
+      + '<td class="num cost">' + fmtCostCell(m.total_cost_usd) + '</td>';
+    tbody.appendChild(tr);
+  }
+}
+
+/** Format a token count as e.g. "1.2M", "45.3K", "800" */
+function fmtTokens(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000)     return (n / 1_000).toFixed(1) + 'K';
+  return String(n);
+}
+
+/** Format a cost decimal string, showing enough precision to be meaningful */
+function fmtCost(usd) {
+  const n = parseFloat(usd);
+  if (isNaN(n)) return '0.000000';
+  if (n === 0)  return '0.000000';
+  if (n >= 1)   return n.toFixed(4);
+  // Show at least 4 significant figures for small values
+  return n.toPrecision(4);
+}
+
+function fmtCostCell(usd) {
+  return '$' + fmtCost(usd);
 }
