@@ -294,6 +294,9 @@ pub async fn start_server(
             "/api/analytics/cost-over-time",
             get(analytics_cost_over_time_handler),
         )
+        // Audit log
+        .route("/api/audit/log", get(audit_log_handler))
+        .route("/api/audit/summary", get(audit_summary_handler))
         // OpenAI-compatible API
         .route(
             "/v1/chat/completions",
@@ -3002,6 +3005,130 @@ async fn analytics_cost_over_time_handler(
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+// ── Audit log handlers ────────────────────────────────────────────────────────
+
+async fn audit_log_handler(
+    State(state): State<Arc<GatewayState>>,
+    axum::extract::Query(q): axum::extract::Query<AuditLogQuery>,
+) -> impl IntoResponse {
+    let db = match state.store.as_ref() {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(AuditLogResponse {
+                    entries: vec![],
+                    count: 0,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let since = q.since.as_deref().and_then(parse_iso_or_range);
+    let until = q.until.as_deref().and_then(|s| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+    });
+    let session_id = q
+        .session_id
+        .as_deref()
+        .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+    let query = crate::db::AuditQuery {
+        since,
+        until,
+        user_id: q.user_id,
+        session_id,
+        event_type: q.event_type,
+        outcome: q.outcome,
+        limit: q.limit,
+    };
+
+    match db.query_audit_log(query).await {
+        Ok(rows) => {
+            let entries: Vec<AuditLogEntry> = rows
+                .into_iter()
+                .map(|r| AuditLogEntry {
+                    id: r.id,
+                    created_at: r.created_at.to_rfc3339(),
+                    event_type: r.event_type,
+                    user_id: r.user_id,
+                    session_id: r.session_id,
+                    job_id: r.job_id,
+                    actor: r.actor,
+                    tool_name: r.tool_name,
+                    input_hash: r.input_hash,
+                    input_summary: r.input_summary,
+                    outcome: r.outcome,
+                    error_msg: r.error_msg,
+                    duration_ms: r.duration_ms,
+                    cost_usd: r.cost_usd,
+                    metadata: r.metadata,
+                })
+                .collect();
+            let count = entries.len();
+            Json(AuditLogResponse { entries, count }).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to query audit log");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn audit_summary_handler(
+    State(state): State<Arc<GatewayState>>,
+    axum::extract::Query(q): axum::extract::Query<RangeQuery>,
+) -> impl IntoResponse {
+    let db = match state.store.as_ref() {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(AuditSummaryResponse {
+                    counts: vec![],
+                    total: 0,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let since = parse_range_since(q.range.as_deref());
+    match db.audit_log_summary(since).await {
+        Ok(counts) => {
+            let total: i64 = counts.iter().map(|c| c.count).sum();
+            let counts = counts
+                .into_iter()
+                .map(|c| AuditEventCountEntry {
+                    event_type: c.event_type,
+                    count: c.count,
+                })
+                .collect();
+            Json(AuditSummaryResponse { counts, total }).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to query audit summary");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// Parse a `since` string that may be either an ISO-8601 timestamp or a
+/// shorthand range ("24h", "7d", "30d", "90d").
+fn parse_iso_or_range(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    // Try shorthand range first.
+    if let Some(dt) = parse_range_since(Some(s)) {
+        return Some(dt);
+    }
+    // Fall back to RFC 3339.
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
 // ── Skills handlers ──────────────────────────────────────────────────────────

@@ -1293,3 +1293,70 @@ pub struct SaveSkillRequest {
     pub description: String,
     pub prompt: String,
 }
+
+// --- Audit Log ---
+
+/// Query parameters for GET /api/audit/log.
+#[derive(Debug, Deserialize)]
+pub struct AuditLogQuery {
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub user_id: Option<String>,
+    pub session_id: Option<String>,
+    pub event_type: Option<String>,
+    pub outcome: Option<String>,
+    pub limit: Option<i64>,
+}
+
+/// A single row in the audit log API response.
+#[derive(Debug, Serialize)]
+pub struct AuditLogEntry {
+    pub id: Uuid,
+    pub created_at: String,
+    pub event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_msg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Response for GET /api/audit/log.
+#[derive(Debug, Serialize)]
+pub struct AuditLogResponse {
+    pub entries: Vec<AuditLogEntry>,
+    pub count: usize,
+}
+
+/// One row of event-type counts for the summary card.
+#[derive(Debug, Serialize)]
+pub struct AuditEventCountEntry {
+    pub event_type: String,
+    pub count: i64,
+}
+
+/// Response for GET /api/audit/summary.
+#[derive(Debug, Serialize)]
+pub struct AuditSummaryResponse {
+    pub counts: Vec<AuditEventCountEntry>,
+    pub total: i64,
+}

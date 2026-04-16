@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::agent::BrokenTool;
 use crate::agent::routine::{Routine, RoutineRun, RunStatus};
 use crate::context::{ActionRecord, JobContext, JobState};
-use crate::db::Database;
+use crate::db::{AuditEvent, AuditEventCount, AuditLogRow, AuditQuery, Database};
 use crate::error::{DatabaseError, WorkspaceError};
 use crate::history::{
     ConversationMessage, ConversationSummary, JobEventRecord, LlmCallRecord, SandboxJobRecord,
@@ -26,6 +26,7 @@ use crate::workspace::{MemoryChunk, MemoryDocument, SearchConfig, SearchResult, 
 
 /// Captured fields from a single `record_llm_call` invocation.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct CapturedLlmCall {
     pub provider: String,
     pub model: String,
@@ -520,5 +521,25 @@ impl Database for MockDatabase {
         _: &SearchConfig,
     ) -> Result<Vec<SearchResult>, WorkspaceError> {
         unimplemented!()
+    }
+
+    async fn append_audit_event(&self, _: &AuditEvent<'_>) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+    async fn query_audit_log(&self, _: AuditQuery) -> Result<Vec<AuditLogRow>, DatabaseError> {
+        Ok(vec![])
+    }
+    async fn audit_log_summary(
+        &self,
+        _: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<AuditEventCount>, DatabaseError> {
+        Ok(vec![])
+    }
+
+    async fn prune_audit_log(
+        &self,
+        _: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, DatabaseError> {
+        Ok(0)
     }
 }

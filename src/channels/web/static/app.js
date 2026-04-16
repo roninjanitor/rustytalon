@@ -1075,6 +1075,8 @@ function switchTab(tab) {
   }
   if (tab === 'channels') loadChannels();
   if (tab === 'analytics') loadAnalytics();
+  if (tab === 'audit') loadAudit();
+  if (tab === 'settings') loadSettings();
 }
 
 // --- Skills ---
@@ -3934,4 +3936,233 @@ function fmtDuration(secs) {
   if (secs >= 3600) return Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm';
   if (secs >= 60)   return Math.floor(secs / 60) + 'm ' + Math.round(secs % 60) + 's';
   return secs.toFixed(1) + 's';
+}
+
+// ── Audit Log ─────────────────────────────────────────────────────────────────
+
+let auditRange = '';
+
+// Wire up range pills for Audit tab
+(function initAuditPills() {
+  document.addEventListener('DOMContentLoaded', () => {
+    const pills = document.getElementById('audit-range-pills');
+    if (!pills) return;
+    pills.addEventListener('click', (e) => {
+      const btn = e.target.closest('.range-pill');
+      if (!btn) return;
+      pills.querySelectorAll('.range-pill').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      auditRange = btn.dataset.range || '';
+      loadAudit();
+    });
+  });
+})();
+
+async function loadAudit() {
+  const params = new URLSearchParams();
+  if (auditRange) params.set('range', auditRange);
+  const eventType = document.getElementById('audit-event-type-filter')?.value || '';
+  const outcome   = document.getElementById('audit-outcome-filter')?.value   || '';
+  if (eventType) params.set('event_type', eventType);
+  if (outcome)   params.set('outcome', outcome);
+  params.set('limit', '200');
+
+  try {
+    const [log, summary] = await Promise.all([
+      apiFetch('/api/audit/log?' + params.toString()),
+      apiFetch('/api/audit/summary?' + (auditRange ? 'range=' + auditRange : '')),
+    ]);
+
+    renderAuditSummary(summary);
+    renderAuditTable(log.entries || []);
+
+    const el = document.getElementById('audit-updated');
+    if (el) el.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById('audit-summary').innerHTML =
+      '<div class="empty-state">Failed to load audit log: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderAuditSummary(summary) {
+  const counts = summary.counts || [];
+  const total  = summary.total  || 0;
+
+  const byType = {};
+  counts.forEach(c => { byType[c.event_type] = c.count; });
+
+  const el = document.getElementById('audit-summary');
+  if (!el) return;
+  el.innerHTML =
+      analyticsCard('Total Events',   total.toLocaleString(),                             '')
+    + analyticsCard('Tool Calls',     (byType['tool_call']     || 0).toLocaleString(),    '')
+    + analyticsCard('Safety Blocks',  (byType['safety_block']  || 0).toLocaleString(),    (byType['safety_block']  || 0) > 0 ? 'error' : '')
+    + analyticsCard('Approval Denials',(byType['approval_denied'] || 0).toLocaleString(), (byType['approval_denied'] || 0) > 0 ? 'error' : '')
+    + analyticsCard('Job Failures',   (byType['job_state']     || 0).toLocaleString(),    '');
+}
+
+/** Map event_type → CSS class for the badge */
+function auditEventClass(eventType) {
+  switch (eventType) {
+    case 'tool_call':     return 'provider-anthropic';
+    case 'approval':      return 'provider-openai';
+    case 'safety_block':  return 'provider-error';
+    case 'job_state':     return 'provider-ollama';
+    case 'auth':          return 'provider-generic';
+    default:              return 'provider-generic';
+  }
+}
+
+/** Map outcome → CSS class */
+function auditOutcomeClass(outcome) {
+  if (!outcome) return '';
+  if (outcome === 'success' || outcome === 'approved') return 'lat-green';
+  if (outcome === 'failure' || outcome === 'blocked' || outcome === 'denied') return 'lat-red';
+  return '';
+}
+
+function renderAuditTable(entries) {
+  const tbody = document.getElementById('audit-tbody');
+  const empty = document.getElementById('audit-empty');
+  if (!tbody) return;
+
+  if (!entries.length) {
+    tbody.innerHTML = '';
+    if (empty) empty.style.display = '';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+
+  tbody.innerHTML = entries.map((e, i) => {
+    const ts = new Date(e.created_at).toLocaleString();
+    const typeBadge = '<span class="provider-badge ' + auditEventClass(e.event_type) + '">' + escapeHtml(e.event_type) + '</span>';
+    const outcomeEl = e.outcome
+      ? '<span class="' + auditOutcomeClass(e.outcome) + '">' + escapeHtml(e.outcome) + '</span>'
+      : '—';
+    const tool    = escapeHtml(e.tool_name || '');
+    const actor   = escapeHtml(e.actor || '');
+    const dur     = e.duration_ms != null ? e.duration_ms + ' ms' : '—';
+    const errSnip = e.error_msg ? escapeHtml(e.error_msg.substring(0, 60)) + (e.error_msg.length > 60 ? '…' : '') : '';
+    const hasDetail = e.input_summary || e.error_msg || e.metadata;
+    const detailId = 'audit-detail-' + i;
+    let detailHtml = '';
+    if (hasDetail) {
+      const parts = [];
+      if (e.input_summary) parts.push('<strong>Input:</strong> <code>' + escapeHtml(e.input_summary) + '</code>');
+      if (e.error_msg)     parts.push('<strong>Error:</strong> <code>' + escapeHtml(e.error_msg) + '</code>');
+      if (e.metadata)      parts.push('<strong>Metadata:</strong> <pre class="audit-meta-json">' + escapeHtml(JSON.stringify(e.metadata, null, 2)) + '</pre>');
+      detailHtml = '<tr id="' + detailId + '" style="display:none"><td colspan="7"><div class="audit-detail-panel">' + parts.join('<br>') + '</div></td></tr>';
+    }
+
+    return '<tr data-audit-idx="' + i + '" onclick="toggleAuditRow(' + i + ')" style="cursor:pointer">'
+      + '<td>' + escapeHtml(ts) + '</td>'
+      + '<td>' + typeBadge + '</td>'
+      + '<td>' + actor + '</td>'
+      + '<td>' + tool + '</td>'
+      + '<td>' + outcomeEl + '</td>'
+      + '<td class="num">' + dur + '</td>'
+      + '<td>' + errSnip + '</td>'
+      + '</tr>'
+      + detailHtml;
+  }).join('');
+}
+
+function toggleAuditRow(idx) {
+  const detail = document.getElementById('audit-detail-' + idx);
+  if (!detail) return;
+  const showing = detail.style.display !== 'none';
+  detail.style.display = showing ? 'none' : '';
+}
+
+// ── Settings tab ─────────────────────────────────────────────────────────────
+
+let _settingEditKey = null; // null = new, string = editing existing key
+
+async function loadSettings() {
+  const tbody = document.getElementById('settings-tbody');
+  const empty = document.getElementById('settings-empty');
+  tbody.innerHTML = '<tr><td colspan="4" class="empty-state">Loading…</td></tr>';
+
+  const res = await apiFetch('/api/settings');
+  if (!res.ok) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-state">Failed to load settings.</td></tr>';
+    return;
+  }
+  const data = await res.json();
+  const rows = data.settings || [];
+
+  if (rows.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  tbody.innerHTML = rows.map(s => {
+    const val  = escapeHtml(JSON.stringify(s.value));
+    const updated = s.updated_at ? new Date(s.updated_at).toLocaleString() : '—';
+    return `<tr>
+      <td class="setting-key-cell">${escapeHtml(s.key)}</td>
+      <td class="setting-val-cell"><code>${val}</code></td>
+      <td class="setting-ts-cell">${updated}</td>
+      <td class="setting-actions-cell">
+        <button class="btn-icon" title="Edit" onclick="openSettingModal(${JSON.stringify(s.key)}, ${JSON.stringify(JSON.stringify(s.value))})">&#9998;</button>
+        <button class="btn-icon btn-danger-icon" title="Delete" onclick="deleteSetting(${JSON.stringify(s.key)})">&#10005;</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function openSettingModal(key, valueJson) {
+  _settingEditKey = key || null;
+  document.getElementById('setting-modal-title').textContent = key ? 'Edit Setting' : 'New Setting';
+  const keyInput = document.getElementById('setting-key-input');
+  keyInput.value = key || '';
+  keyInput.readOnly = !!key;
+  keyInput.style.opacity = key ? '0.6' : '';
+  document.getElementById('setting-value-input').value = valueJson != null ? valueJson : '';
+  document.getElementById('setting-modal-overlay').style.display = '';
+  (key ? document.getElementById('setting-value-input') : keyInput).focus();
+}
+
+function closeSettingModal() {
+  document.getElementById('setting-modal-overlay').style.display = 'none';
+  _settingEditKey = null;
+}
+
+function settingModalOverlayClick(e) {
+  if (e.target === document.getElementById('setting-modal-overlay')) closeSettingModal();
+}
+
+async function saveSetting() {
+  const key   = _settingEditKey || document.getElementById('setting-key-input').value.trim();
+  const rawVal = document.getElementById('setting-value-input').value.trim();
+
+  if (!key) { alert('Key is required.'); return; }
+  if (!rawVal) { alert('Value is required.'); return; }
+
+  let parsed;
+  try { parsed = JSON.parse(rawVal); }
+  catch { alert('Value must be valid JSON.\n\nExamples: 30  "dark"  true  {"x":1}'); return; }
+
+  const res = await apiFetch('/api/settings/' + encodeURIComponent(key), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: parsed }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    alert('Failed to save setting: ' + err);
+    return;
+  }
+  closeSettingModal();
+  loadSettings();
+}
+
+async function deleteSetting(key) {
+  if (!confirm('Delete setting "' + key + '"?')) return;
+  const res = await apiFetch('/api/settings/' + encodeURIComponent(key), { method: 'DELETE' });
+  if (!res.ok) { alert('Failed to delete setting.'); return; }
+  loadSettings();
 }

@@ -21,7 +21,10 @@ use crate::agent::routine::{
     NotifyConfig, Routine, RoutineAction, RoutineGuardrails, RoutineRun, RunStatus, Trigger,
 };
 use crate::context::{ActionRecord, JobContext, JobState};
-use crate::db::{CostDataPoint, Database, JobAnalytics, ToolAnalytics};
+use crate::db::{
+    AuditEvent, AuditEventCount, AuditLogRow, AuditQuery, CostDataPoint, Database, JobAnalytics,
+    ToolAnalytics,
+};
 use crate::error::{DatabaseError, WorkspaceError};
 use crate::history::{
     ConversationMessage, ConversationSummary, JobEventRecord, LlmCallRecord, SandboxJobRecord,
@@ -2926,6 +2929,206 @@ impl Database for LibSqlBackend {
         }
 
         Ok(reciprocal_rank_fusion(fts_results, vector_results, config))
+    }
+
+    // ==================== Audit Log ====================
+
+    async fn append_audit_event(&self, event: &AuditEvent<'_>) -> Result<(), DatabaseError> {
+        let conn = self.connect()?;
+        let id = Uuid::new_v4().to_string();
+        let now = fmt_ts(&Utc::now());
+        let meta_str = event.metadata.and_then(|m| serde_json::to_string(m).ok());
+        conn.execute(
+            r#"INSERT INTO audit_log (
+                id, created_at, event_type, user_id, session_id, job_id, actor,
+                tool_name, input_hash, input_summary, outcome, error_msg,
+                duration_ms, cost_usd, metadata
+            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"#,
+            params![
+                id,
+                now,
+                event.event_type,
+                opt_text(event.user_id),
+                opt_text(event.session_id.as_ref().map(|u| u.to_string()).as_deref()),
+                opt_text(event.job_id.as_ref().map(|u| u.to_string()).as_deref()),
+                opt_text(event.actor),
+                opt_text(event.tool_name),
+                opt_text(event.input_hash),
+                opt_text(event.input_summary),
+                opt_text(event.outcome),
+                opt_text(event.error_msg),
+                event
+                    .duration_ms
+                    .map(libsql::Value::Integer)
+                    .unwrap_or(libsql::Value::Null),
+                opt_text(event.cost_usd),
+                opt_text_owned(meta_str)
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn query_audit_log(&self, query: AuditQuery) -> Result<Vec<AuditLogRow>, DatabaseError> {
+        let conn = self.connect()?;
+        let limit = query.limit.unwrap_or(100).min(500);
+
+        // Build WHERE clause from filter options.
+        let mut clauses: Vec<String> = Vec::new();
+        let mut positional: Vec<libsql::Value> = Vec::new();
+        let mut idx = 1usize;
+
+        if let Some(ref v) = query.since {
+            clauses.push(format!("created_at >= ?{idx}"));
+            positional.push(libsql::Value::Text(fmt_ts(v)));
+            idx += 1;
+        }
+        if let Some(ref v) = query.until {
+            clauses.push(format!("created_at <= ?{idx}"));
+            positional.push(libsql::Value::Text(fmt_ts(v)));
+            idx += 1;
+        }
+        if let Some(ref v) = query.user_id {
+            clauses.push(format!("user_id = ?{idx}"));
+            positional.push(libsql::Value::Text(v.clone()));
+            idx += 1;
+        }
+        if let Some(ref v) = query.session_id {
+            clauses.push(format!("session_id = ?{idx}"));
+            positional.push(libsql::Value::Text(v.to_string()));
+            idx += 1;
+        }
+        if let Some(ref v) = query.event_type {
+            clauses.push(format!("event_type = ?{idx}"));
+            positional.push(libsql::Value::Text(v.clone()));
+            idx += 1;
+        }
+        if let Some(ref v) = query.outcome {
+            clauses.push(format!("outcome = ?{idx}"));
+            positional.push(libsql::Value::Text(v.clone()));
+            idx += 1;
+        }
+        let _ = idx;
+
+        let where_sql = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", clauses.join(" AND "))
+        };
+
+        let sql = format!(
+            r#"SELECT id, created_at, event_type, user_id, session_id, job_id,
+                      actor, tool_name, input_hash, input_summary, outcome,
+                      error_msg, duration_ms, cost_usd, metadata
+               FROM audit_log
+               {where_sql}
+               ORDER BY created_at DESC
+               LIMIT {limit}"#
+        );
+
+        let mut rows = conn
+            .query(&sql, libsql::params_from_iter(positional))
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let mut result = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            // Columns: 0=id, 1=created_at, 2=event_type, 3=user_id, 4=session_id,
+            //          5=job_id, 6=actor, 7=tool_name, 8=input_hash, 9=input_summary,
+            //         10=outcome, 11=error_msg, 12=duration_ms, 13=cost_usd, 14=metadata
+            let id: Uuid = get_text(&row, 0).parse().unwrap_or_default();
+            let created_at = get_ts(&row, 1);
+            let event_type = get_text(&row, 2);
+            let user_id = get_opt_text(&row, 3);
+            let session_id = get_opt_text(&row, 4).and_then(|s| s.parse::<Uuid>().ok());
+            let job_id = get_opt_text(&row, 5).and_then(|s| s.parse::<Uuid>().ok());
+            let actor = get_opt_text(&row, 6);
+            let tool_name = get_opt_text(&row, 7);
+            let input_hash = get_opt_text(&row, 8);
+            let input_summary = get_opt_text(&row, 9);
+            let outcome = get_opt_text(&row, 10);
+            let error_msg = get_opt_text(&row, 11);
+            let duration_ms: Option<i64> = row.get::<i64>(12).ok();
+            let cost_usd = get_opt_text(&row, 13);
+            let metadata = get_opt_text(&row, 14).and_then(|s| serde_json::from_str(&s).ok());
+
+            result.push(AuditLogRow {
+                id,
+                created_at,
+                event_type,
+                user_id,
+                session_id,
+                job_id,
+                actor,
+                tool_name,
+                input_hash,
+                input_summary,
+                outcome,
+                error_msg,
+                duration_ms,
+                cost_usd,
+                metadata,
+            });
+        }
+        Ok(result)
+    }
+
+    async fn audit_log_summary(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<AuditEventCount>, DatabaseError> {
+        let conn = self.connect()?;
+        let (where_sql, positional): (String, Vec<libsql::Value>) = if let Some(ref v) = since {
+            (
+                "WHERE created_at >= ?1".to_string(),
+                vec![libsql::Value::Text(fmt_ts(v))],
+            )
+        } else {
+            (String::new(), vec![])
+        };
+
+        let sql = format!(
+            r#"SELECT event_type, COUNT(*) AS count
+               FROM audit_log
+               {where_sql}
+               GROUP BY event_type
+               ORDER BY count DESC"#
+        );
+
+        let mut rows = conn
+            .query(&sql, libsql::params_from_iter(positional))
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let mut result = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            result.push(AuditEventCount {
+                event_type: get_text(&row, 0),
+                count: get_i64(&row, 1),
+            });
+        }
+        Ok(result)
+    }
+
+    async fn prune_audit_log(&self, older_than: DateTime<Utc>) -> Result<u64, DatabaseError> {
+        let conn = self.connect()?;
+        let n = conn
+            .execute(
+                "DELETE FROM audit_log WHERE created_at < ?1",
+                libsql::params![fmt_ts(&older_than)],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        Ok(n)
     }
 }
 

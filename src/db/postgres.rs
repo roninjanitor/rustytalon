@@ -15,7 +15,10 @@ use crate::agent::BrokenTool;
 use crate::agent::routine::{Routine, RoutineRun, RunStatus};
 use crate::config::DatabaseConfig;
 use crate::context::{ActionRecord, JobContext, JobState};
-use crate::db::{CostDataPoint, Database, JobAnalytics, ToolAnalytics};
+use crate::db::{
+    AuditEvent, AuditEventCount, AuditLogRow, AuditQuery, CostDataPoint, Database, JobAnalytics,
+    ToolAnalytics,
+};
 use crate::error::{DatabaseError, WorkspaceError};
 use crate::history::{
     ConversationMessage, ConversationSummary, JobEventRecord, LlmCallRecord, SandboxJobRecord,
@@ -227,8 +230,11 @@ impl Database for PgBackend {
     ) -> Result<Vec<LlmCallStats>, DatabaseError> {
         let conn = self.store.conn().await?;
         let (where_clause, params): (&str, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) =
-            if since.is_some() {
-                ("WHERE created_at >= $1", vec![since.as_ref().unwrap()])
+            if let Some(ref s) = since {
+                (
+                    "WHERE created_at >= $1",
+                    vec![s as &(dyn tokio_postgres::types::ToSql + Sync)],
+                )
             } else {
                 ("", vec![])
             };
@@ -282,8 +288,11 @@ impl Database for PgBackend {
     ) -> Result<JobAnalytics, DatabaseError> {
         let conn = self.store.conn().await?;
         let (where_clause, params): (&str, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) =
-            if since.is_some() {
-                ("WHERE created_at >= $1", vec![since.as_ref().unwrap()])
+            if let Some(ref s) = since {
+                (
+                    "WHERE created_at >= $1",
+                    vec![s as &(dyn tokio_postgres::types::ToSql + Sync)],
+                )
             } else {
                 ("", vec![])
             };
@@ -337,8 +346,11 @@ impl Database for PgBackend {
     ) -> Result<Vec<ToolAnalytics>, DatabaseError> {
         let conn = self.store.conn().await?;
         let (where_clause, params): (&str, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) =
-            if since.is_some() {
-                ("WHERE created_at >= $1", vec![since.as_ref().unwrap()])
+            if let Some(ref s) = since {
+                (
+                    "WHERE created_at >= $1",
+                    vec![s as &(dyn tokio_postgres::types::ToSql + Sync)],
+                )
             } else {
                 ("", vec![])
             };
@@ -857,5 +869,169 @@ impl Database for PgBackend {
         self.repo
             .hybrid_search(user_id, agent_id, query, embedding, config)
             .await
+    }
+
+    // ==================== Audit Log ====================
+
+    async fn append_audit_event(&self, event: &AuditEvent<'_>) -> Result<(), DatabaseError> {
+        let conn = self.store.conn().await?;
+        let meta_str = event.metadata.and_then(|m| serde_json::to_value(m).ok());
+        conn.execute(
+            r#"INSERT INTO audit_log (
+                event_type, user_id, session_id, job_id, actor,
+                tool_name, input_hash, input_summary, outcome,
+                error_msg, duration_ms, cost_usd, metadata
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)"#,
+            &[
+                &event.event_type,
+                &event.user_id,
+                &event.session_id,
+                &event.job_id,
+                &event.actor,
+                &event.tool_name,
+                &event.input_hash,
+                &event.input_summary,
+                &event.outcome,
+                &event.error_msg,
+                &event.duration_ms,
+                &event.cost_usd,
+                &meta_str,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn query_audit_log(&self, query: AuditQuery) -> Result<Vec<AuditLogRow>, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let limit = query.limit.unwrap_or(100).min(500);
+
+        // Build WHERE clauses dynamically. Owned values must outlive `params`.
+        let since = query.since;
+        let until = query.until;
+        let user_id = query.user_id;
+        let session_id = query.session_id;
+        let event_type = query.event_type;
+        let outcome = query.outcome;
+
+        let mut clauses: Vec<String> = Vec::new();
+        let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
+        let mut idx = 1usize;
+
+        if let Some(ref v) = since {
+            clauses.push(format!("created_at >= ${idx}"));
+            params.push(v);
+            idx += 1;
+        }
+        if let Some(ref v) = until {
+            clauses.push(format!("created_at <= ${idx}"));
+            params.push(v);
+            idx += 1;
+        }
+        if let Some(ref v) = user_id {
+            clauses.push(format!("user_id = ${idx}"));
+            params.push(v);
+            idx += 1;
+        }
+        if let Some(ref v) = session_id {
+            clauses.push(format!("session_id = ${idx}"));
+            params.push(v);
+            idx += 1;
+        }
+        if let Some(ref v) = event_type {
+            clauses.push(format!("event_type = ${idx}"));
+            params.push(v);
+            idx += 1;
+        }
+        if let Some(ref v) = outcome {
+            clauses.push(format!("outcome = ${idx}"));
+            params.push(v);
+            idx += 1;
+        }
+        let _ = idx; // final value not needed after loop
+
+        let where_sql = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", clauses.join(" AND "))
+        };
+
+        let sql = format!(
+            r#"SELECT id, created_at, event_type, user_id, session_id, job_id,
+                      actor, tool_name, input_hash, input_summary, outcome,
+                      error_msg, duration_ms, cost_usd, metadata
+               FROM audit_log
+               {where_sql}
+               ORDER BY created_at DESC
+               LIMIT {limit}"#
+        );
+
+        let rows = conn.query(&sql, &params).await?;
+        let result = rows
+            .iter()
+            .map(|row| AuditLogRow {
+                id: row.get("id"),
+                created_at: row.get("created_at"),
+                event_type: row.get("event_type"),
+                user_id: row.get("user_id"),
+                session_id: row.get("session_id"),
+                job_id: row.get("job_id"),
+                actor: row.get("actor"),
+                tool_name: row.get("tool_name"),
+                input_hash: row.get("input_hash"),
+                input_summary: row.get("input_summary"),
+                outcome: row.get("outcome"),
+                error_msg: row.get("error_msg"),
+                duration_ms: row.get("duration_ms"),
+                cost_usd: row.get("cost_usd"),
+                metadata: row.get("metadata"),
+            })
+            .collect();
+        Ok(result)
+    }
+
+    async fn audit_log_summary(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<AuditEventCount>, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let (where_clause, params): (&str, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) =
+            if let Some(ref s) = since {
+                (
+                    "WHERE created_at >= $1",
+                    vec![s as &(dyn tokio_postgres::types::ToSql + Sync)],
+                )
+            } else {
+                ("", vec![])
+            };
+
+        let sql = format!(
+            r#"SELECT event_type, COUNT(*)::bigint AS count
+               FROM audit_log
+               {where_clause}
+               GROUP BY event_type
+               ORDER BY count DESC"#
+        );
+
+        let rows = conn.query(&sql, &params).await?;
+        let result = rows
+            .iter()
+            .map(|row| AuditEventCount {
+                event_type: row.get("event_type"),
+                count: row.get("count"),
+            })
+            .collect();
+        Ok(result)
+    }
+
+    async fn prune_audit_log(&self, older_than: DateTime<Utc>) -> Result<u64, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let n = conn
+            .execute(
+                "DELETE FROM audit_log WHERE created_at < $1",
+                &[&older_than],
+            )
+            .await?;
+        Ok(n)
     }
 }

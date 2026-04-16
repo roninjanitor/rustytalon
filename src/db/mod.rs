@@ -75,6 +75,76 @@ pub struct CostDataPoint {
     pub call_count: i64,
 }
 
+/// A single audit event to append to the audit log.
+///
+/// Uses borrowed fields to avoid allocation in the hot path. Call sites must
+/// build owned strings before spawning the async task, then borrow them inside.
+#[derive(Debug, Clone)]
+pub struct AuditEvent<'a> {
+    /// Event category: `tool_call`, `approval`, `safety_block`, `job_state`, `auth`.
+    pub event_type: &'a str,
+    pub user_id: Option<&'a str>,
+    /// Conversation / thread UUID (serialised as text for libSQL).
+    pub session_id: Option<Uuid>,
+    pub job_id: Option<Uuid>,
+    /// `agent`, `user`, or `system`.
+    pub actor: Option<&'a str>,
+    /// Tool name for `tool_call` and `approval` events.
+    pub tool_name: Option<&'a str>,
+    /// SHA-256 hex of the stringified input params.
+    pub input_hash: Option<&'a str>,
+    /// First 500 chars of stringified input, secrets redacted.
+    pub input_summary: Option<&'a str>,
+    /// `success`, `failure`, `blocked`, `approved`, or `denied`.
+    pub outcome: Option<&'a str>,
+    pub error_msg: Option<&'a str>,
+    pub duration_ms: Option<i64>,
+    pub cost_usd: Option<&'a str>,
+    pub metadata: Option<&'a serde_json::Value>,
+}
+
+/// Filters for `query_audit_log`.
+///
+/// `limit` is clamped to 500 by both backends.
+#[derive(Debug, Default, Clone)]
+pub struct AuditQuery {
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+    pub user_id: Option<String>,
+    pub session_id: Option<Uuid>,
+    pub event_type: Option<String>,
+    pub outcome: Option<String>,
+    /// Number of rows to return (default 100, max 500).
+    pub limit: Option<i64>,
+}
+
+/// A single row returned from the audit log.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuditLogRow {
+    pub id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub event_type: String,
+    pub user_id: Option<String>,
+    pub session_id: Option<Uuid>,
+    pub job_id: Option<Uuid>,
+    pub actor: Option<String>,
+    pub tool_name: Option<String>,
+    pub input_hash: Option<String>,
+    pub input_summary: Option<String>,
+    pub outcome: Option<String>,
+    pub error_msg: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub cost_usd: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Aggregate count of audit events for a single event type.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuditEventCount {
+    pub event_type: String,
+    pub count: i64,
+}
+
 /// Cumulative token and cost totals for a single conversation (thread).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ConversationTokenStats {
@@ -622,4 +692,32 @@ pub trait Database: Send + Sync {
         embedding: Option<&[f32]>,
         config: &SearchConfig,
     ) -> Result<Vec<SearchResult>, WorkspaceError>;
+
+    // ==================== Audit Log ====================
+
+    /// Append one audit event.
+    ///
+    /// This is fire-and-forget: callers **must** wrap this in a `tokio::spawn`
+    /// and log-on-error rather than propagating failures up the call stack.
+    /// The agent must not fail because audit logging failed.
+    async fn append_audit_event(&self, event: &AuditEvent<'_>) -> Result<(), DatabaseError>;
+
+    /// Query audit log rows with optional filters.
+    ///
+    /// `query.limit` defaults to 100 and is clamped to 500.
+    async fn query_audit_log(&self, query: AuditQuery) -> Result<Vec<AuditLogRow>, DatabaseError>;
+
+    /// Count events grouped by `event_type` for the dashboard summary card.
+    ///
+    /// Pass `since = None` for all-time totals.
+    async fn audit_log_summary(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<AuditEventCount>, DatabaseError>;
+
+    /// Delete audit log rows older than `older_than`.
+    ///
+    /// Returns the number of rows deleted. Called by the heartbeat pruner
+    /// to enforce the `audit_retention_days` setting (default 90 days).
+    async fn prune_audit_log(&self, older_than: DateTime<Utc>) -> Result<u64, DatabaseError>;
 }

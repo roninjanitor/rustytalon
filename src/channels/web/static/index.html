@@ -38,6 +38,8 @@
       <button data-tab="channels">Channels</button>
       <button data-tab="extensions">Extensions</button>
       <button data-tab="analytics">Analytics</button>
+      <button data-tab="audit">Audit</button>
+      <button data-tab="settings">Settings</button>
       <div class="spacer"></div>
       <div class="status" id="gateway-status-trigger">
         <div class="dot" id="sse-dot"></div>
@@ -381,6 +383,116 @@
           <div class="empty-state" id="analytics-tools-empty" style="display:none">No tool calls recorded yet.</div>
         </div>
 
+      </div>
+    </div>
+
+    <!-- Audit Tab -->
+    <div class="tab-panel" id="tab-audit">
+      <div class="analytics-container">
+
+        <!-- Toolbar: time range + filters + refresh -->
+        <div class="analytics-toolbar">
+          <div class="analytics-range-pills" id="audit-range-pills">
+            <button class="range-pill active" data-range="">All time</button>
+            <button class="range-pill" data-range="24h">24 h</button>
+            <button class="range-pill" data-range="7d">7 d</button>
+            <button class="range-pill" data-range="30d">30 d</button>
+            <button class="range-pill" data-range="90d">90 d</button>
+          </div>
+          <div class="analytics-toolbar-right">
+            <select class="audit-filter-select" id="audit-event-type-filter" onchange="loadAudit()">
+              <option value="">All event types</option>
+              <option value="tool_call">tool_call</option>
+              <option value="approval">approval</option>
+              <option value="safety_block">safety_block</option>
+              <option value="job_state">job_state</option>
+              <option value="auth">auth</option>
+            </select>
+            <select class="audit-filter-select" id="audit-outcome-filter" onchange="loadAudit()">
+              <option value="">All outcomes</option>
+              <option value="success">success</option>
+              <option value="failure">failure</option>
+              <option value="blocked">blocked</option>
+              <option value="approved">approved</option>
+              <option value="denied">denied</option>
+            </select>
+            <span class="analytics-updated" id="audit-updated"></span>
+            <button class="btn-icon" title="Refresh" onclick="loadAudit()">&#8635;</button>
+          </div>
+        </div>
+
+        <!-- Summary cards -->
+        <div class="analytics-summary" id="audit-summary"></div>
+
+        <!-- Filterable event table -->
+        <div class="analytics-section-header">
+          <h3 class="analytics-section-title">Audit Events</h3>
+        </div>
+        <div class="analytics-table-wrap">
+          <table class="analytics-table" id="audit-table">
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Type</th>
+                <th>Actor</th>
+                <th>Tool / Detail</th>
+                <th>Outcome</th>
+                <th>Duration</th>
+                <th>Error</th>
+              </tr>
+            </thead>
+            <tbody id="audit-tbody"></tbody>
+          </table>
+          <div class="empty-state" id="audit-empty" style="display:none">No audit events recorded yet.</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Settings Tab -->
+    <div class="tab-panel" id="tab-settings">
+      <div class="settings-container">
+        <div class="settings-toolbar">
+          <h2 class="settings-heading">Settings</h2>
+          <button class="btn-add-skill" onclick="openSettingModal()">+ Add Setting</button>
+        </div>
+
+        <!-- Well-known settings reference -->
+        <div class="settings-reference">
+          <strong>Well-known keys:</strong>
+          <span class="settings-hint-pill">audit_retention_days</span> &mdash; how many days to keep audit log rows (default 90)
+        </div>
+
+        <table class="analytics-table settings-table" id="settings-table">
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Value</th>
+              <th>Updated</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="settings-tbody"></tbody>
+        </table>
+        <div class="empty-state" id="settings-empty" style="display:none">No settings saved yet.</div>
+      </div>
+    </div>
+
+    <!-- Setting editor modal -->
+    <div class="wizard-overlay" id="setting-modal-overlay" style="display:none" onclick="settingModalOverlayClick(event)">
+      <div class="wizard-modal" id="setting-modal">
+        <button class="wizard-close" onclick="closeSettingModal()">&times;</button>
+        <div class="wizard-step-title" id="setting-modal-title">New Setting</div>
+        <div class="skill-form">
+          <label class="wizard-step-label">Key</label>
+          <input type="text" id="setting-key-input" class="wizard-token-input" placeholder="e.g. audit_retention_days" autocomplete="off" spellcheck="false">
+          <label class="wizard-step-label">Value <span class="skill-name-hint">(JSON: number, string, true/false, or object)</span></label>
+          <input type="text" id="setting-value-input" class="wizard-token-input" placeholder='e.g. 30 or "dark" or true'>
+        </div>
+        <div class="wizard-actions">
+          <button class="wizard-btn-secondary" onclick="closeSettingModal()">Cancel</button>
+          <button class="wizard-btn-primary" id="setting-save-btn" onclick="saveSetting()">Save</button>
+        </div>
       </div>
     </div>
 

@@ -24,11 +24,34 @@
 /// - `version` must be unique and monotonically increasing.
 /// - `sql` is executed as a single statement.
 /// - Entries are applied exactly once per database, tracked via `_migrations`.
-pub const INCREMENTAL: &[(i64, &str, &str)] = &[(
-    9,
-    "add_latency_ms_to_llm_calls",
-    "ALTER TABLE llm_calls ADD COLUMN latency_ms INTEGER",
-)];
+pub const INCREMENTAL: &[(i64, &str, &str)] = &[
+    (
+        9,
+        "add_latency_ms_to_llm_calls",
+        "ALTER TABLE llm_calls ADD COLUMN latency_ms INTEGER",
+    ),
+    (
+        10,
+        "add_audit_log",
+        r#"CREATE TABLE IF NOT EXISTS audit_log (
+    id            TEXT PRIMARY KEY,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    event_type    TEXT NOT NULL,
+    user_id       TEXT,
+    session_id    TEXT,
+    job_id        TEXT,
+    actor         TEXT,
+    tool_name     TEXT,
+    input_hash    TEXT,
+    input_summary TEXT,
+    outcome       TEXT,
+    error_msg     TEXT,
+    duration_ms   INTEGER,
+    cost_usd      TEXT,
+    metadata      TEXT
+)"#,
+    ),
+];
 
 /// Consolidated schema for libSQL.
 ///
@@ -550,6 +573,30 @@ CREATE INDEX IF NOT EXISTS idx_routine_runs_status ON routine_runs(status);
 
 -- heartbeat_state
 CREATE INDEX IF NOT EXISTS idx_heartbeat_next_run ON heartbeat_state(next_run);
+
+-- ==================== Audit Log ====================
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id            TEXT PRIMARY KEY,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    event_type    TEXT NOT NULL,
+    user_id       TEXT,
+    session_id    TEXT,
+    job_id        TEXT,
+    actor         TEXT,
+    tool_name     TEXT,
+    input_hash    TEXT,
+    input_summary TEXT,
+    outcome       TEXT,
+    error_msg     TEXT,
+    duration_ms   INTEGER,
+    cost_usd      TEXT,
+    metadata      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_created_at   ON audit_log (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_user_session ON audit_log (user_id, session_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_event_type   ON audit_log (event_type);
 
 -- ==================== Seed data ====================
 

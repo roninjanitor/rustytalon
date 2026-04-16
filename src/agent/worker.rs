@@ -7,16 +7,89 @@ use futures::future::join_all;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use sha2::{Digest, Sha256};
+
 use crate::agent::scheduler::WorkerMessage;
 use crate::agent::task::TaskOutput;
 use crate::context::{ContextManager, JobState};
-use crate::db::Database;
+use crate::db::{AuditEvent, Database};
 use crate::error::Error;
 use crate::llm::{
     ActionPlan, ChatMessage, LlmProvider, Reasoning, ReasoningContext, RespondResult, ToolSelection,
 };
 use crate::safety::SafetyLayer;
 use crate::tools::ToolRegistry;
+
+/// Compute a SHA-256 hex digest of `input` for audit log `input_hash`.
+fn sha256_hex(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .fold(String::with_capacity(64), |mut s, b| {
+            use std::fmt::Write as _;
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
+/// Truncate a string to at most `max_chars` Unicode scalar values.
+fn truncate_chars(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        Some((idx, _)) => &s[..idx],
+        None => s,
+    }
+}
+
+/// Owned representation of an audit event for fire-and-forget spawning.
+///
+/// All fields are owned so the struct can be moved into a `tokio::spawn` block.
+/// Convert to `AuditEvent<'_>` (a borrow-heavy struct) inside the async block
+/// after the move, where all owned strings are still live.
+struct OwnedAuditEvent {
+    pub event_type: String,
+    pub user_id: Option<String>,
+    pub session_id: Option<uuid::Uuid>,
+    pub job_id: Option<uuid::Uuid>,
+    pub actor: Option<String>,
+    pub tool_name: Option<String>,
+    pub input_hash: Option<String>,
+    pub input_summary: Option<String>,
+    pub outcome: Option<String>,
+    pub error_msg: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub cost_usd: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Spawn a fire-and-forget task that writes `ev` to the audit log.
+/// A DB failure is logged as a warning but never surfaces to the caller.
+fn spawn_audit(store: Option<std::sync::Arc<dyn Database>>, ev: OwnedAuditEvent) {
+    if let Some(db) = store {
+        tokio::spawn(async move {
+            let meta_ref = ev.metadata.as_ref();
+            let event = AuditEvent {
+                event_type: &ev.event_type,
+                user_id: ev.user_id.as_deref(),
+                session_id: ev.session_id,
+                job_id: ev.job_id,
+                actor: ev.actor.as_deref(),
+                tool_name: ev.tool_name.as_deref(),
+                input_hash: ev.input_hash.as_deref(),
+                input_summary: ev.input_summary.as_deref(),
+                outcome: ev.outcome.as_deref(),
+                error_msg: ev.error_msg.as_deref(),
+                duration_ms: ev.duration_ms,
+                cost_usd: ev.cost_usd.as_deref(),
+                metadata: meta_ref,
+            };
+            if let Err(e) = db.append_audit_event(&event).await {
+                tracing::warn!(error = %e, "audit log write failed");
+            }
+        });
+    }
+}
 
 /// Shared dependencies for worker execution.
 ///
@@ -84,6 +157,37 @@ impl Worker {
         if let Some(store) = self.store() {
             let store = store.clone();
             let job_id = self.job_id;
+
+            // Emit audit event for notable terminal/error states.
+            if matches!(
+                status,
+                JobState::Failed | JobState::Stuck | JobState::Accepted
+            ) {
+                let outcome = match status {
+                    JobState::Failed => "failure",
+                    JobState::Stuck => "failure",
+                    _ => "success",
+                };
+                spawn_audit(
+                    Some(store.clone()),
+                    OwnedAuditEvent {
+                        event_type: "job_state".to_string(),
+                        user_id: None,
+                        session_id: None,
+                        job_id: Some(job_id),
+                        actor: Some("agent".to_string()),
+                        tool_name: None,
+                        input_hash: None,
+                        input_summary: None,
+                        outcome: Some(outcome.to_string()),
+                        error_msg: reason.clone(),
+                        duration_ms: None,
+                        cost_usd: None,
+                        metadata: Some(serde_json::json!({ "state": status.to_string() })),
+                    },
+                );
+            }
+
             tokio::spawn(async move {
                 if let Err(e) = store
                     .update_job_status(job_id, status, reason.as_deref())
@@ -515,12 +619,44 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
         };
 
         // Persist action to database (fire-and-forget)
-        if let (Some(action), Some(store)) = (action, store) {
+        if let (Some(action), Some(store_arc)) = (&action, &store) {
+            let store_c = store_arc.clone();
+            let action_c = action.clone();
             tokio::spawn(async move {
-                if let Err(e) = store.save_action(job_id, &action).await {
+                if let Err(e) = store_c.save_action(job_id, &action_c).await {
                     tracing::warn!("Failed to persist action for job {}: {}", job_id, e);
                 }
             });
+        }
+
+        // Emit audit event for this tool call (fire-and-forget).
+        {
+            let params_str = params.to_string();
+            let (outcome, err_str) = match &result {
+                Ok(Ok(_)) => ("success".to_string(), None),
+                Ok(Err(e)) => ("failure".to_string(), Some(e.to_string())),
+                Err(_) => ("failure".to_string(), Some("Execution timeout".to_string())),
+            };
+            let summary = truncate_chars(&params_str, 500).to_string();
+            let hash = sha256_hex(&params_str);
+            spawn_audit(
+                store.clone(),
+                OwnedAuditEvent {
+                    event_type: "tool_call".to_string(),
+                    user_id: Some(job_ctx.user_id.clone()),
+                    session_id: job_ctx.conversation_id,
+                    job_id: Some(job_id),
+                    actor: Some("agent".to_string()),
+                    tool_name: Some(tool_name.to_string()),
+                    input_hash: Some(hash),
+                    input_summary: Some(summary),
+                    outcome: Some(outcome),
+                    error_msg: err_str,
+                    duration_ms: Some(elapsed.as_millis() as i64),
+                    cost_usd: None,
+                    metadata: None,
+                },
+            );
         }
 
         // Handle the result
@@ -557,6 +693,33 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
                 let sanitized = self
                     .safety()
                     .sanitize_tool_output(&selection.tool_name, &output);
+
+                // Emit safety_block audit event when the safety layer suppressed output.
+                if sanitized.content.starts_with("[Output blocked") {
+                    let rule_name = if sanitized.content.contains("secret leakage") {
+                        "secret_leakage"
+                    } else {
+                        "safety_policy"
+                    };
+                    spawn_audit(
+                        self.store().cloned(),
+                        OwnedAuditEvent {
+                            event_type: "safety_block".to_string(),
+                            user_id: None,
+                            session_id: None,
+                            job_id: Some(self.job_id),
+                            actor: Some("system".to_string()),
+                            tool_name: Some(selection.tool_name.clone()),
+                            input_hash: None,
+                            input_summary: None,
+                            outcome: Some("blocked".to_string()),
+                            error_msg: None,
+                            duration_ms: None,
+                            cost_usd: None,
+                            metadata: Some(serde_json::json!({ "rule": rule_name })),
+                        },
+                    );
+                }
 
                 // Add to context
                 let wrapped = self.safety().wrap_for_llm(
