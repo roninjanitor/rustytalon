@@ -313,7 +313,11 @@ impl Database for LibSqlBackend {
                     // Column already present in the base schema (baked into SCHEMA before
                     // this incremental migration was added). Treat as a no-op so fresh
                     // installs don't fail — semantically equivalent to ADD COLUMN IF NOT EXISTS.
-                    tracing::debug!(version, name, "Column already exists, recording migration as applied");
+                    tracing::debug!(
+                        version,
+                        name,
+                        "Column already exists, recording migration as applied"
+                    );
                 }
                 Err(e) => {
                     return Err(DatabaseError::Migration(format!(
@@ -3333,12 +3337,8 @@ mod tests {
     /// A file-backed DB shares state across all connections, matching production.
     async fn open_backend() -> (LibSqlBackend, std::path::PathBuf) {
         use crate::db::Database;
-        let path = std::env::temp_dir()
-            .join(format!("rustytalon_test_{}.db", Uuid::new_v4()));
-        let db = libsql::Builder::new_local(&path)
-            .build()
-            .await
-            .unwrap();
+        let path = std::env::temp_dir().join(format!("rustytalon_test_{}.db", Uuid::new_v4()));
+        let db = libsql::Builder::new_local(&path).build().await.unwrap();
         let backend = LibSqlBackend { db: Arc::new(db) };
         backend.run_migrations().await.unwrap();
         (backend, path)
