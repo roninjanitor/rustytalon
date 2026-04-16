@@ -37,6 +37,9 @@
       <button data-tab="skills">Skills</button>
       <button data-tab="channels">Channels</button>
       <button data-tab="extensions">Extensions</button>
+      <button data-tab="analytics">Analytics</button>
+      <button data-tab="audit">Audit</button>
+      <button data-tab="settings">Settings</button>
       <div class="spacer"></div>
       <div class="status" id="gateway-status-trigger">
         <div class="dot" id="sse-dot"></div>
@@ -64,6 +67,7 @@
       </div>
       <div class="chat-container">
         <div class="chat-messages" id="chat-messages"></div>
+        <div class="chat-token-stats" id="chat-token-stats" style="display:none"></div>
         <div class="chat-status" id="chat-status"></div>
         <div class="chat-input">
           <textarea id="chat-input" placeholder="Type a message..." rows="1"></textarea>
@@ -293,6 +297,214 @@
         <div class="wizard-modal" id="wizard-modal">
           <button class="wizard-close" id="wizard-close-btn">&times;</button>
           <div class="wizard-steps" id="wizard-steps"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Analytics Tab -->
+    <div class="tab-panel" id="tab-analytics">
+      <div class="analytics-container">
+
+        <!-- Toolbar: time range + refresh -->
+        <div class="analytics-toolbar">
+          <div class="analytics-range-pills" id="analytics-range-pills">
+            <button class="range-pill active" data-range="">All time</button>
+            <button class="range-pill" data-range="24h">24 h</button>
+            <button class="range-pill" data-range="7d">7 d</button>
+            <button class="range-pill" data-range="30d">30 d</button>
+            <button class="range-pill" data-range="90d">90 d</button>
+          </div>
+          <div class="analytics-toolbar-right">
+            <span class="analytics-updated" id="analytics-updated"></span>
+            <button class="btn-icon" id="analytics-refresh-btn" title="Refresh" onclick="loadAnalytics()">&#8635;</button>
+          </div>
+        </div>
+
+        <!-- Top-line LLM summary cards -->
+        <div class="analytics-summary" id="analytics-summary"></div>
+
+        <!-- Cost over time chart -->
+        <div class="analytics-section-header">
+          <h3 class="analytics-section-title">Cost Over Time</h3>
+        </div>
+        <div class="analytics-chart-wrap" id="analytics-chart-wrap">
+          <svg id="analytics-cost-chart" class="analytics-cost-chart"></svg>
+          <div class="empty-state" id="analytics-chart-empty" style="display:none">No cost data for this period.</div>
+        </div>
+
+        <!-- Job health -->
+        <div class="analytics-section-header">
+          <h3 class="analytics-section-title">Job Health</h3>
+        </div>
+        <div class="analytics-summary" id="analytics-jobs-summary"></div>
+
+        <!-- Per-model breakdown table -->
+        <div class="analytics-section-header">
+          <h3 class="analytics-section-title">Model Usage</h3>
+        </div>
+        <div class="analytics-table-wrap">
+          <table class="analytics-table sortable-table" id="analytics-table">
+            <thead>
+              <tr>
+                <th data-col="provider">Provider</th>
+                <th data-col="model">Model</th>
+                <th data-col="calls" class="num">Calls</th>
+                <th data-col="input" class="num">Input Tokens</th>
+                <th data-col="output" class="num">Output Tokens</th>
+                <th data-col="ratio" class="num">In / Out</th>
+                <th data-col="latency" class="num">Avg / p95 Latency</th>
+                <th data-col="cost_share" class="num">Cost Share</th>
+                <th data-col="avg_cost" class="num">Avg / Call</th>
+                <th data-col="total_cost" class="num">Total Cost</th>
+              </tr>
+            </thead>
+            <tbody id="analytics-tbody"></tbody>
+          </table>
+          <div class="empty-state" id="analytics-empty" style="display:none">No LLM calls recorded yet.</div>
+        </div>
+
+        <!-- Tool usage table -->
+        <div class="analytics-section-header">
+          <h3 class="analytics-section-title">Tool Usage</h3>
+        </div>
+        <div class="analytics-table-wrap">
+          <table class="analytics-table sortable-table" id="analytics-tools-table">
+            <thead>
+              <tr>
+                <th data-col="tool">Tool</th>
+                <th data-col="calls" class="num">Calls</th>
+                <th data-col="success_rate" class="num">Success Rate</th>
+                <th data-col="avg_ms" class="num">Avg Duration</th>
+                <th data-col="cost" class="num">Total Cost</th>
+              </tr>
+            </thead>
+            <tbody id="analytics-tools-tbody"></tbody>
+          </table>
+          <div class="empty-state" id="analytics-tools-empty" style="display:none">No tool calls recorded yet.</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Audit Tab -->
+    <div class="tab-panel" id="tab-audit">
+      <div class="analytics-container">
+
+        <!-- Toolbar: time range + filters + refresh -->
+        <div class="analytics-toolbar">
+          <div class="analytics-range-pills" id="audit-range-pills">
+            <button class="range-pill active" data-range="">All time</button>
+            <button class="range-pill" data-range="24h">24 h</button>
+            <button class="range-pill" data-range="7d">7 d</button>
+            <button class="range-pill" data-range="30d">30 d</button>
+            <button class="range-pill" data-range="90d">90 d</button>
+          </div>
+          <div class="analytics-toolbar-right">
+            <select class="audit-filter-select" id="audit-event-type-filter" onchange="loadAudit()">
+              <option value="">All event types</option>
+              <option value="tool_call">tool_call</option>
+              <option value="approval">approval</option>
+              <option value="safety_block">safety_block</option>
+              <option value="job_state">job_state</option>
+              <option value="auth">auth</option>
+            </select>
+            <select class="audit-filter-select" id="audit-outcome-filter" onchange="loadAudit()">
+              <option value="">All outcomes</option>
+              <option value="success">success</option>
+              <option value="failure">failure</option>
+              <option value="blocked">blocked</option>
+              <option value="approved">approved</option>
+              <option value="denied">denied</option>
+            </select>
+            <span class="analytics-updated" id="audit-updated"></span>
+            <button class="btn-icon" title="Refresh" onclick="loadAudit()">&#8635;</button>
+          </div>
+        </div>
+
+        <!-- Summary cards -->
+        <div class="analytics-summary" id="audit-summary"></div>
+
+        <!-- Filterable event table -->
+        <div class="analytics-section-header">
+          <h3 class="analytics-section-title">Audit Events</h3>
+        </div>
+        <div class="analytics-table-wrap">
+          <table class="analytics-table" id="audit-table">
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Type</th>
+                <th>Actor</th>
+                <th>Tool / Detail</th>
+                <th>Outcome</th>
+                <th>Duration</th>
+                <th>Error</th>
+              </tr>
+            </thead>
+            <tbody id="audit-tbody"></tbody>
+          </table>
+          <div class="empty-state" id="audit-empty" style="display:none">No audit events recorded yet.</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Settings Tab -->
+    <div class="tab-panel" id="tab-settings">
+      <div class="settings-container">
+        <!-- About / Version card -->
+        <div class="version-card" id="version-card" style="margin-bottom:20px">
+          <div class="version-card-header">
+            <div>
+              <div class="version-card-name">RustyTalon</div>
+              <div class="version-card-tagline">Secure personal AI assistant</div>
+            </div>
+          </div>
+          <div class="version-row">
+            <span class="version-label">Current version</span>
+            <span class="version-value" id="version-current">—</span>
+          </div>
+          <div class="version-row" id="version-latest-row" style="display:none">
+            <span class="version-label">Latest release</span>
+            <span class="version-value" id="version-latest">—</span>
+            <span class="version-status" id="version-status"></span>
+          </div>
+          <div class="version-card-actions">
+            <button class="btn-check-update" id="btn-check-update" onclick="checkForUpdate()">Check for updates</button>
+            <a id="version-release-link" class="version-release-link" style="display:none" target="_blank" rel="noopener">View release ↗</a>
+          </div>
+          <div id="version-docker-block" style="display:none">
+            <div class="version-docker-cmd">
+              <code id="version-docker-cmd-text"></code>
+              <button class="btn-copy-docker" onclick="copyDockerCmd()" title="Copy to clipboard">Copy</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-toolbar">
+          <h2 class="settings-heading">Settings</h2>
+          <button class="btn-add-skill" onclick="openCustomSettingModal()">+ Custom Setting</button>
+        </div>
+        <div id="settings-sections"><div class="empty-state">Loading…</div></div>
+      </div>
+    </div>
+
+    <!-- Setting editor modal -->
+    <div class="wizard-overlay" id="setting-modal-overlay" style="display:none" onclick="settingModalOverlayClick(event)">
+      <div class="wizard-modal" id="setting-modal">
+        <button class="wizard-close" onclick="closeSettingModal()">&times;</button>
+        <div class="wizard-step-title" id="setting-modal-title">Edit Setting</div>
+        <div class="settings-modal-desc" id="setting-modal-desc" style="display:none"></div>
+        <div class="skill-form">
+          <label class="wizard-step-label" id="setting-key-label">Key</label>
+          <input type="text" id="setting-key-input" class="wizard-token-input" placeholder="e.g. my.custom.key" autocomplete="off" spellcheck="false">
+          <label class="wizard-step-label">Value <span class="skill-name-hint" id="setting-value-hint">(JSON: number, string, true/false, or object)</span></label>
+          <input type="text" id="setting-value-input" class="wizard-token-input" placeholder='e.g. 30 or "dark" or true'
+                 onkeydown="if(event.key==='Enter')saveSetting()">
+        </div>
+        <div class="wizard-actions">
+          <button class="wizard-btn-secondary" onclick="closeSettingModal()">Cancel</button>
+          <button class="wizard-btn-primary" id="setting-save-btn" onclick="saveSetting()">Save</button>
         </div>
       </div>
     </div>

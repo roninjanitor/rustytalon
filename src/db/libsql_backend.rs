@@ -21,7 +21,10 @@ use crate::agent::routine::{
     NotifyConfig, Routine, RoutineAction, RoutineGuardrails, RoutineRun, RunStatus, Trigger,
 };
 use crate::context::{ActionRecord, JobContext, JobState};
-use crate::db::Database;
+use crate::db::{
+    AuditEvent, AuditEventCount, AuditLogRow, AuditQuery, CostDataPoint, Database, JobAnalytics,
+    ToolAnalytics,
+};
 use crate::error::{DatabaseError, WorkspaceError};
 use crate::history::{
     ConversationMessage, ConversationSummary, JobEventRecord, LlmCallRecord, SandboxJobRecord,
@@ -278,9 +281,59 @@ fn get_opt_ts(row: &libsql::Row, idx: i32) -> Option<DateTime<Utc>> {
 impl Database for LibSqlBackend {
     async fn run_migrations(&self) -> Result<(), DatabaseError> {
         let conn = self.connect()?;
+
+        // Apply the consolidated base schema (idempotent — all CREATE IF NOT EXISTS).
         conn.execute_batch(libsql_migrations::SCHEMA)
             .await
-            .map_err(|e| DatabaseError::Migration(format!("libSQL migration failed: {}", e)))?;
+            .map_err(|e| DatabaseError::Migration(format!("libSQL base schema failed: {}", e)))?;
+
+        // Apply incremental migrations that haven't been recorded yet.
+        for (version, name, sql) in libsql_migrations::INCREMENTAL {
+            let already_applied: bool = conn
+                .query(
+                    "SELECT 1 FROM _migrations WHERE version = ?1",
+                    params![*version],
+                )
+                .await
+                .map_err(|e| DatabaseError::Migration(e.to_string()))?
+                .next()
+                .await
+                .map_err(|e| DatabaseError::Migration(e.to_string()))?
+                .is_some();
+
+            if already_applied {
+                continue;
+            }
+
+            tracing::info!(version, name, "Applying libSQL incremental migration");
+
+            match conn.execute(sql, ()).await {
+                Ok(_) => {}
+                Err(e) if e.to_string().contains("duplicate column name") => {
+                    // Column already present in the base schema (baked into SCHEMA before
+                    // this incremental migration was added). Treat as a no-op so fresh
+                    // installs don't fail — semantically equivalent to ADD COLUMN IF NOT EXISTS.
+                    tracing::debug!(
+                        version,
+                        name,
+                        "Column already exists, recording migration as applied"
+                    );
+                }
+                Err(e) => {
+                    return Err(DatabaseError::Migration(format!(
+                        "libSQL migration V{version} ({name}) failed: {e}"
+                    )));
+                }
+            }
+
+            conn.execute(
+                "INSERT INTO _migrations (version, name) VALUES (?1, ?2)",
+                params![*version, *name],
+            )
+            .await
+            .map_err(|e| DatabaseError::Migration(e.to_string()))?;
+        }
+
         Ok(())
     }
 
@@ -890,8 +943,8 @@ impl Database for LibSqlBackend {
         let id = Uuid::new_v4();
         conn.execute(
                 r#"
-                INSERT INTO llm_calls (id, job_id, conversation_id, provider, model, input_tokens, output_tokens, cost, purpose)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                INSERT INTO llm_calls (id, job_id, conversation_id, provider, model, input_tokens, output_tokens, cost, purpose, latency_ms)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                 "#,
                 params![
                     id.to_string(),
@@ -903,6 +956,7 @@ impl Database for LibSqlBackend {
                     record.output_tokens as i64,
                     record.cost.to_string(),
                     opt_text(record.purpose),
+                    record.latency_ms as i64,
                 ],
             )
             .await
@@ -910,30 +964,46 @@ impl Database for LibSqlBackend {
         Ok(id)
     }
 
-    async fn get_llm_call_stats(&self) -> Result<Vec<LlmCallStats>, DatabaseError> {
+    async fn get_llm_call_stats(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<LlmCallStats>, DatabaseError> {
         let conn = self.connect()?;
-        let mut rows = conn
-            .query(
-                r#"
-                SELECT
-                    provider,
-                    model,
-                    COUNT(*) AS total_calls,
-                    COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
-                    COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
-                    COALESCE(SUM(CAST(cost AS REAL)), 0.0) AS total_cost,
-                    CASE WHEN COUNT(*) > 0
-                        THEN COALESCE(SUM(CAST(cost AS REAL)), 0.0) / COUNT(*)
-                        ELSE 0.0
-                    END AS avg_cost_per_call
-                FROM llm_calls
-                GROUP BY provider, model
-                ORDER BY total_cost DESC
-                "#,
-                (),
-            )
-            .await
-            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        // libSQL lacks percentile functions; p95 is returned as NULL.
+        let (where_clause, since_str) = if let Some(ts) = since {
+            ("WHERE created_at >= ?1", Some(ts.to_rfc3339()))
+        } else {
+            ("", None)
+        };
+        let sql = format!(
+            r#"
+            SELECT
+                provider,
+                model,
+                COUNT(*) AS total_calls,
+                COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
+                COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
+                COALESCE(SUM(CAST(cost AS REAL)), 0.0) AS total_cost,
+                CASE WHEN COUNT(*) > 0
+                    THEN COALESCE(SUM(CAST(cost AS REAL)), 0.0) / COUNT(*)
+                    ELSE 0.0
+                END AS avg_cost_per_call,
+                AVG(CAST(latency_ms AS REAL)) AS avg_latency_ms
+            FROM llm_calls
+            {where_clause}
+            GROUP BY provider, model
+            ORDER BY total_cost DESC
+            "#
+        );
+        let mut rows = if let Some(ref ts_str) = since_str {
+            conn.query(&sql, params![ts_str.as_str()])
+                .await
+                .map_err(|e| DatabaseError::Query(e.to_string()))?
+        } else {
+            conn.query(&sql, ())
+                .await
+                .map_err(|e| DatabaseError::Query(e.to_string()))?
+        };
 
         let mut stats = Vec::new();
         while let Some(row) = rows
@@ -962,6 +1032,7 @@ impl Database for LibSqlBackend {
             let avg_cost_f64: f64 = row
                 .get(6)
                 .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let avg_latency_ms: Option<f64> = row.get(7).ok();
 
             stats.push(LlmCallStats {
                 provider,
@@ -971,10 +1042,263 @@ impl Database for LibSqlBackend {
                 total_output_tokens,
                 total_cost: Decimal::from_f64_retain(total_cost_f64).unwrap_or_default(),
                 avg_cost_per_call: Decimal::from_f64_retain(avg_cost_f64).unwrap_or_default(),
+                avg_latency_ms,
+                // libSQL lacks a percentile aggregate; always NULL here.
+                p95_latency_ms: None,
             });
         }
 
         Ok(stats)
+    }
+
+    async fn get_job_analytics(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<JobAnalytics, DatabaseError> {
+        let conn = self.connect()?;
+        let (where_clause, since_str) = if let Some(ts) = since {
+            ("WHERE created_at >= ?1", Some(ts.to_rfc3339()))
+        } else {
+            ("", None)
+        };
+        let sql = format!(
+            r#"
+            SELECT
+                COUNT(*) AS total_jobs,
+                SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) AS completed_jobs,
+                SUM(CASE WHEN status = 'failed'   THEN 1 ELSE 0 END) AS failed_jobs,
+                SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress_jobs,
+                COALESCE(AVG(
+                    CASE WHEN completed_at IS NOT NULL AND started_at IS NOT NULL
+                        THEN (julianday(completed_at) - julianday(started_at)) * 86400.0
+                        ELSE NULL
+                    END
+                ), 0.0) AS avg_duration_secs,
+                COALESCE(SUM(CAST(actual_cost AS REAL)), 0.0) AS total_cost
+            FROM agent_jobs
+            {where_clause}
+            "#
+        );
+
+        let mut rows = if let Some(ref ts_str) = since_str {
+            conn.query(&sql, params![ts_str.as_str()])
+                .await
+                .map_err(|e| DatabaseError::Query(e.to_string()))?
+        } else {
+            conn.query(&sql, ())
+                .await
+                .map_err(|e| DatabaseError::Query(e.to_string()))?
+        };
+
+        let row = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+            .ok_or_else(|| DatabaseError::Query("No job_analytics row returned".to_string()))?;
+
+        let total: i64 = row.get(0).unwrap_or(0);
+        let completed: i64 = row.get(1).unwrap_or(0);
+        let failed: i64 = row.get(2).unwrap_or(0);
+        let in_progress: i64 = row.get(3).unwrap_or(0);
+        let avg_duration: f64 = row.get(4).unwrap_or(0.0);
+        let total_cost_f64: f64 = row.get(5).unwrap_or(0.0);
+
+        Ok(JobAnalytics {
+            total_jobs: total,
+            completed_jobs: completed,
+            failed_jobs: failed,
+            in_progress_jobs: in_progress,
+            success_rate: if total > 0 {
+                completed as f64 / total as f64
+            } else {
+                0.0
+            },
+            avg_duration_secs: avg_duration,
+            total_cost_usd: Decimal::from_f64_retain(total_cost_f64)
+                .unwrap_or_default()
+                .to_string(),
+        })
+    }
+
+    async fn get_tool_analytics(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<ToolAnalytics>, DatabaseError> {
+        let conn = self.connect()?;
+        let (where_clause, since_str) = if let Some(ts) = since {
+            ("WHERE created_at >= ?1", Some(ts.to_rfc3339()))
+        } else {
+            ("", None)
+        };
+        let sql = format!(
+            r#"
+            SELECT
+                tool_name,
+                COUNT(*) AS total_calls,
+                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS successful_calls,
+                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failed_calls,
+                COALESCE(AVG(CAST(duration_ms AS REAL)), 0.0) AS avg_duration_ms,
+                COALESCE(SUM(CAST(cost AS REAL)), 0.0) AS total_cost
+            FROM job_actions
+            {where_clause}
+            GROUP BY tool_name
+            ORDER BY total_calls DESC
+            "#
+        );
+
+        let mut rows = if let Some(ref ts_str) = since_str {
+            conn.query(&sql, params![ts_str.as_str()])
+                .await
+                .map_err(|e| DatabaseError::Query(e.to_string()))?
+        } else {
+            conn.query(&sql, ())
+                .await
+                .map_err(|e| DatabaseError::Query(e.to_string()))?
+        };
+
+        let mut stats = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            let tool_name: String = row
+                .get(0)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let total: i64 = row
+                .get(1)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let successful: i64 = row
+                .get(2)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let failed_calls: i64 = row
+                .get(3)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let avg_duration_ms: f64 = row.get(4).unwrap_or(0.0);
+            let total_cost_f64: f64 = row.get(5).unwrap_or(0.0);
+
+            stats.push(ToolAnalytics {
+                tool_name,
+                total_calls: total,
+                successful_calls: successful,
+                failed_calls,
+                success_rate: if total > 0 {
+                    successful as f64 / total as f64
+                } else {
+                    0.0
+                },
+                avg_duration_ms,
+                total_cost_usd: Decimal::from_f64_retain(total_cost_f64)
+                    .unwrap_or_default()
+                    .to_string(),
+            });
+        }
+
+        Ok(stats)
+    }
+
+    async fn get_cost_over_time(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<CostDataPoint>, DatabaseError> {
+        let conn = self.connect()?;
+        let since_str = since.to_rfc3339();
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT
+                    DATE(created_at) AS day,
+                    COALESCE(SUM(CAST(cost AS REAL)), 0.0) AS daily_cost,
+                    COUNT(*) AS call_count
+                FROM llm_calls
+                WHERE created_at >= ?1
+                GROUP BY DATE(created_at)
+                ORDER BY day ASC
+                "#,
+                params![since_str.as_str()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let mut points = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            let day: String = row
+                .get(0)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let daily_cost_f64: f64 = row.get(1).unwrap_or(0.0);
+            let call_count: i64 = row
+                .get(2)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            points.push(CostDataPoint {
+                day,
+                cost_usd: Decimal::from_f64_retain(daily_cost_f64)
+                    .unwrap_or_default()
+                    .to_string(),
+                call_count,
+            });
+        }
+
+        Ok(points)
+    }
+
+    async fn get_conversation_token_stats(
+        &self,
+        conversation_id: Uuid,
+    ) -> Result<crate::db::ConversationTokenStats, DatabaseError> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT
+                    COALESCE(SUM(input_tokens), 0),
+                    COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(CAST(cost AS REAL)), 0.0),
+                    COUNT(*)
+                FROM llm_calls
+                WHERE conversation_id = ?1
+                "#,
+                params![conversation_id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            let total_input_tokens: i64 = row
+                .get(0)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let total_output_tokens: i64 = row
+                .get(1)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let total_cost_f64: f64 = row
+                .get(2)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let call_count: i64 = row
+                .get(3)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            Ok(crate::db::ConversationTokenStats {
+                conversation_id,
+                total_input_tokens,
+                total_output_tokens,
+                total_cost: Decimal::from_f64_retain(total_cost_f64).unwrap_or_default(),
+                call_count,
+            })
+        } else {
+            Ok(crate::db::ConversationTokenStats {
+                conversation_id,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                total_cost: Decimal::ZERO,
+                call_count: 0,
+            })
+        }
     }
 
     // ==================== Estimation Snapshots ====================
@@ -2619,6 +2943,206 @@ impl Database for LibSqlBackend {
 
         Ok(reciprocal_rank_fusion(fts_results, vector_results, config))
     }
+
+    // ==================== Audit Log ====================
+
+    async fn append_audit_event(&self, event: &AuditEvent<'_>) -> Result<(), DatabaseError> {
+        let conn = self.connect()?;
+        let id = Uuid::new_v4().to_string();
+        let now = fmt_ts(&Utc::now());
+        let meta_str = event.metadata.and_then(|m| serde_json::to_string(m).ok());
+        conn.execute(
+            r#"INSERT INTO audit_log (
+                id, created_at, event_type, user_id, session_id, job_id, actor,
+                tool_name, input_hash, input_summary, outcome, error_msg,
+                duration_ms, cost_usd, metadata
+            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"#,
+            params![
+                id,
+                now,
+                event.event_type,
+                opt_text(event.user_id),
+                opt_text(event.session_id.as_ref().map(|u| u.to_string()).as_deref()),
+                opt_text(event.job_id.as_ref().map(|u| u.to_string()).as_deref()),
+                opt_text(event.actor),
+                opt_text(event.tool_name),
+                opt_text(event.input_hash),
+                opt_text(event.input_summary),
+                opt_text(event.outcome),
+                opt_text(event.error_msg),
+                event
+                    .duration_ms
+                    .map(libsql::Value::Integer)
+                    .unwrap_or(libsql::Value::Null),
+                opt_text(event.cost_usd),
+                opt_text_owned(meta_str)
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn query_audit_log(&self, query: AuditQuery) -> Result<Vec<AuditLogRow>, DatabaseError> {
+        let conn = self.connect()?;
+        let limit = query.limit.unwrap_or(100).min(500);
+
+        // Build WHERE clause from filter options.
+        let mut clauses: Vec<String> = Vec::new();
+        let mut positional: Vec<libsql::Value> = Vec::new();
+        let mut idx = 1usize;
+
+        if let Some(ref v) = query.since {
+            clauses.push(format!("created_at >= ?{idx}"));
+            positional.push(libsql::Value::Text(fmt_ts(v)));
+            idx += 1;
+        }
+        if let Some(ref v) = query.until {
+            clauses.push(format!("created_at <= ?{idx}"));
+            positional.push(libsql::Value::Text(fmt_ts(v)));
+            idx += 1;
+        }
+        if let Some(ref v) = query.user_id {
+            clauses.push(format!("user_id = ?{idx}"));
+            positional.push(libsql::Value::Text(v.clone()));
+            idx += 1;
+        }
+        if let Some(ref v) = query.session_id {
+            clauses.push(format!("session_id = ?{idx}"));
+            positional.push(libsql::Value::Text(v.to_string()));
+            idx += 1;
+        }
+        if let Some(ref v) = query.event_type {
+            clauses.push(format!("event_type = ?{idx}"));
+            positional.push(libsql::Value::Text(v.clone()));
+            idx += 1;
+        }
+        if let Some(ref v) = query.outcome {
+            clauses.push(format!("outcome = ?{idx}"));
+            positional.push(libsql::Value::Text(v.clone()));
+            idx += 1;
+        }
+        let _ = idx;
+
+        let where_sql = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", clauses.join(" AND "))
+        };
+
+        let sql = format!(
+            r#"SELECT id, created_at, event_type, user_id, session_id, job_id,
+                      actor, tool_name, input_hash, input_summary, outcome,
+                      error_msg, duration_ms, cost_usd, metadata
+               FROM audit_log
+               {where_sql}
+               ORDER BY created_at DESC
+               LIMIT {limit}"#
+        );
+
+        let mut rows = conn
+            .query(&sql, libsql::params_from_iter(positional))
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let mut result = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            // Columns: 0=id, 1=created_at, 2=event_type, 3=user_id, 4=session_id,
+            //          5=job_id, 6=actor, 7=tool_name, 8=input_hash, 9=input_summary,
+            //         10=outcome, 11=error_msg, 12=duration_ms, 13=cost_usd, 14=metadata
+            let id: Uuid = get_text(&row, 0).parse().unwrap_or_default();
+            let created_at = get_ts(&row, 1);
+            let event_type = get_text(&row, 2);
+            let user_id = get_opt_text(&row, 3);
+            let session_id = get_opt_text(&row, 4).and_then(|s| s.parse::<Uuid>().ok());
+            let job_id = get_opt_text(&row, 5).and_then(|s| s.parse::<Uuid>().ok());
+            let actor = get_opt_text(&row, 6);
+            let tool_name = get_opt_text(&row, 7);
+            let input_hash = get_opt_text(&row, 8);
+            let input_summary = get_opt_text(&row, 9);
+            let outcome = get_opt_text(&row, 10);
+            let error_msg = get_opt_text(&row, 11);
+            let duration_ms: Option<i64> = row.get::<i64>(12).ok();
+            let cost_usd = get_opt_text(&row, 13);
+            let metadata = get_opt_text(&row, 14).and_then(|s| serde_json::from_str(&s).ok());
+
+            result.push(AuditLogRow {
+                id,
+                created_at,
+                event_type,
+                user_id,
+                session_id,
+                job_id,
+                actor,
+                tool_name,
+                input_hash,
+                input_summary,
+                outcome,
+                error_msg,
+                duration_ms,
+                cost_usd,
+                metadata,
+            });
+        }
+        Ok(result)
+    }
+
+    async fn audit_log_summary(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<AuditEventCount>, DatabaseError> {
+        let conn = self.connect()?;
+        let (where_sql, positional): (String, Vec<libsql::Value>) = if let Some(ref v) = since {
+            (
+                "WHERE created_at >= ?1".to_string(),
+                vec![libsql::Value::Text(fmt_ts(v))],
+            )
+        } else {
+            (String::new(), vec![])
+        };
+
+        let sql = format!(
+            r#"SELECT event_type, COUNT(*) AS count
+               FROM audit_log
+               {where_sql}
+               GROUP BY event_type
+               ORDER BY count DESC"#
+        );
+
+        let mut rows = conn
+            .query(&sql, libsql::params_from_iter(positional))
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let mut result = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            result.push(AuditEventCount {
+                event_type: get_text(&row, 0),
+                count: get_i64(&row, 1),
+            });
+        }
+        Ok(result)
+    }
+
+    async fn prune_audit_log(&self, older_than: DateTime<Utc>) -> Result<u64, DatabaseError> {
+        let conn = self.connect()?;
+        let n = conn
+            .execute(
+                "DELETE FROM audit_log WHERE created_at < ?1",
+                libsql::params![fmt_ts(&older_than)],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        Ok(n)
+    }
 }
 
 // ==================== Row conversion helpers ====================
@@ -2801,5 +3325,105 @@ mod tests {
         let bob = list_preview(&conn, "bob", None, 50).await;
         assert_eq!(bob.len(), 1);
         assert_eq!(bob[0], id_bob.to_string());
+    }
+
+    // ── Incremental migrations ────────────────────────────────────────────────
+
+    /// Build a LibSqlBackend backed by a temporary file DB and run its full
+    /// migration logic (base schema + incremental).
+    ///
+    /// Uses a real file rather than `:memory:` because libSQL in-memory databases
+    /// are per-connection — DDL applied on one connection is invisible to the next.
+    /// A file-backed DB shares state across all connections, matching production.
+    async fn open_backend() -> (LibSqlBackend, std::path::PathBuf) {
+        use crate::db::Database;
+        let path = std::env::temp_dir().join(format!("rustytalon_test_{}.db", Uuid::new_v4()));
+        let db = libsql::Builder::new_local(&path).build().await.unwrap();
+        let backend = LibSqlBackend { db: Arc::new(db) };
+        backend.run_migrations().await.unwrap();
+        (backend, path)
+    }
+
+    #[tokio::test]
+    async fn test_incremental_migrations_recorded() {
+        // After run_migrations, every entry in INCREMENTAL must appear in _migrations.
+        let (backend, _db_path) = open_backend().await;
+        let conn = backend.connect().unwrap();
+
+        for (version, name, _sql) in crate::db::libsql_migrations::INCREMENTAL {
+            let mut rows = conn
+                .query(
+                    "SELECT name FROM _migrations WHERE version = ?1",
+                    params![*version],
+                )
+                .await
+                .unwrap();
+            let row = rows.next().await.unwrap();
+            assert!(
+                row.is_some(),
+                "migration V{version} ({name}) not recorded in _migrations"
+            );
+            let stored_name: String = row.unwrap().get(0).unwrap();
+            assert_eq!(stored_name, *name);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_incremental_migrations_idempotent() {
+        // Running run_migrations twice must not fail (no duplicate key errors).
+        use crate::db::Database;
+        let db = libsql::Builder::new_local(":memory:")
+            .build()
+            .await
+            .unwrap();
+        let backend = LibSqlBackend { db: Arc::new(db) };
+        backend.run_migrations().await.unwrap();
+        backend.run_migrations().await.unwrap(); // second run — must succeed
+    }
+
+    #[tokio::test]
+    async fn test_llm_call_latency_round_trips() {
+        // record_llm_call stores latency_ms; get_llm_call_stats returns avg_latency_ms.
+        use crate::db::Database;
+        use crate::history::LlmCallRecord;
+        use rust_decimal::Decimal;
+
+        let (backend, _db_path) = open_backend().await;
+
+        let record = LlmCallRecord {
+            job_id: None,
+            conversation_id: None,
+            provider: "test-provider",
+            model: "test-model",
+            input_tokens: 100,
+            output_tokens: 50,
+            cost: Decimal::new(5, 4), // 0.0005
+            purpose: Some("complete"),
+            latency_ms: 1234,
+        };
+        backend.record_llm_call(&record).await.unwrap();
+
+        let record2 = LlmCallRecord {
+            latency_ms: 766,
+            ..record
+        };
+        backend.record_llm_call(&record2).await.unwrap();
+
+        let stats = backend.get_llm_call_stats(None).await.unwrap();
+        assert_eq!(stats.len(), 1);
+
+        let s = &stats[0];
+        assert_eq!(s.provider, "test-provider");
+        assert_eq!(s.model, "test-model");
+        assert_eq!(s.total_calls, 2);
+        assert_eq!(s.total_input_tokens, 200);
+        assert_eq!(s.total_output_tokens, 100);
+
+        // avg of 1234 and 766 = 1000
+        let avg = s.avg_latency_ms.expect("avg_latency_ms should be Some");
+        assert!(
+            (avg - 1000.0).abs() < 1.0,
+            "expected avg ~1000 ms, got {avg}"
+        );
     }
 }

@@ -10,6 +10,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-04-16
+
+### Added
+- **Analytics tab** in the web UI — per-model usage dashboard showing total calls, input/output tokens, avg latency, avg cost per call, and total cost with top-line summary cards
+- `GET /api/analytics/models` endpoint returning per-model LLM usage breakdown with grand totals
+- `latency_ms` column on `llm_calls` table (Postgres migration V9, libSQL incremental migration) — tracks end-to-end LLM call latency; existing rows show no latency data (pre-V9), new calls record it automatically
+- Incremental migration system for libSQL — `_migrations` table now tracks applied schema changes so `ALTER TABLE` statements run exactly once on existing databases; previously the table existed but was unused
+- **Enhanced analytics dashboard** — p95 latency per model (PostgreSQL `percentile_cont`; NULL on libSQL), time-range filtering (24h / 7d / 30d / 90d), SVG cost-over-time bar chart, job health summary cards, tool usage table with success-rate badges, sortable tables, color-coded latency badges, and input/output token ratio column
+- Three new analytics API endpoints: `GET /api/analytics/jobs`, `GET /api/analytics/tools`, `GET /api/analytics/cost-over-time`; `GET /api/analytics/models` now accepts `?range=` query param
+- **Audit log** — production-grade event trail for tool calls (with SHA-256 input hash), approval decisions, safety blocks, and job state transitions (Failed/Stuck/Accepted); stored in new `audit_log` table (Postgres migration V10, libSQL incremental)
+- **Audit tab** in the web UI — range pills, event type/outcome filters, summary cards, filterable table with expandable detail rows
+- Four new Database trait methods: `append_audit_event`, `query_audit_log`, `audit_log_summary`, `prune_audit_log` — implemented in both backends and `MockDatabase`
+- Heartbeat pruner automatically prunes audit events older than `audit_retention_days` setting (default 90 days) on each tick
+- **Settings tab** in the web UI — view, add, edit, and delete all user settings with JSON value validation and a well-known-keys reference sidebar
+- **Version info & update check** in Settings — displays current version and a "Check for updates" button that queries the GitHub Releases API; shows latest tag, release URL, and Docker pull command when a newer image is available
+- `GET /api/version` endpoint (optional `?check=true` to query GitHub Releases)
+
+### Changed
+- `LlmCallStats` now includes `avg_latency_ms: Option<f64>` and `p95_latency_ms: Option<f64>` — `None` for calls recorded before V9/time-range with no data; omitted from JSON responses via `skip_serializing_if`
+- `MockDatabase` in test utils now captures full `LlmCallRecord` fields (not just call count) via `captured_calls()` accessor
+
 ## [0.2.2] - 2026-04-14
 
 ### Added

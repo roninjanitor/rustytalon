@@ -96,6 +96,14 @@ pub enum SseEvent {
     #[serde(rename = "tool_started")]
     ToolStarted {
         name: String,
+        input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thread_id: Option<String>,
+    },
+    #[serde(rename = "tokens_used")]
+    TokensUsed {
+        input_tokens: u32,
+        output_tokens: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         thread_id: Option<String>,
     },
@@ -571,6 +579,7 @@ impl WsServerMessage {
             SseEvent::Response { .. } => "response",
             SseEvent::Thinking { .. } => "thinking",
             SseEvent::ToolStarted { .. } => "tool_started",
+            SseEvent::TokensUsed { .. } => "tokens_used",
             SseEvent::ToolCompleted { .. } => "tool_completed",
             SseEvent::ToolResult { .. } => "tool_result",
             SseEvent::StreamChunk { .. } => "stream_chunk",
@@ -691,6 +700,30 @@ pub struct SettingsExportResponse {
 pub struct HealthResponse {
     pub status: &'static str,
     pub channel: &'static str,
+}
+
+// --- Version ---
+
+#[derive(Debug, Serialize)]
+pub struct VersionResponse {
+    /// Current running version (from Cargo.toml at compile time).
+    pub version: &'static str,
+    /// Latest published version tag from GitHub releases, if the update check
+    /// was requested and succeeded.  `None` if not checked or the check failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest: Option<String>,
+    /// Whether a newer version is available (only set when `latest` is present).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_available: Option<bool>,
+    /// Direct URL to the GitHub release page for `latest`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_url: Option<String>,
+    /// Docker pull command for the latest image, if an update is available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker_pull: Option<String>,
+    /// Human-readable error if the update check failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_error: Option<String>,
 }
 
 #[cfg(test)]
@@ -1029,6 +1062,109 @@ mod tests {
         let req: ExtensionConfigWriteRequest = serde_json::from_str(json).unwrap();
         assert!(req.values.is_empty());
     }
+
+    // --- ConversationTokenStatsResponse ---
+
+    #[test]
+    fn test_conversation_token_stats_response_serializes() {
+        use rust_decimal::Decimal;
+        let resp = ConversationTokenStatsResponse {
+            thread_id: uuid::Uuid::nil(),
+            total_input_tokens: 1000,
+            total_output_tokens: 500,
+            total_tokens: 1500,
+            total_cost: Decimal::new(125, 4), // 0.0125
+            call_count: 3,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["total_input_tokens"], 1000);
+        assert_eq!(v["total_output_tokens"], 500);
+        assert_eq!(v["total_tokens"], 1500);
+        assert_eq!(v["call_count"], 3);
+        // thread_id should be a UUID string
+        assert_eq!(
+            v["thread_id"].as_str().unwrap(),
+            "00000000-0000-0000-0000-000000000000"
+        );
+    }
+
+    #[test]
+    fn test_conversation_token_stats_total_tokens_is_sum() {
+        use rust_decimal::Decimal;
+        let input = 800_i64;
+        let output = 200_i64;
+        let resp = ConversationTokenStatsResponse {
+            thread_id: uuid::Uuid::new_v4(),
+            total_input_tokens: input,
+            total_output_tokens: output,
+            total_tokens: input + output,
+            total_cost: Decimal::ZERO,
+            call_count: 1,
+        };
+        assert_eq!(
+            resp.total_tokens,
+            resp.total_input_tokens + resp.total_output_tokens
+        );
+    }
+
+    // ── Analytics types ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_model_stats_serializes_with_latency() {
+        let stats = ModelStats {
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+            total_calls: 42,
+            total_input_tokens: 10_000,
+            total_output_tokens: 5_000,
+            total_cost_usd: "0.001234".to_string(),
+            avg_cost_per_call_usd: "0.000029".to_string(),
+            avg_latency_ms: Some(823.5),
+            p95_latency_ms: Some(1200.0),
+        };
+        let v = serde_json::to_value(&stats).unwrap();
+        assert_eq!(v["provider"], "anthropic");
+        assert_eq!(v["total_calls"], 42);
+        assert_eq!(v["avg_latency_ms"], 823.5);
+    }
+
+    #[test]
+    fn test_model_stats_omits_latency_when_none() {
+        // avg_latency_ms is skip_serializing_if = Option::is_none — must be absent,
+        // not null, when there's no latency data (pre-V9 calls).
+        let stats = ModelStats {
+            provider: "openai".to_string(),
+            model: "gpt-4o".to_string(),
+            total_calls: 1,
+            total_input_tokens: 100,
+            total_output_tokens: 50,
+            total_cost_usd: "0.000010".to_string(),
+            avg_cost_per_call_usd: "0.000010".to_string(),
+            avg_latency_ms: None,
+            p95_latency_ms: None,
+        };
+        let v = serde_json::to_value(&stats).unwrap();
+        assert!(
+            !v.as_object().unwrap().contains_key("avg_latency_ms"),
+            "avg_latency_ms should be absent when None, not serialized as null"
+        );
+    }
+
+    #[test]
+    fn test_model_analytics_response_totals() {
+        let resp = ModelAnalyticsResponse {
+            models: vec![],
+            total_input_tokens: 1_000_000,
+            total_output_tokens: 500_000,
+            total_cost_usd: "1.5000".to_string(),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["total_input_tokens"], 1_000_000);
+        assert_eq!(v["total_output_tokens"], 500_000);
+        assert_eq!(v["total_cost_usd"], "1.5000");
+        assert!(v["models"].as_array().unwrap().is_empty());
+    }
 }
 
 // --- Channels ---
@@ -1054,6 +1190,18 @@ pub struct ChannelToggleResponse {
     pub message: String,
 }
 
+// --- Conversation Token Stats ---
+
+#[derive(Debug, Serialize)]
+pub struct ConversationTokenStatsResponse {
+    pub thread_id: Uuid,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_tokens: i64,
+    pub total_cost: rust_decimal::Decimal,
+    pub call_count: i64,
+}
+
 // --- Provider Health & Costs ---
 
 /// Response for the provider health summary endpoint.
@@ -1066,6 +1214,84 @@ pub struct ProviderHealthResponse {
 #[derive(Debug, Serialize)]
 pub struct LlmCostStatsResponse {
     pub stats: Vec<crate::llm::tracked::LlmCallStats>,
+}
+
+// --- Analytics ---
+
+/// Response for GET /api/analytics/models — per-model usage breakdown.
+#[derive(Debug, Serialize)]
+pub struct ModelAnalyticsResponse {
+    pub models: Vec<ModelStats>,
+    /// Grand total input tokens across all models.
+    pub total_input_tokens: i64,
+    /// Grand total output tokens across all models.
+    pub total_output_tokens: i64,
+    /// Grand total cost across all models (USD string).
+    pub total_cost_usd: String,
+}
+
+/// Per-model stats row returned by the analytics endpoint.
+#[derive(Debug, Serialize)]
+pub struct ModelStats {
+    pub provider: String,
+    pub model: String,
+    pub total_calls: i64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    /// Total cost formatted as a USD decimal string (e.g. "0.002341").
+    pub total_cost_usd: String,
+    /// Average cost per call formatted as a USD decimal string.
+    pub avg_cost_per_call_usd: String,
+    /// Average end-to-end latency in milliseconds, absent for calls recorded before V9.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avg_latency_ms: Option<f64>,
+    /// 95th-percentile latency in milliseconds (PostgreSQL only; null on libSQL).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p95_latency_ms: Option<f64>,
+}
+
+/// Response for GET /api/analytics/jobs — job health summary.
+#[derive(Debug, Serialize)]
+pub struct JobAnalyticsResponse {
+    pub total_jobs: i64,
+    pub completed_jobs: i64,
+    pub failed_jobs: i64,
+    pub in_progress_jobs: i64,
+    pub success_rate: f64,
+    pub avg_duration_secs: f64,
+    pub total_cost_usd: String,
+}
+
+/// Response for GET /api/analytics/tools — per-tool usage breakdown.
+#[derive(Debug, Serialize)]
+pub struct ToolAnalyticsResponse {
+    pub tools: Vec<ToolStats>,
+}
+
+/// Per-tool stats row.
+#[derive(Debug, Serialize)]
+pub struct ToolStats {
+    pub tool_name: String,
+    pub total_calls: i64,
+    pub successful_calls: i64,
+    pub failed_calls: i64,
+    pub success_rate: f64,
+    pub avg_duration_ms: f64,
+    pub total_cost_usd: String,
+}
+
+/// Response for GET /api/analytics/cost-over-time.
+#[derive(Debug, Serialize)]
+pub struct CostOverTimeResponse {
+    pub data: Vec<CostPoint>,
+}
+
+/// One day's worth of cost data.
+#[derive(Debug, Serialize)]
+pub struct CostPoint {
+    pub day: String,
+    pub cost_usd: String,
+    pub call_count: i64,
 }
 
 // --- Skills ---
@@ -1090,4 +1316,71 @@ pub struct SaveSkillRequest {
     #[serde(default)]
     pub description: String,
     pub prompt: String,
+}
+
+// --- Audit Log ---
+
+/// Query parameters for GET /api/audit/log.
+#[derive(Debug, Deserialize)]
+pub struct AuditLogQuery {
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub user_id: Option<String>,
+    pub session_id: Option<String>,
+    pub event_type: Option<String>,
+    pub outcome: Option<String>,
+    pub limit: Option<i64>,
+}
+
+/// A single row in the audit log API response.
+#[derive(Debug, Serialize)]
+pub struct AuditLogEntry {
+    pub id: Uuid,
+    pub created_at: String,
+    pub event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_msg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Response for GET /api/audit/log.
+#[derive(Debug, Serialize)]
+pub struct AuditLogResponse {
+    pub entries: Vec<AuditLogEntry>,
+    pub count: usize,
+}
+
+/// One row of event-type counts for the summary card.
+#[derive(Debug, Serialize)]
+pub struct AuditEventCountEntry {
+    pub event_type: String,
+    pub count: i64,
+}
+
+/// Response for GET /api/audit/summary.
+#[derive(Debug, Serialize)]
+pub struct AuditSummaryResponse {
+    pub counts: Vec<AuditEventCountEntry>,
+    pub total: i64,
 }

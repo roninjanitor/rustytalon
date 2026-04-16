@@ -2581,7 +2581,7 @@ fn status_to_wit(status: &StatusUpdate, metadata: &serde_json::Value) -> wit_cha
             metadata_json,
             extra_json: None,
         },
-        StatusUpdate::ToolStarted { name } => wit_channel::StatusUpdate {
+        StatusUpdate::ToolStarted { name, .. } => wit_channel::StatusUpdate {
             status: wit_channel::StatusType::ToolStarted,
             message: name.clone(),
             metadata_json,
@@ -2661,6 +2661,12 @@ fn status_to_wit(status: &StatusUpdate, metadata: &serde_json::Value) -> wit_cha
                 if *success { "completed" } else { "failed" },
                 extension_name
             ),
+            metadata_json,
+            extra_json: None,
+        },
+        StatusUpdate::TokensUsed { .. } => wit_channel::StatusUpdate {
+            status: wit_channel::StatusType::Thinking,
+            message: String::new(),
             metadata_json,
             extra_json: None,
         },
@@ -3197,7 +3203,10 @@ mod tests {
         for status in [
             crate::channels::StatusUpdate::Thinking("t".into()),
             crate::channels::StatusUpdate::Status("Done".into()),
-            crate::channels::StatusUpdate::ToolStarted { name: "x".into() },
+            crate::channels::StatusUpdate::ToolStarted {
+                name: "x".into(),
+                input: serde_json::Value::Null,
+            },
             crate::channels::StatusUpdate::ToolCompleted {
                 name: "x".into(),
                 success: true,

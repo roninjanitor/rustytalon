@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - develop
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  code-style:
+    name: Code Style (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          profile: minimal
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check lints
+        run: cargo clippy --all --benches --tests --examples --all-features -- -D warnings
+
+  tests:
+    name: Run Tests
+    needs: code-style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          profile: minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: Run Tests
+        run: cargo test --all-features -- --nocapture
+
+  test-build:
+    name: test-build (${{ matrix.dockerfile }}, ${{ matrix.platform }}, ${{ matrix.runner }})
+    needs: [code-style, tests]
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dockerfile: Dockerfile
+            platform: linux/amd64
+            runner: ubuntu-latest
+
+          - dockerfile: Dockerfile
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+
+          - dockerfile: Dockerfile.worker
+            platform: linux/amd64
+            runner: ubuntu-latest
+
+          - dockerfile: Dockerfile.worker
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Prepare arch
+        id: prep
+        run: echo "arch=$(echo '${{ matrix.platform }}' | tr '/' '-' | cut -d'-' -f2)" >> $GITHUB_OUTPUT
+
+      - name: Build Docker image (test, no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.dockerfile }}-${{ steps.prep.outputs.arch }}

@@ -410,7 +410,7 @@ impl Channel for ReplChannel {
                 let display = truncate_for_preview(&msg, CLI_STATUS_MAX);
                 eprintln!("  \x1b[90m\u{25CB} {display}\x1b[0m");
             }
-            StatusUpdate::ToolStarted { name } => {
+            StatusUpdate::ToolStarted { name, .. } => {
                 eprintln!("  \x1b[33m\u{25CB} {name}\x1b[0m");
             }
             StatusUpdate::ToolCompleted { name, success } => {
@@ -532,6 +532,7 @@ impl Channel for ReplChannel {
                     eprintln!("\x1b[31m  {extension_name}: {message}\x1b[0m");
                 }
             }
+            StatusUpdate::TokensUsed { .. } => {}
         }
         Ok(())
     }

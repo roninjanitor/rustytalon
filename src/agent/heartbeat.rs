@@ -26,11 +26,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
 use tokio::sync::mpsc;
 
 use crate::channels::OutgoingResponse;
+use crate::db::Database;
 use crate::llm::{ChatMessage, CompletionRequest, FinishReason, LlmProvider};
 use crate::workspace::Workspace;
+
+/// Default audit log retention in days.
+const DEFAULT_AUDIT_RETENTION_DAYS: u64 = 90;
 
 /// Configuration for the heartbeat runner.
 #[derive(Debug, Clone)]
@@ -98,6 +103,7 @@ pub struct HeartbeatRunner {
     config: HeartbeatConfig,
     workspace: Arc<Workspace>,
     llm: Arc<dyn LlmProvider>,
+    db: Option<Arc<dyn Database>>,
     response_tx: Option<mpsc::Sender<OutgoingResponse>>,
     consecutive_failures: u32,
 }
@@ -113,9 +119,16 @@ impl HeartbeatRunner {
             config,
             workspace,
             llm,
+            db: None,
             response_tx: None,
             consecutive_failures: 0,
         }
+    }
+
+    /// Attach a database for audit log pruning.
+    pub fn with_database(mut self, db: Arc<dyn Database>) -> Self {
+        self.db = Some(db);
+        self
     }
 
     /// Set the response channel for notifications.
@@ -171,6 +184,8 @@ impl HeartbeatRunner {
                     }
                 }
             }
+
+            self.prune_audit_log().await;
         }
     }
 
@@ -267,6 +282,37 @@ impl HeartbeatRunner {
         HeartbeatResult::NeedsAttention(content.to_string())
     }
 
+    /// Prune audit log rows older than the configured retention window.
+    ///
+    /// Reads `audit_retention_days` from the user's settings (default 90).
+    /// Runs silently — any errors are logged but never surface to callers.
+    async fn prune_audit_log(&self) {
+        let Some(ref db) = self.db else { return };
+
+        // Read user-configured retention, fall back to 90 days.
+        let retention_days = if let Some(ref user_id) = self.config.notify_user_id {
+            match db.get_setting(user_id, "audit_retention_days").await {
+                Ok(Some(v)) => v.as_u64().unwrap_or(DEFAULT_AUDIT_RETENTION_DAYS),
+                Ok(None) => DEFAULT_AUDIT_RETENTION_DAYS,
+                Err(e) => {
+                    tracing::warn!("Failed to read audit_retention_days setting: {e}");
+                    DEFAULT_AUDIT_RETENTION_DAYS
+                }
+            }
+        } else {
+            DEFAULT_AUDIT_RETENTION_DAYS
+        };
+
+        let older_than = Utc::now() - chrono::Duration::days(retention_days as i64);
+        match db.prune_audit_log(older_than).await {
+            Ok(0) => tracing::debug!("Audit log pruner: nothing to delete"),
+            Ok(n) => tracing::info!(
+                "Audit log pruner: deleted {n} rows older than {retention_days} days"
+            ),
+            Err(e) => tracing::warn!("Audit log pruner failed: {e}"),
+        }
+    }
+
     /// Send a notification about heartbeat findings.
     async fn send_notification(&self, message: &str) {
         let Some(ref tx) = self.response_tx else {
@@ -334,9 +380,13 @@ pub fn spawn_heartbeat(
     config: HeartbeatConfig,
     workspace: Arc<Workspace>,
     llm: Arc<dyn LlmProvider>,
+    db: Option<Arc<dyn Database>>,
     response_tx: Option<mpsc::Sender<OutgoingResponse>>,
 ) -> tokio::task::JoinHandle<()> {
     let mut runner = HeartbeatRunner::new(config, workspace, llm);
+    if let Some(db) = db {
+        runner = runner.with_database(db);
+    }
     if let Some(tx) = response_tx {
         runner = runner.with_response_channel(tx);
     }

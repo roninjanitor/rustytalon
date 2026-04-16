@@ -42,6 +42,119 @@ use crate::llm::tracked::LlmCallStats;
 use crate::workspace::{MemoryChunk, MemoryDocument, WorkspaceEntry};
 use crate::workspace::{SearchConfig, SearchResult};
 
+/// Aggregated job health statistics.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct JobAnalytics {
+    pub total_jobs: i64,
+    pub completed_jobs: i64,
+    pub failed_jobs: i64,
+    pub in_progress_jobs: i64,
+    pub success_rate: f64,
+    pub avg_duration_secs: f64,
+    pub total_cost_usd: String,
+}
+
+/// Per-tool usage statistics.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolAnalytics {
+    pub tool_name: String,
+    pub total_calls: i64,
+    pub successful_calls: i64,
+    pub failed_calls: i64,
+    pub success_rate: f64,
+    pub avg_duration_ms: f64,
+    pub total_cost_usd: String,
+}
+
+/// A single daily cost data point for the cost-over-time chart.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CostDataPoint {
+    /// ISO-8601 date string (YYYY-MM-DD).
+    pub day: String,
+    pub cost_usd: String,
+    pub call_count: i64,
+}
+
+/// A single audit event to append to the audit log.
+///
+/// Uses borrowed fields to avoid allocation in the hot path. Call sites must
+/// build owned strings before spawning the async task, then borrow them inside.
+#[derive(Debug, Clone)]
+pub struct AuditEvent<'a> {
+    /// Event category: `tool_call`, `approval`, `safety_block`, `job_state`, `auth`.
+    pub event_type: &'a str,
+    pub user_id: Option<&'a str>,
+    /// Conversation / thread UUID (serialised as text for libSQL).
+    pub session_id: Option<Uuid>,
+    pub job_id: Option<Uuid>,
+    /// `agent`, `user`, or `system`.
+    pub actor: Option<&'a str>,
+    /// Tool name for `tool_call` and `approval` events.
+    pub tool_name: Option<&'a str>,
+    /// SHA-256 hex of the stringified input params.
+    pub input_hash: Option<&'a str>,
+    /// First 500 chars of stringified input, secrets redacted.
+    pub input_summary: Option<&'a str>,
+    /// `success`, `failure`, `blocked`, `approved`, or `denied`.
+    pub outcome: Option<&'a str>,
+    pub error_msg: Option<&'a str>,
+    pub duration_ms: Option<i64>,
+    pub cost_usd: Option<&'a str>,
+    pub metadata: Option<&'a serde_json::Value>,
+}
+
+/// Filters for `query_audit_log`.
+///
+/// `limit` is clamped to 500 by both backends.
+#[derive(Debug, Default, Clone)]
+pub struct AuditQuery {
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+    pub user_id: Option<String>,
+    pub session_id: Option<Uuid>,
+    pub event_type: Option<String>,
+    pub outcome: Option<String>,
+    /// Number of rows to return (default 100, max 500).
+    pub limit: Option<i64>,
+}
+
+/// A single row returned from the audit log.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuditLogRow {
+    pub id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub event_type: String,
+    pub user_id: Option<String>,
+    pub session_id: Option<Uuid>,
+    pub job_id: Option<Uuid>,
+    pub actor: Option<String>,
+    pub tool_name: Option<String>,
+    pub input_hash: Option<String>,
+    pub input_summary: Option<String>,
+    pub outcome: Option<String>,
+    pub error_msg: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub cost_usd: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Aggregate count of audit events for a single event type.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuditEventCount {
+    pub event_type: String,
+    pub count: i64,
+}
+
+/// Cumulative token and cost totals for a single conversation (thread).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ConversationTokenStats {
+    pub conversation_id: Uuid,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_cost: Decimal,
+    pub call_count: i64,
+}
+
 /// Create a database backend from configuration, run migrations, and return it.
 ///
 /// This is the shared helper for CLI commands and other call sites that need
@@ -231,8 +344,42 @@ pub trait Database: Send + Sync {
 
     /// Get aggregated LLM call statistics grouped by provider and model.
     ///
-    /// Returns cost, token, and call count summaries for dashboard display.
-    async fn get_llm_call_stats(&self) -> Result<Vec<LlmCallStats>, DatabaseError>;
+    /// Pass `since` to restrict to calls after a cutoff timestamp (for time-range
+    /// filtering in the analytics dashboard). `None` returns all-time stats.
+    async fn get_llm_call_stats(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<LlmCallStats>, DatabaseError>;
+
+    /// Get aggregated job health statistics.
+    ///
+    /// Pass `since` to restrict to jobs created after a cutoff. `None` = all time.
+    async fn get_job_analytics(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<JobAnalytics, DatabaseError>;
+
+    /// Get per-tool usage statistics sorted by call count descending.
+    ///
+    /// Pass `since` to restrict to actions after a cutoff. `None` = all time.
+    async fn get_tool_analytics(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<ToolAnalytics>, DatabaseError>;
+
+    /// Get daily cost aggregates for the cost-over-time chart.
+    ///
+    /// Returns one row per day from `since` to today, ordered ascending.
+    async fn get_cost_over_time(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<CostDataPoint>, DatabaseError>;
+
+    /// Get cumulative token and cost totals for a single conversation (thread).
+    async fn get_conversation_token_stats(
+        &self,
+        conversation_id: Uuid,
+    ) -> Result<ConversationTokenStats, DatabaseError>;
 
     // ==================== Estimation Snapshots ====================
 
@@ -545,4 +692,32 @@ pub trait Database: Send + Sync {
         embedding: Option<&[f32]>,
         config: &SearchConfig,
     ) -> Result<Vec<SearchResult>, WorkspaceError>;
+
+    // ==================== Audit Log ====================
+
+    /// Append one audit event.
+    ///
+    /// This is fire-and-forget: callers **must** wrap this in a `tokio::spawn`
+    /// and log-on-error rather than propagating failures up the call stack.
+    /// The agent must not fail because audit logging failed.
+    async fn append_audit_event(&self, event: &AuditEvent<'_>) -> Result<(), DatabaseError>;
+
+    /// Query audit log rows with optional filters.
+    ///
+    /// `query.limit` defaults to 100 and is clamped to 500.
+    async fn query_audit_log(&self, query: AuditQuery) -> Result<Vec<AuditLogRow>, DatabaseError>;
+
+    /// Count events grouped by `event_type` for the dashboard summary card.
+    ///
+    /// Pass `since = None` for all-time totals.
+    async fn audit_log_summary(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<AuditEventCount>, DatabaseError>;
+
+    /// Delete audit log rows older than `older_than`.
+    ///
+    /// Returns the number of rows deleted. Called by the heartbeat pruner
+    /// to enforce the `audit_retention_days` setting (default 90 days).
+    async fn prune_audit_log(&self, older_than: DateTime<Utc>) -> Result<u64, DatabaseError>;
 }

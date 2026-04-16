@@ -26,6 +26,8 @@ pub struct LlmCallRecord<'a> {
     pub output_tokens: u32,
     pub cost: Decimal,
     pub purpose: Option<&'a str>,
+    /// End-to-end latency of the LLM call in milliseconds.
+    pub latency_ms: u64,
 }
 
 /// Database store for the agent.
@@ -379,8 +381,8 @@ impl Store {
 
         conn.execute(
             r#"
-            INSERT INTO llm_calls (id, job_id, conversation_id, provider, model, input_tokens, output_tokens, cost, purpose)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO llm_calls (id, job_id, conversation_id, provider, model, input_tokens, output_tokens, cost, purpose, latency_ms)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             "#,
             &[
                 &id,
@@ -392,6 +394,7 @@ impl Store {
                 &(record.output_tokens as i32),
                 &record.cost,
                 &record.purpose,
+                &(record.latency_ms as i64),
             ],
         )
         .await?;

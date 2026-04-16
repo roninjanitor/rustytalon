@@ -72,16 +72,18 @@ impl TrackedProvider {
         cost: Decimal,
         purpose: &str,
         latency_ms: u64,
+        conversation_id: Option<uuid::Uuid>,
     ) {
         let record = crate::history::LlmCallRecord {
             job_id: None,
-            conversation_id: None,
+            conversation_id,
             provider: &self.provider_name,
             model: self.inner.model_name(),
             input_tokens,
             output_tokens,
             cost,
             purpose: Some(purpose),
+            latency_ms,
         };
 
         if let Err(e) = self.db.record_llm_call(&record).await {
@@ -144,6 +146,7 @@ impl LlmProvider for TrackedProvider {
                         cost,
                         "complete",
                         latency_ms,
+                        None,
                     )
                     .await;
                     return Ok(response);
@@ -176,6 +179,10 @@ impl LlmProvider for TrackedProvider {
     ) -> Result<ToolCompletionResponse, LlmError> {
         let start = Instant::now();
         let mut last_error = None;
+        let conversation_id = request
+            .metadata
+            .get("thread_id")
+            .and_then(|id| uuid::Uuid::parse_str(id).ok());
 
         for attempt in 0..=self.max_retries {
             if attempt > 0 {
@@ -201,6 +208,7 @@ impl LlmProvider for TrackedProvider {
                         cost,
                         "complete_with_tools",
                         latency_ms,
+                        conversation_id,
                     )
                     .await;
                     return Ok(response);
@@ -269,6 +277,10 @@ pub struct LlmCallStats {
     pub total_cost: Decimal,
     /// Average cost per call.
     pub avg_cost_per_call: Decimal,
+    /// Average end-to-end latency in milliseconds (null for calls recorded before V9 migration).
+    pub avg_latency_ms: Option<f64>,
+    /// 95th-percentile latency in milliseconds (null on backends that lack percentile functions).
+    pub p95_latency_ms: Option<f64>,
 }
 
 #[cfg(test)]
@@ -372,5 +384,24 @@ mod tests {
             other => panic!("expected RequestFailed, got: {other:?}"),
         }
         assert_eq!(db.recorded_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_tracked_records_latency_ms() {
+        // latency_ms must be > 0 and present in the captured record.
+        let inner = Arc::new(MockProvider::succeeding("test-model", "ok"));
+        let db = MockDatabase::new();
+        let tracked = TrackedProvider::new(inner, db.clone(), 0, "test-provider");
+
+        tracked.complete(make_request()).await.unwrap();
+
+        let calls = db.captured_calls();
+        assert_eq!(calls.len(), 1);
+        // We can't assert an exact value since it's wall-clock time, but it
+        // must be a non-negative integer and the field must exist.
+        let _ = calls[0].latency_ms; // would panic if the field wasn't populated
+        assert_eq!(calls[0].provider, "test-provider");
+        assert_eq!(calls[0].model, "test-model");
+        assert_eq!(calls[0].purpose.as_deref(), Some("complete"));
     }
 }

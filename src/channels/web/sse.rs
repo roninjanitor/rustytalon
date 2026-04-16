@@ -105,6 +105,7 @@ impl SseManager {
                     SseEvent::Response { .. } => "response",
                     SseEvent::Thinking { .. } => "thinking",
                     SseEvent::ToolStarted { .. } => "tool_started",
+                    SseEvent::TokensUsed { .. } => "tokens_used",
                     SseEvent::ToolCompleted { .. } => "tool_completed",
                     SseEvent::ToolResult { .. } => "tool_result",
                     SseEvent::StreamChunk { .. } => "stream_chunk",

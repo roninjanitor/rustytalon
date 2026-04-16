@@ -15,7 +15,10 @@ use crate::agent::BrokenTool;
 use crate::agent::routine::{Routine, RoutineRun, RunStatus};
 use crate::config::DatabaseConfig;
 use crate::context::{ActionRecord, JobContext, JobState};
-use crate::db::Database;
+use crate::db::{
+    AuditEvent, AuditEventCount, AuditLogRow, AuditQuery, CostDataPoint, Database, JobAnalytics,
+    ToolAnalytics,
+};
 use crate::error::{DatabaseError, WorkspaceError};
 use crate::history::{
     ConversationMessage, ConversationSummary, JobEventRecord, LlmCallRecord, SandboxJobRecord,
@@ -221,29 +224,45 @@ impl Database for PgBackend {
         self.store.record_llm_call(record).await
     }
 
-    async fn get_llm_call_stats(&self) -> Result<Vec<LlmCallStats>, DatabaseError> {
+    async fn get_llm_call_stats(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<LlmCallStats>, DatabaseError> {
         let conn = self.store.conn().await?;
-        let rows = conn
-            .query(
-                r#"
-                SELECT
-                    provider,
-                    model,
-                    COUNT(*)::bigint AS total_calls,
-                    COALESCE(SUM(input_tokens), 0)::bigint AS total_input_tokens,
-                    COALESCE(SUM(output_tokens), 0)::bigint AS total_output_tokens,
-                    COALESCE(SUM(cost), 0) AS total_cost,
-                    CASE WHEN COUNT(*) > 0
-                        THEN COALESCE(SUM(cost), 0) / COUNT(*)
-                        ELSE 0
-                    END AS avg_cost_per_call
-                FROM llm_calls
-                GROUP BY provider, model
-                ORDER BY total_cost DESC
-                "#,
-                &[],
-            )
-            .await?;
+        let (where_clause, params): (&str, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) =
+            if let Some(ref s) = since {
+                (
+                    "WHERE created_at >= $1",
+                    vec![s as &(dyn tokio_postgres::types::ToSql + Sync)],
+                )
+            } else {
+                ("", vec![])
+            };
+
+        let sql = format!(
+            r#"
+            SELECT
+                provider,
+                model,
+                COUNT(*)::bigint AS total_calls,
+                COALESCE(SUM(input_tokens), 0)::bigint AS total_input_tokens,
+                COALESCE(SUM(output_tokens), 0)::bigint AS total_output_tokens,
+                COALESCE(SUM(cost), 0) AS total_cost,
+                CASE WHEN COUNT(*) > 0
+                    THEN COALESCE(SUM(cost), 0) / COUNT(*)
+                    ELSE 0
+                END AS avg_cost_per_call,
+                AVG(latency_ms)::float8 AS avg_latency_ms,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
+                    FILTER (WHERE latency_ms IS NOT NULL) AS p95_latency_ms
+            FROM llm_calls
+            {where_clause}
+            GROUP BY provider, model
+            ORDER BY total_cost DESC
+            "#
+        );
+
+        let rows = conn.query(&sql, &params).await?;
 
         let stats = rows
             .iter()
@@ -255,10 +274,196 @@ impl Database for PgBackend {
                 total_output_tokens: row.get("total_output_tokens"),
                 total_cost: row.get("total_cost"),
                 avg_cost_per_call: row.get("avg_cost_per_call"),
+                avg_latency_ms: row.get("avg_latency_ms"),
+                p95_latency_ms: row.get("p95_latency_ms"),
             })
             .collect();
 
         Ok(stats)
+    }
+
+    async fn get_job_analytics(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<JobAnalytics, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let (where_clause, params): (&str, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) =
+            if let Some(ref s) = since {
+                (
+                    "WHERE created_at >= $1",
+                    vec![s as &(dyn tokio_postgres::types::ToSql + Sync)],
+                )
+            } else {
+                ("", vec![])
+            };
+
+        let sql = format!(
+            r#"
+            SELECT
+                COUNT(*)::bigint AS total_jobs,
+                COUNT(*) FILTER (WHERE status = 'accepted')::bigint AS completed_jobs,
+                COUNT(*) FILTER (WHERE status = 'failed')::bigint AS failed_jobs,
+                COUNT(*) FILTER (WHERE status = 'in_progress')::bigint AS in_progress_jobs,
+                COALESCE(
+                    AVG(EXTRACT(EPOCH FROM (completed_at - started_at)))
+                        FILTER (WHERE completed_at IS NOT NULL),
+                    0.0
+                ) AS avg_duration_secs,
+                COALESCE(SUM(actual_cost), 0) AS total_cost
+            FROM agent_jobs
+            {where_clause}
+            "#
+        );
+
+        let row = conn.query_one(&sql, &params).await?;
+        let total: i64 = row.get("total_jobs");
+        let completed: i64 = row.get("completed_jobs");
+        let failed: i64 = row.get("failed_jobs");
+        let in_progress: i64 = row.get("in_progress_jobs");
+        let avg_duration: f64 = row.get("avg_duration_secs");
+        let total_cost: Decimal = row
+            .get::<_, Option<Decimal>>("total_cost")
+            .unwrap_or_default();
+
+        Ok(JobAnalytics {
+            total_jobs: total,
+            completed_jobs: completed,
+            failed_jobs: failed,
+            in_progress_jobs: in_progress,
+            success_rate: if total > 0 {
+                completed as f64 / total as f64
+            } else {
+                0.0
+            },
+            avg_duration_secs: avg_duration,
+            total_cost_usd: total_cost.to_string(),
+        })
+    }
+
+    async fn get_tool_analytics(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<ToolAnalytics>, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let (where_clause, params): (&str, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) =
+            if let Some(ref s) = since {
+                (
+                    "WHERE created_at >= $1",
+                    vec![s as &(dyn tokio_postgres::types::ToSql + Sync)],
+                )
+            } else {
+                ("", vec![])
+            };
+
+        let sql = format!(
+            r#"
+            SELECT
+                tool_name,
+                COUNT(*)::bigint AS total_calls,
+                COUNT(*) FILTER (WHERE success = true)::bigint AS successful_calls,
+                COUNT(*) FILTER (WHERE success = false)::bigint AS failed_calls,
+                COALESCE(AVG(duration_ms), 0.0) AS avg_duration_ms,
+                COALESCE(SUM(cost), 0) AS total_cost
+            FROM job_actions
+            {where_clause}
+            GROUP BY tool_name
+            ORDER BY total_calls DESC
+            "#
+        );
+
+        let rows = conn.query(&sql, &params).await?;
+
+        let stats = rows
+            .iter()
+            .map(|row| {
+                let total: i64 = row.get("total_calls");
+                let successful: i64 = row.get("successful_calls");
+                let total_cost: Decimal = row
+                    .get::<_, Option<Decimal>>("total_cost")
+                    .unwrap_or_default();
+                ToolAnalytics {
+                    tool_name: row.get("tool_name"),
+                    total_calls: total,
+                    successful_calls: successful,
+                    failed_calls: row.get("failed_calls"),
+                    success_rate: if total > 0 {
+                        successful as f64 / total as f64
+                    } else {
+                        0.0
+                    },
+                    avg_duration_ms: row.get("avg_duration_ms"),
+                    total_cost_usd: total_cost.to_string(),
+                }
+            })
+            .collect();
+
+        Ok(stats)
+    }
+
+    async fn get_cost_over_time(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<CostDataPoint>, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let rows = conn
+            .query(
+                r#"
+                SELECT
+                    DATE(created_at AT TIME ZONE 'UTC')::text AS day,
+                    COALESCE(SUM(cost), 0) AS daily_cost,
+                    COUNT(*)::bigint AS call_count
+                FROM llm_calls
+                WHERE created_at >= $1
+                GROUP BY DATE(created_at AT TIME ZONE 'UTC')
+                ORDER BY day ASC
+                "#,
+                &[&since],
+            )
+            .await?;
+
+        let points = rows
+            .iter()
+            .map(|row| {
+                let cost: Decimal = row
+                    .get::<_, Option<Decimal>>("daily_cost")
+                    .unwrap_or_default();
+                CostDataPoint {
+                    day: row.get("day"),
+                    cost_usd: cost.to_string(),
+                    call_count: row.get("call_count"),
+                }
+            })
+            .collect();
+
+        Ok(points)
+    }
+
+    async fn get_conversation_token_stats(
+        &self,
+        conversation_id: Uuid,
+    ) -> Result<crate::db::ConversationTokenStats, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let row = conn
+            .query_one(
+                r#"
+                SELECT
+                    COALESCE(SUM(input_tokens), 0)::bigint AS total_input_tokens,
+                    COALESCE(SUM(output_tokens), 0)::bigint AS total_output_tokens,
+                    COALESCE(SUM(cost), 0) AS total_cost,
+                    COUNT(*)::bigint AS call_count
+                FROM llm_calls
+                WHERE conversation_id = $1
+                "#,
+                &[&conversation_id],
+            )
+            .await?;
+        Ok(crate::db::ConversationTokenStats {
+            conversation_id,
+            total_input_tokens: row.get("total_input_tokens"),
+            total_output_tokens: row.get("total_output_tokens"),
+            total_cost: row.get("total_cost"),
+            call_count: row.get("call_count"),
+        })
     }
 
     // ==================== Estimation Snapshots ====================
@@ -664,5 +869,169 @@ impl Database for PgBackend {
         self.repo
             .hybrid_search(user_id, agent_id, query, embedding, config)
             .await
+    }
+
+    // ==================== Audit Log ====================
+
+    async fn append_audit_event(&self, event: &AuditEvent<'_>) -> Result<(), DatabaseError> {
+        let conn = self.store.conn().await?;
+        let meta_str = event.metadata.and_then(|m| serde_json::to_value(m).ok());
+        conn.execute(
+            r#"INSERT INTO audit_log (
+                event_type, user_id, session_id, job_id, actor,
+                tool_name, input_hash, input_summary, outcome,
+                error_msg, duration_ms, cost_usd, metadata
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)"#,
+            &[
+                &event.event_type,
+                &event.user_id,
+                &event.session_id,
+                &event.job_id,
+                &event.actor,
+                &event.tool_name,
+                &event.input_hash,
+                &event.input_summary,
+                &event.outcome,
+                &event.error_msg,
+                &event.duration_ms,
+                &event.cost_usd,
+                &meta_str,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn query_audit_log(&self, query: AuditQuery) -> Result<Vec<AuditLogRow>, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let limit = query.limit.unwrap_or(100).min(500);
+
+        // Build WHERE clauses dynamically. Owned values must outlive `params`.
+        let since = query.since;
+        let until = query.until;
+        let user_id = query.user_id;
+        let session_id = query.session_id;
+        let event_type = query.event_type;
+        let outcome = query.outcome;
+
+        let mut clauses: Vec<String> = Vec::new();
+        let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
+        let mut idx = 1usize;
+
+        if let Some(ref v) = since {
+            clauses.push(format!("created_at >= ${idx}"));
+            params.push(v);
+            idx += 1;
+        }
+        if let Some(ref v) = until {
+            clauses.push(format!("created_at <= ${idx}"));
+            params.push(v);
+            idx += 1;
+        }
+        if let Some(ref v) = user_id {
+            clauses.push(format!("user_id = ${idx}"));
+            params.push(v);
+            idx += 1;
+        }
+        if let Some(ref v) = session_id {
+            clauses.push(format!("session_id = ${idx}"));
+            params.push(v);
+            idx += 1;
+        }
+        if let Some(ref v) = event_type {
+            clauses.push(format!("event_type = ${idx}"));
+            params.push(v);
+            idx += 1;
+        }
+        if let Some(ref v) = outcome {
+            clauses.push(format!("outcome = ${idx}"));
+            params.push(v);
+            idx += 1;
+        }
+        let _ = idx; // final value not needed after loop
+
+        let where_sql = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", clauses.join(" AND "))
+        };
+
+        let sql = format!(
+            r#"SELECT id, created_at, event_type, user_id, session_id, job_id,
+                      actor, tool_name, input_hash, input_summary, outcome,
+                      error_msg, duration_ms, cost_usd, metadata
+               FROM audit_log
+               {where_sql}
+               ORDER BY created_at DESC
+               LIMIT {limit}"#
+        );
+
+        let rows = conn.query(&sql, &params).await?;
+        let result = rows
+            .iter()
+            .map(|row| AuditLogRow {
+                id: row.get("id"),
+                created_at: row.get("created_at"),
+                event_type: row.get("event_type"),
+                user_id: row.get("user_id"),
+                session_id: row.get("session_id"),
+                job_id: row.get("job_id"),
+                actor: row.get("actor"),
+                tool_name: row.get("tool_name"),
+                input_hash: row.get("input_hash"),
+                input_summary: row.get("input_summary"),
+                outcome: row.get("outcome"),
+                error_msg: row.get("error_msg"),
+                duration_ms: row.get("duration_ms"),
+                cost_usd: row.get("cost_usd"),
+                metadata: row.get("metadata"),
+            })
+            .collect();
+        Ok(result)
+    }
+
+    async fn audit_log_summary(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<AuditEventCount>, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let (where_clause, params): (&str, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) =
+            if let Some(ref s) = since {
+                (
+                    "WHERE created_at >= $1",
+                    vec![s as &(dyn tokio_postgres::types::ToSql + Sync)],
+                )
+            } else {
+                ("", vec![])
+            };
+
+        let sql = format!(
+            r#"SELECT event_type, COUNT(*)::bigint AS count
+               FROM audit_log
+               {where_clause}
+               GROUP BY event_type
+               ORDER BY count DESC"#
+        );
+
+        let rows = conn.query(&sql, &params).await?;
+        let result = rows
+            .iter()
+            .map(|row| AuditEventCount {
+                event_type: row.get("event_type"),
+                count: row.get("count"),
+            })
+            .collect();
+        Ok(result)
+    }
+
+    async fn prune_audit_log(&self, older_than: DateTime<Utc>) -> Result<u64, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let n = conn
+            .execute(
+                "DELETE FROM audit_log WHERE created_at < $1",
+                &[&older_than],
+            )
+            .await?;
+        Ok(n)
     }
 }

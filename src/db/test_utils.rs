@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::agent::BrokenTool;
 use crate::agent::routine::{Routine, RoutineRun, RunStatus};
 use crate::context::{ActionRecord, JobContext, JobState};
-use crate::db::Database;
+use crate::db::{AuditEvent, AuditEventCount, AuditLogRow, AuditQuery, Database};
 use crate::error::{DatabaseError, WorkspaceError};
 use crate::history::{
     ConversationMessage, ConversationSummary, JobEventRecord, LlmCallRecord, SandboxJobRecord,
@@ -24,20 +24,40 @@ use crate::history::{
 use crate::llm::tracked::LlmCallStats;
 use crate::workspace::{MemoryChunk, MemoryDocument, SearchConfig, SearchResult, WorkspaceEntry};
 
+/// Captured fields from a single `record_llm_call` invocation.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct CapturedLlmCall {
+    pub provider: String,
+    pub model: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cost: rust_decimal::Decimal,
+    pub latency_ms: u64,
+    pub purpose: Option<String>,
+}
+
 /// A mock database that counts `record_llm_call` invocations and stubs everything else.
 pub(crate) struct MockDatabase {
     pub call_count: AtomicU32,
+    pub captured: std::sync::Mutex<Vec<CapturedLlmCall>>,
 }
 
 impl MockDatabase {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             call_count: AtomicU32::new(0),
+            captured: std::sync::Mutex::new(Vec::new()),
         })
     }
 
     pub fn recorded_calls(&self) -> u32 {
         self.call_count.load(Ordering::SeqCst)
+    }
+
+    /// Return a clone of all captured LLM call records.
+    pub fn captured_calls(&self) -> Vec<CapturedLlmCall> {
+        self.captured.lock().unwrap().clone()
     }
 }
 
@@ -49,13 +69,59 @@ impl Database for MockDatabase {
 
     // === LLM Calls (implemented) ===
 
-    async fn record_llm_call(&self, _record: &LlmCallRecord<'_>) -> Result<Uuid, DatabaseError> {
+    async fn record_llm_call(&self, record: &LlmCallRecord<'_>) -> Result<Uuid, DatabaseError> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
+        self.captured.lock().unwrap().push(CapturedLlmCall {
+            provider: record.provider.to_string(),
+            model: record.model.to_string(),
+            input_tokens: record.input_tokens,
+            output_tokens: record.output_tokens,
+            cost: record.cost,
+            latency_ms: record.latency_ms,
+            purpose: record.purpose.map(|s| s.to_string()),
+        });
         Ok(Uuid::new_v4())
     }
 
-    async fn get_llm_call_stats(&self) -> Result<Vec<LlmCallStats>, DatabaseError> {
+    async fn get_llm_call_stats(
+        &self,
+        _since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<LlmCallStats>, DatabaseError> {
         Ok(vec![])
+    }
+
+    async fn get_job_analytics(
+        &self,
+        _since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<crate::db::JobAnalytics, DatabaseError> {
+        Ok(crate::db::JobAnalytics::default())
+    }
+
+    async fn get_tool_analytics(
+        &self,
+        _since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<crate::db::ToolAnalytics>, DatabaseError> {
+        Ok(vec![])
+    }
+
+    async fn get_cost_over_time(
+        &self,
+        _since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::db::CostDataPoint>, DatabaseError> {
+        Ok(vec![])
+    }
+
+    async fn get_conversation_token_stats(
+        &self,
+        conversation_id: Uuid,
+    ) -> Result<crate::db::ConversationTokenStats, DatabaseError> {
+        Ok(crate::db::ConversationTokenStats {
+            conversation_id,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_cost: rust_decimal::Decimal::ZERO,
+            call_count: 0,
+        })
     }
 
     // === Everything below is stubbed ===
@@ -455,5 +521,25 @@ impl Database for MockDatabase {
         _: &SearchConfig,
     ) -> Result<Vec<SearchResult>, WorkspaceError> {
         unimplemented!()
+    }
+
+    async fn append_audit_event(&self, _: &AuditEvent<'_>) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+    async fn query_audit_log(&self, _: AuditQuery) -> Result<Vec<AuditLogRow>, DatabaseError> {
+        Ok(vec![])
+    }
+    async fn audit_log_summary(
+        &self,
+        _: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<AuditEventCount>, DatabaseError> {
+        Ok(vec![])
+    }
+
+    async fn prune_audit_log(
+        &self,
+        _: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, DatabaseError> {
+        Ok(0)
     }
 }

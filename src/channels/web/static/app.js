@@ -15,6 +15,13 @@ const JOB_EVENTS_CAP = 500;
 
 // Activity panel: tracks the live in-progress turn's collapsible activity log
 let pendingActivityEl = null; // the .activity-panel DOM node being built for the current turn
+let lastToolEntryEl = null;   // the last <details> tool entry, for attaching results
+let pendingTokensIn = 0;      // accumulated input tokens for current turn
+let pendingTokensOut = 0;     // accumulated output tokens for current turn
+
+// Conversation-level token tracking (persists across turns for the current thread)
+let convTokensIn = 0;   // total input tokens for current conversation (from DB + live)
+let convTokensOut = 0;  // total output tokens for current conversation (from DB + live)
 
 // --- Auth ---
 
@@ -121,23 +128,41 @@ function connectSSE() {
   eventSource.addEventListener('thinking', (e) => {
     const data = JSON.parse(e.data);
     if (!isCurrentThread(data.thread_id)) return;
-    addActivityEntry('thinking', data.message);
     setStatus(data.message, true);
   });
 
   eventSource.addEventListener('tool_started', (e) => {
     const data = JSON.parse(e.data);
     if (!isCurrentThread(data.thread_id)) return;
-    addActivityEntry('tool_started', 'Running: ' + data.name);
-    setStatus('Running tool: ' + data.name, true);
+    addToolEntry(data.name, data.input);
+    setStatus('Running: ' + data.name, true);
   });
 
   eventSource.addEventListener('tool_completed', (e) => {
     const data = JSON.parse(e.data);
     if (!isCurrentThread(data.thread_id)) return;
     const icon = data.success ? '\u2713' : '\u2717';
-    addActivityEntry('tool_completed', data.name + ' ' + icon);
+    markLastToolCompleted(data.success);
     setStatus('Tool ' + data.name + ' ' + icon);
+  });
+
+  eventSource.addEventListener('tool_result', (e) => {
+    const data = JSON.parse(e.data);
+    if (!isCurrentThread(data.thread_id)) return;
+    updateLastToolResult(data.preview);
+  });
+
+  eventSource.addEventListener('tokens_used', (e) => {
+    const data = JSON.parse(e.data);
+    if (!isCurrentThread(data.thread_id)) return;
+    const inTok = data.input_tokens || 0;
+    const outTok = data.output_tokens || 0;
+    pendingTokensIn += inTok;
+    pendingTokensOut += outTok;
+    convTokensIn += inTok;
+    convTokensOut += outTok;
+    updateActivityPanelLabel();
+    renderConversationTokenStats();
   });
 
   eventSource.addEventListener('stream_chunk', (e) => {
@@ -401,8 +426,7 @@ function ensureActivityPanel() {
   toggle.addEventListener('click', () => {
     const open = entries.style.display !== 'none';
     entries.style.display = open ? 'none' : 'block';
-    const count = entries.querySelectorAll('.activity-entry').length;
-    toggle.textContent = 'Activity (' + count + ' steps) ' + (open ? '\u25B8' : '\u25BE');
+    toggle.textContent = buildActivityLabel(entries, !open);
   });
   panel.appendChild(toggle);
   panel.appendChild(entries);
@@ -412,6 +436,30 @@ function ensureActivityPanel() {
   return panel;
 }
 
+function buildActivityLabel(entries, isOpen) {
+  const count = entries.querySelectorAll('.activity-entry').length;
+  const totalTokens = pendingTokensIn + pendingTokensOut;
+  const tokenStr = totalTokens > 0 ? formatTokenCount(totalTokens) + ' tok' : '';
+  if (count === 0 && tokenStr) {
+    return tokenStr + ' ' + (isOpen ? '\u25BE' : '\u25B8');
+  }
+  const sep = tokenStr ? ' \u00B7 ' + tokenStr : '';
+  return 'Activity (' + count + ' steps' + sep + ') ' + (isOpen ? '\u25BE' : '\u25B8');
+}
+
+function formatTokenCount(n) {
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return String(n);
+}
+
+function updateActivityPanelLabel() {
+  if (!pendingActivityEl) return;
+  const entries = pendingActivityEl.querySelector('.activity-entries');
+  const toggle = pendingActivityEl.querySelector('.activity-toggle');
+  const isOpen = entries.style.display !== 'none';
+  toggle.textContent = buildActivityLabel(entries, isOpen);
+}
+
 function addActivityEntry(type, label) {
   const panel = ensureActivityPanel();
   const entries = panel.querySelector('.activity-entries');
@@ -419,28 +467,111 @@ function addActivityEntry(type, label) {
   entry.className = 'activity-entry activity-' + type;
   entry.textContent = label;
   entries.appendChild(entry);
-  const count = entries.querySelectorAll('.activity-entry').length;
-  const toggle = panel.querySelector('.activity-toggle');
-  const isOpen = entries.style.display !== 'none';
-  toggle.textContent = 'Activity (' + count + ' steps) ' + (isOpen ? '\u25BE' : '\u25B8');
-  const container = document.getElementById('chat-messages');
-  container.scrollTop = container.scrollHeight;
+  updateActivityPanelLabel();
+  document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+}
+
+// Extract the most meaningful single-line param value from tool input for inline display.
+function extractKeyParam(input) {
+  if (!input || typeof input !== 'object') return null;
+  for (const k of ['query', 'url', 'command', 'path', 'message', 'content', 'text', 'name']) {
+    if (typeof input[k] === 'string' && input[k].length > 0) {
+      const v = input[k];
+      return v.length > 60 ? v.slice(0, 57) + '\u2026' : v;
+    }
+  }
+  for (const v of Object.values(input)) {
+    if (typeof v === 'string' && v.length > 0) {
+      return v.length > 60 ? v.slice(0, 57) + '\u2026' : v;
+    }
+  }
+  return null;
+}
+
+function addToolEntry(name, input) {
+  const panel = ensureActivityPanel();
+  const entries = panel.querySelector('.activity-entries');
+
+  const details = document.createElement('details');
+  details.className = 'activity-entry activity-tool';
+
+  const summary = document.createElement('summary');
+  summary.className = 'activity-tool-summary';
+
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'activity-tool-name';
+  nameSpan.textContent = name;
+  summary.appendChild(nameSpan);
+
+  const snippet = extractKeyParam(input);
+  if (snippet) {
+    const snippetSpan = document.createElement('span');
+    snippetSpan.className = 'activity-tool-snippet';
+    snippetSpan.textContent = snippet;
+    summary.appendChild(snippetSpan);
+  }
+
+  const statusSpan = document.createElement('span');
+  statusSpan.className = 'activity-tool-status';
+  statusSpan.textContent = '\u25CB'; // running indicator
+  summary.appendChild(statusSpan);
+
+  details.appendChild(summary);
+
+  if (input && typeof input === 'object' && Object.keys(input).length > 0) {
+    const pre = document.createElement('pre');
+    pre.className = 'activity-tool-input';
+    pre.textContent = JSON.stringify(input, null, 2);
+    details.appendChild(pre);
+  }
+
+  const resultEl = document.createElement('pre');
+  resultEl.className = 'activity-tool-result';
+  resultEl.style.display = 'none';
+  details.appendChild(resultEl);
+
+  entries.appendChild(details);
+  lastToolEntryEl = details;
+
+  updateActivityPanelLabel();
+  document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+}
+
+function markLastToolCompleted(success) {
+  if (!lastToolEntryEl) return;
+  const statusSpan = lastToolEntryEl.querySelector('.activity-tool-status');
+  if (!statusSpan) return;
+  statusSpan.textContent = success ? '\u2713' : '\u2717';
+  statusSpan.className = 'activity-tool-status ' + (success ? 'tool-ok' : 'tool-err');
+}
+
+function updateLastToolResult(preview) {
+  if (!lastToolEntryEl) return;
+  const resultEl = lastToolEntryEl.querySelector('.activity-tool-result');
+  if (!resultEl) return;
+  const trimmed = preview && preview.length > 300 ? preview.slice(0, 297) + '\u2026' : (preview || '');
+  resultEl.textContent = trimmed;
+  resultEl.style.display = trimmed ? '' : 'none';
 }
 
 function sealActivityPanel() {
   if (!pendingActivityEl) return;
   const entries = pendingActivityEl.querySelector('.activity-entries');
   const count = entries.querySelectorAll('.activity-entry').length;
-  if (count === 0) {
+  const hasTokens = (pendingTokensIn + pendingTokensOut) > 0;
+  if (count === 0 && !hasTokens) {
     // Nothing logged — remove the empty panel
     pendingActivityEl.remove();
   } else {
     // Collapse it (default closed after turn completes)
     entries.style.display = 'none';
     const toggle = pendingActivityEl.querySelector('.activity-toggle');
-    toggle.textContent = 'Activity (' + count + ' steps) \u25B8';
+    toggle.textContent = buildActivityLabel(entries, false);
   }
   pendingActivityEl = null;
+  lastToolEntryEl = null;
+  pendingTokensIn = 0;
+  pendingTokensOut = 0;
 }
 
 function showApproval(data) {
@@ -818,8 +949,12 @@ function switchToAssistant() {
   currentThreadId = assistantThreadId;
   hasMore = false;
   oldestTimestamp = null;
+  convTokensIn = 0;
+  convTokensOut = 0;
+  renderConversationTokenStats();
   loadHistory();
   loadThreads();
+  loadConversationTokenStats(assistantThreadId);
 }
 
 function switchThread(threadId) {
@@ -827,8 +962,39 @@ function switchThread(threadId) {
   currentThreadId = threadId;
   hasMore = false;
   oldestTimestamp = null;
+  convTokensIn = 0;
+  convTokensOut = 0;
+  renderConversationTokenStats();
   loadHistory();
   loadThreads();
+  if (threadId) loadConversationTokenStats(threadId);
+}
+
+function loadConversationTokenStats(threadId) {
+  apiFetch('/api/chat/threads/' + encodeURIComponent(threadId) + '/tokens')
+    .then((data) => {
+      // Only apply if still viewing the same thread
+      if (currentThreadId !== threadId) return;
+      convTokensIn = data.total_input_tokens || 0;
+      convTokensOut = data.total_output_tokens || 0;
+      renderConversationTokenStats();
+    })
+    .catch(() => {}); // best-effort, silently ignore
+}
+
+function renderConversationTokenStats() {
+  const el = document.getElementById('chat-token-stats');
+  if (!el) return;
+  const total = convTokensIn + convTokensOut;
+  if (total === 0) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  el.textContent =
+    formatTokenCount(convTokensIn) + ' in \u00B7 ' +
+    formatTokenCount(convTokensOut) + ' out \u00B7 ' +
+    formatTokenCount(total) + ' total';
 }
 
 function createNewThread() {
@@ -908,6 +1074,9 @@ function switchTab(tab) {
     checkExtensionManagerAvailable().then(() => loadCatalog());
   }
   if (tab === 'channels') loadChannels();
+  if (tab === 'analytics') loadAnalytics();
+  if (tab === 'audit') loadAudit();
+  if (tab === 'settings') loadSettings();
 }
 
 // --- Skills ---
@@ -3379,4 +3548,1083 @@ function formatDate(isoString) {
   if (!isoString) return '-';
   const d = new Date(isoString);
   return d.toLocaleString();
+}
+
+// --- Analytics tab ---
+
+let analyticsRange = '';        // '', '24h', '7d', '30d', '90d'
+let analyticsModelSort = { col: 'total_cost', dir: -1 };
+let analyticsToolSort  = { col: 'calls', dir: -1 };
+let analyticsModels = [];       // last-fetched model rows (for re-sort without refetch)
+let analyticsTools  = [];       // last-fetched tool rows
+
+// Wire up range pills on first render
+(function initAnalyticsPills() {
+  document.addEventListener('DOMContentLoaded', () => {
+    const pills = document.getElementById('analytics-range-pills');
+    if (!pills) return;
+    pills.addEventListener('click', (e) => {
+      const btn = e.target.closest('.range-pill');
+      if (!btn) return;
+      pills.querySelectorAll('.range-pill').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      analyticsRange = btn.dataset.range || '';
+      loadAnalytics();
+    });
+  });
+})();
+
+async function loadAnalytics() {
+  const qs = analyticsRange ? '?range=' + analyticsRange : '';
+  try {
+    const [models, jobs, tools, chart] = await Promise.all([
+      apiFetch('/api/analytics/models' + qs),
+      apiFetch('/api/analytics/jobs'   + qs),
+      apiFetch('/api/analytics/tools'  + qs),
+      apiFetch('/api/analytics/cost-over-time' + qs),
+    ]);
+
+    analyticsModels = models.models || [];
+    analyticsTools  = tools.tools  || [];
+
+    renderAnalyticsSummary(models);
+    renderCostChart(chart.data || []);
+    renderJobsSummary(jobs);
+    renderAnalyticsTable(analyticsModels);
+    renderAnalyticsToolsTable(analyticsTools);
+
+    const updated = document.getElementById('analytics-updated');
+    if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById('analytics-summary').innerHTML =
+      '<div class="empty-state">Failed to load analytics: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderAnalyticsSummary(data) {
+  const totalTokens = data.total_input_tokens + data.total_output_tokens;
+  const totalModels = (data.models || []).length;
+  const totalCalls  = (data.models || []).reduce((s, m) => s + m.total_calls, 0);
+  const ratio = data.total_output_tokens > 0
+    ? (data.total_input_tokens / data.total_output_tokens).toFixed(1) + ':1'
+    : '—';
+
+  document.getElementById('analytics-summary').innerHTML =
+      analyticsCard('Models',        totalModels,                                    '')
+    + analyticsCard('Total Calls',   totalCalls.toLocaleString(),                    '')
+    + analyticsCard('Input Tokens',  fmtTokens(data.total_input_tokens),             'accent')
+    + analyticsCard('Output Tokens', fmtTokens(data.total_output_tokens),            'accent')
+    + analyticsCard('Total Tokens',  fmtTokens(totalTokens),                         '')
+    + analyticsCard('In / Out Ratio',ratio,                                          '')
+    + analyticsCard('Total Cost',    '$' + fmtCost(data.total_cost_usd),             'cost');
+}
+
+function renderJobsSummary(jobs) {
+  const ratePct = (jobs.success_rate * 100).toFixed(1) + '%';
+  const rateClass = jobs.success_rate >= 0.9 ? 'cost' : jobs.success_rate >= 0.7 ? 'accent' : 'error';
+  const dur = jobs.avg_duration_secs > 0 ? fmtDuration(jobs.avg_duration_secs) : '—';
+
+  document.getElementById('analytics-jobs-summary').innerHTML =
+      analyticsCard('Total Jobs',     jobs.total_jobs.toLocaleString(),    '')
+    + analyticsCard('Completed',      jobs.completed_jobs.toLocaleString(),'cost')
+    + analyticsCard('Failed',         jobs.failed_jobs.toLocaleString(),   jobs.failed_jobs > 0 ? 'error' : '')
+    + analyticsCard('In Progress',    jobs.in_progress_jobs.toLocaleString(), '')
+    + analyticsCard('Success Rate',   ratePct,                              rateClass)
+    + analyticsCard('Avg Duration',   dur,                                  '')
+    + analyticsCard('Total Job Cost', '$' + fmtCost(jobs.total_cost_usd),  'cost');
+}
+
+function analyticsCard(label, value, cls) {
+  return '<div class="summary-card ' + cls + '">'
+    + '<div class="count">' + value + '</div>'
+    + '<div class="label">' + label + '</div>'
+    + '</div>';
+}
+
+// ── Cost-over-time SVG bar chart ──────────────────────────────────────────────
+
+function renderCostChart(data) {
+  const svg   = document.getElementById('analytics-cost-chart');
+  const empty = document.getElementById('analytics-chart-empty');
+  svg.innerHTML = '';
+
+  const nonZero = data.filter(d => parseFloat(d.cost_usd) > 0);
+  if (!nonZero.length) {
+    svg.style.display = 'none';
+    empty.style.display = '';
+    return;
+  }
+  svg.style.display = '';
+  empty.style.display = 'none';
+
+  const W = svg.parentElement.clientWidth || 600;
+  const H = 120;
+  const padL = 52, padR = 12, padT = 10, padB = 28;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('height', H);
+
+  const costs = data.map(d => parseFloat(d.cost_usd));
+  const maxCost = Math.max(...costs, 0.000001);
+  const barW = Math.max(2, Math.floor(chartW / data.length) - 2);
+
+  // Y-axis label
+  const yLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  yLabel.setAttribute('x', padL - 4);
+  yLabel.setAttribute('y', padT + chartH / 2);
+  yLabel.setAttribute('text-anchor', 'end');
+  yLabel.setAttribute('dominant-baseline', 'middle');
+  yLabel.setAttribute('class', 'chart-axis-label');
+  yLabel.textContent = '$' + fmtCost(maxCost.toString());
+  svg.appendChild(yLabel);
+
+  // Zero line
+  const zeroLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  zeroLine.setAttribute('x1', padL);
+  zeroLine.setAttribute('x2', padL + chartW);
+  zeroLine.setAttribute('y1', padT + chartH);
+  zeroLine.setAttribute('y2', padT + chartH);
+  zeroLine.setAttribute('class', 'chart-baseline');
+  svg.appendChild(zeroLine);
+
+  data.forEach((d, i) => {
+    const cost = parseFloat(d.cost_usd);
+    const barH = Math.max(1, (cost / maxCost) * chartH);
+    const x    = padL + i * (chartW / data.length) + (chartW / data.length - barW) / 2;
+    const y    = padT + chartH - barH;
+
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', x.toFixed(1));
+    rect.setAttribute('y', y.toFixed(1));
+    rect.setAttribute('width', barW);
+    rect.setAttribute('height', barH.toFixed(1));
+    rect.setAttribute('class', 'chart-bar');
+    rect.setAttribute('rx', '2');
+
+    // Tooltip via <title>
+    const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    title.textContent = d.day + '\n$' + fmtCost(d.cost_usd) + ' · ' + d.call_count + ' calls';
+    rect.appendChild(title);
+    svg.appendChild(rect);
+
+    // X-axis date label — only show for first, last, and every ~7th bar
+    if (i === 0 || i === data.length - 1 || i % 7 === 0) {
+      const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      label.setAttribute('x', (x + barW / 2).toFixed(1));
+      label.setAttribute('y', padT + chartH + 14);
+      label.setAttribute('text-anchor', 'middle');
+      label.setAttribute('class', 'chart-axis-label');
+      label.textContent = d.day.slice(5); // MM-DD
+      svg.appendChild(label);
+    }
+  });
+}
+
+// ── Model table ───────────────────────────────────────────────────────────────
+
+// Sortable table headers — delegate from table
+document.addEventListener('DOMContentLoaded', () => {
+  const modelTable = document.getElementById('analytics-table');
+  if (modelTable) {
+    modelTable.querySelector('thead').addEventListener('click', (e) => {
+      const th = e.target.closest('th[data-col]');
+      if (!th) return;
+      const col = th.dataset.col;
+      if (analyticsModelSort.col === col) analyticsModelSort.dir *= -1;
+      else { analyticsModelSort.col = col; analyticsModelSort.dir = -1; }
+      renderAnalyticsTable(analyticsModels);
+    });
+  }
+
+  const toolsTable = document.getElementById('analytics-tools-table');
+  if (toolsTable) {
+    toolsTable.querySelector('thead').addEventListener('click', (e) => {
+      const th = e.target.closest('th[data-col]');
+      if (!th) return;
+      const col = th.dataset.col;
+      if (analyticsToolSort.col === col) analyticsToolSort.dir *= -1;
+      else { analyticsToolSort.col = col; analyticsToolSort.dir = -1; }
+      renderAnalyticsToolsTable(analyticsTools);
+    });
+  }
+});
+
+function sortedModels(models) {
+  const totalCost = models.reduce((s, m) => s + parseFloat(m.total_cost_usd || 0), 0) || 1;
+  return [...models].sort((a, b) => {
+    let av, bv;
+    switch (analyticsModelSort.col) {
+      case 'provider':    av = a.provider; bv = b.provider; break;
+      case 'model':       av = a.model;    bv = b.model;    break;
+      case 'calls':       av = a.total_calls;  bv = b.total_calls; break;
+      case 'input':       av = a.total_input_tokens;  bv = b.total_input_tokens;  break;
+      case 'output':      av = a.total_output_tokens; bv = b.total_output_tokens; break;
+      case 'ratio':       av = a.total_input_tokens  / (a.total_output_tokens  || 1);
+                          bv = b.total_input_tokens  / (b.total_output_tokens  || 1); break;
+      case 'latency':     av = a.avg_latency_ms ?? -1; bv = b.avg_latency_ms ?? -1; break;
+      case 'cost_share':  av = parseFloat(a.total_cost_usd || 0) / totalCost;
+                          bv = parseFloat(b.total_cost_usd || 0) / totalCost; break;
+      case 'avg_cost':    av = parseFloat(a.avg_cost_per_call_usd || 0);
+                          bv = parseFloat(b.avg_cost_per_call_usd || 0); break;
+      default:            av = parseFloat(a.total_cost_usd || 0);
+                          bv = parseFloat(b.total_cost_usd || 0);
+    }
+    if (av < bv) return -analyticsModelSort.dir;
+    if (av > bv) return  analyticsModelSort.dir;
+    return 0;
+  });
+}
+
+function renderAnalyticsTable(models) {
+  const thead = document.querySelector('#analytics-table thead tr');
+  const tbody = document.getElementById('analytics-tbody');
+  const empty = document.getElementById('analytics-empty');
+  tbody.innerHTML = '';
+
+  // Update sort indicators on headers
+  if (thead) {
+    thead.querySelectorAll('th[data-col]').forEach(th => {
+      th.classList.remove('sort-asc', 'sort-desc');
+      if (th.dataset.col === analyticsModelSort.col) {
+        th.classList.add(analyticsModelSort.dir === 1 ? 'sort-asc' : 'sort-desc');
+      }
+    });
+  }
+
+  if (!models || models.length === 0) {
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  const totalCost = models.reduce((s, m) => s + parseFloat(m.total_cost_usd || 0), 0) || 1;
+  const sorted = sortedModels(models);
+
+  for (const m of sorted) {
+    const latencyCell = fmtLatencyCell(m.avg_latency_ms, m.p95_latency_ms);
+    const shareVal    = parseFloat(m.total_cost_usd || 0) / totalCost;
+    const sharePct    = (shareVal * 100).toFixed(1);
+    const ratio       = m.total_output_tokens > 0
+      ? (m.total_input_tokens / m.total_output_tokens).toFixed(1)
+      : '—';
+
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+        '<td><span class="provider-badge">' + escapeHtml(m.provider) + '</span></td>'
+      + '<td class="model-name">' + escapeHtml(m.model) + '</td>'
+      + '<td class="num">' + m.total_calls.toLocaleString() + '</td>'
+      + '<td class="num">' + fmtTokens(m.total_input_tokens)  + '</td>'
+      + '<td class="num">' + fmtTokens(m.total_output_tokens) + '</td>'
+      + '<td class="num">' + ratio + '</td>'
+      + '<td class="num">' + latencyCell + '</td>'
+      + '<td class="num">'
+        + '<div class="cost-share-wrap">'
+        + '<span class="cost-share-pct">' + sharePct + '%</span>'
+        + '<div class="cost-share-bar"><div class="cost-share-fill" style="width:' + sharePct + '%"></div></div>'
+        + '</div></td>'
+      + '<td class="num cost">' + fmtCostCell(m.avg_cost_per_call_usd) + '</td>'
+      + '<td class="num cost">' + fmtCostCell(m.total_cost_usd) + '</td>';
+    tbody.appendChild(tr);
+  }
+}
+
+function fmtLatencyCell(avg, p95) {
+  if (avg == null) return '<span class="text-muted">—</span>';
+  const cls = avg < 1000 ? 'lat-green' : avg < 3000 ? 'lat-yellow' : 'lat-red';
+  let text = '<span class="lat-badge ' + cls + '">' + fmtMs(avg) + '</span>';
+  if (p95 != null) text += ' <span class="text-muted p95-label">p95 ' + fmtMs(p95) + '</span>';
+  return text;
+}
+
+function fmtMs(ms) {
+  if (ms >= 1000) return (ms / 1000).toFixed(1) + ' s';
+  return Math.round(ms) + ' ms';
+}
+
+// ── Tool usage table ──────────────────────────────────────────────────────────
+
+function sortedTools(tools) {
+  return [...tools].sort((a, b) => {
+    let av, bv;
+    switch (analyticsToolSort.col) {
+      case 'tool':         av = a.tool_name;        bv = b.tool_name;        break;
+      case 'calls':        av = a.total_calls;       bv = b.total_calls;      break;
+      case 'success_rate': av = a.success_rate;      bv = b.success_rate;     break;
+      case 'avg_ms':       av = a.avg_duration_ms;   bv = b.avg_duration_ms;  break;
+      case 'cost':         av = parseFloat(a.total_cost_usd || 0);
+                           bv = parseFloat(b.total_cost_usd || 0); break;
+      default:             av = a.total_calls; bv = b.total_calls;
+    }
+    if (av < bv) return -analyticsToolSort.dir;
+    if (av > bv) return  analyticsToolSort.dir;
+    return 0;
+  });
+}
+
+function renderAnalyticsToolsTable(tools) {
+  const thead = document.querySelector('#analytics-tools-table thead tr');
+  const tbody = document.getElementById('analytics-tools-tbody');
+  const empty = document.getElementById('analytics-tools-empty');
+  tbody.innerHTML = '';
+
+  if (thead) {
+    thead.querySelectorAll('th[data-col]').forEach(th => {
+      th.classList.remove('sort-asc', 'sort-desc');
+      if (th.dataset.col === analyticsToolSort.col) {
+        th.classList.add(analyticsToolSort.dir === 1 ? 'sort-asc' : 'sort-desc');
+      }
+    });
+  }
+
+  if (!tools || tools.length === 0) {
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  for (const t of sortedTools(tools)) {
+    const ratePct = (t.success_rate * 100).toFixed(1);
+    const rateClass = t.success_rate >= 0.95 ? 'sr-green'
+                    : t.success_rate >= 0.80  ? 'sr-yellow'
+                    : 'sr-red';
+    const dur = t.avg_duration_ms > 0 ? fmtMs(t.avg_duration_ms) : '—';
+    const cost = parseFloat(t.total_cost_usd || 0);
+
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+        '<td class="tool-name-cell">' + escapeHtml(t.tool_name) + '</td>'
+      + '<td class="num">' + t.total_calls.toLocaleString() + '</td>'
+      + '<td class="num">'
+        + '<div class="sr-wrap">'
+        + '<span class="sr-badge ' + rateClass + '">' + ratePct + '%</span>'
+        + '<span class="sr-counts text-muted">('
+        + t.successful_calls + '&#x2714; ' + t.failed_calls + '&#x2718;)</span>'
+        + '</div></td>'
+      + '<td class="num">' + dur + '</td>'
+      + '<td class="num cost">' + (cost > 0 ? fmtCostCell(t.total_cost_usd) : '<span class="text-muted">—</span>') + '</td>';
+    tbody.appendChild(tr);
+  }
+}
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+/** Format a token count as e.g. "1.2M", "45.3K", "800" */
+function fmtTokens(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000)     return (n / 1_000).toFixed(1) + 'K';
+  return String(n);
+}
+
+/** Format a cost decimal string, showing enough precision to be meaningful */
+function fmtCost(usd) {
+  const n = parseFloat(usd);
+  if (isNaN(n)) return '0.000000';
+  if (n === 0)  return '0.000000';
+  if (n >= 1)   return n.toFixed(4);
+  return n.toPrecision(4);
+}
+
+function fmtCostCell(usd) {
+  return '$' + fmtCost(usd);
+}
+
+/** Format seconds as "1h 23m", "45s", etc. */
+function fmtDuration(secs) {
+  if (secs >= 3600) return Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm';
+  if (secs >= 60)   return Math.floor(secs / 60) + 'm ' + Math.round(secs % 60) + 's';
+  return secs.toFixed(1) + 's';
+}
+
+// ── Audit Log ─────────────────────────────────────────────────────────────────
+
+let auditRange = '';
+
+// Wire up range pills for Audit tab
+(function initAuditPills() {
+  document.addEventListener('DOMContentLoaded', () => {
+    const pills = document.getElementById('audit-range-pills');
+    if (!pills) return;
+    pills.addEventListener('click', (e) => {
+      const btn = e.target.closest('.range-pill');
+      if (!btn) return;
+      pills.querySelectorAll('.range-pill').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      auditRange = btn.dataset.range || '';
+      loadAudit();
+    });
+  });
+})();
+
+async function loadAudit() {
+  const params = new URLSearchParams();
+  if (auditRange) params.set('range', auditRange);
+  const eventType = document.getElementById('audit-event-type-filter')?.value || '';
+  const outcome   = document.getElementById('audit-outcome-filter')?.value   || '';
+  if (eventType) params.set('event_type', eventType);
+  if (outcome)   params.set('outcome', outcome);
+  params.set('limit', '200');
+
+  try {
+    const [log, summary] = await Promise.all([
+      apiFetch('/api/audit/log?' + params.toString()),
+      apiFetch('/api/audit/summary?' + (auditRange ? 'range=' + auditRange : '')),
+    ]);
+
+    renderAuditSummary(summary);
+    renderAuditTable(log.entries || []);
+
+    const el = document.getElementById('audit-updated');
+    if (el) el.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById('audit-summary').innerHTML =
+      '<div class="empty-state">Failed to load audit log: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderAuditSummary(summary) {
+  const counts = summary.counts || [];
+  const total  = summary.total  || 0;
+
+  const byType = {};
+  counts.forEach(c => { byType[c.event_type] = c.count; });
+
+  const el = document.getElementById('audit-summary');
+  if (!el) return;
+  el.innerHTML =
+      analyticsCard('Total Events',   total.toLocaleString(),                             '')
+    + analyticsCard('Tool Calls',     (byType['tool_call']     || 0).toLocaleString(),    '')
+    + analyticsCard('Safety Blocks',  (byType['safety_block']  || 0).toLocaleString(),    (byType['safety_block']  || 0) > 0 ? 'error' : '')
+    + analyticsCard('Approval Denials',(byType['approval_denied'] || 0).toLocaleString(), (byType['approval_denied'] || 0) > 0 ? 'error' : '')
+    + analyticsCard('Job Failures',   (byType['job_state']     || 0).toLocaleString(),    '');
+}
+
+/** Map event_type → CSS class for the badge */
+function auditEventClass(eventType) {
+  switch (eventType) {
+    case 'tool_call':     return 'provider-anthropic';
+    case 'approval':      return 'provider-openai';
+    case 'safety_block':  return 'provider-error';
+    case 'job_state':     return 'provider-ollama';
+    case 'auth':          return 'provider-generic';
+    default:              return 'provider-generic';
+  }
+}
+
+/** Map outcome → CSS class */
+function auditOutcomeClass(outcome) {
+  if (!outcome) return '';
+  if (outcome === 'success' || outcome === 'approved') return 'lat-green';
+  if (outcome === 'failure' || outcome === 'blocked' || outcome === 'denied') return 'lat-red';
+  return '';
+}
+
+function renderAuditTable(entries) {
+  const tbody = document.getElementById('audit-tbody');
+  const empty = document.getElementById('audit-empty');
+  if (!tbody) return;
+
+  if (!entries.length) {
+    tbody.innerHTML = '';
+    if (empty) empty.style.display = '';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+
+  tbody.innerHTML = entries.map((e, i) => {
+    const ts = new Date(e.created_at).toLocaleString();
+    const typeBadge = '<span class="provider-badge ' + auditEventClass(e.event_type) + '">' + escapeHtml(e.event_type) + '</span>';
+    const outcomeEl = e.outcome
+      ? '<span class="' + auditOutcomeClass(e.outcome) + '">' + escapeHtml(e.outcome) + '</span>'
+      : '—';
+    const tool    = escapeHtml(e.tool_name || '');
+    const actor   = escapeHtml(e.actor || '');
+    const dur     = e.duration_ms != null ? e.duration_ms + ' ms' : '—';
+    const errSnip = e.error_msg ? escapeHtml(e.error_msg.substring(0, 60)) + (e.error_msg.length > 60 ? '…' : '') : '';
+    const hasDetail = e.input_summary || e.error_msg || e.metadata;
+    const detailId = 'audit-detail-' + i;
+    let detailHtml = '';
+    if (hasDetail) {
+      const parts = [];
+      if (e.input_summary) parts.push('<strong>Input:</strong> <code>' + escapeHtml(e.input_summary) + '</code>');
+      if (e.error_msg)     parts.push('<strong>Error:</strong> <code>' + escapeHtml(e.error_msg) + '</code>');
+      if (e.metadata)      parts.push('<strong>Metadata:</strong> <pre class="audit-meta-json">' + escapeHtml(JSON.stringify(e.metadata, null, 2)) + '</pre>');
+      detailHtml = '<tr id="' + detailId + '" style="display:none"><td colspan="7"><div class="audit-detail-panel">' + parts.join('<br>') + '</div></td></tr>';
+    }
+
+    return '<tr data-audit-idx="' + i + '" onclick="toggleAuditRow(' + i + ')" style="cursor:pointer">'
+      + '<td>' + escapeHtml(ts) + '</td>'
+      + '<td>' + typeBadge + '</td>'
+      + '<td>' + actor + '</td>'
+      + '<td>' + tool + '</td>'
+      + '<td>' + outcomeEl + '</td>'
+      + '<td class="num">' + dur + '</td>'
+      + '<td>' + errSnip + '</td>'
+      + '</tr>'
+      + detailHtml;
+  }).join('');
+}
+
+function toggleAuditRow(idx) {
+  const detail = document.getElementById('audit-detail-' + idx);
+  if (!detail) return;
+  const showing = detail.style.display !== 'none';
+  detail.style.display = showing ? 'none' : '';
+}
+
+// ── Settings tab ─────────────────────────────────────────────────────────────
+
+// Catalog of all well-known settings with metadata for rendering.
+const SETTINGS_SECTIONS = [
+  {
+    id: 'agent', label: 'Agent',
+    settings: [
+      { key: 'agent.name',                    label: 'Agent name',              desc: 'Display name shown in messages and notifications',               type: 'string',  default: 'rustytalon' },
+      { key: 'agent.max_parallel_jobs',       label: 'Max parallel jobs',       desc: 'Maximum number of jobs the agent runs concurrently',            type: 'number',  default: 5 },
+      { key: 'agent.job_timeout_secs',        label: 'Job timeout',             desc: 'Maximum time a job can run before being forcefully stopped',     type: 'number',  default: 3600,   unit: 'sec' },
+      { key: 'agent.stuck_threshold_secs',    label: 'Stuck job threshold',     desc: 'How long a job must stall before self-repair kicks in',          type: 'number',  default: 300,    unit: 'sec' },
+      { key: 'agent.use_planning',            label: 'Use planning',            desc: 'Run a planning step before executing tools (improves accuracy)', type: 'boolean', default: true },
+      { key: 'agent.session_idle_timeout_secs', label: 'Session idle timeout', desc: 'Sessions idle longer than this are pruned from memory',          type: 'number',  default: 604800, unit: 'sec' },
+      { key: 'agent.repair_check_interval_secs', label: 'Repair check interval', desc: 'How often the self-repair process polls for stuck jobs',       type: 'number',  default: 60,     unit: 'sec' },
+      { key: 'agent.max_repair_attempts',     label: 'Max repair attempts',     desc: 'How many times a stuck job will be automatically retried',       type: 'number',  default: 3 },
+    ],
+  },
+  {
+    id: 'heartbeat', label: 'Heartbeat',
+    settings: [
+      { key: 'heartbeat.enabled',         label: 'Enable heartbeat',   desc: 'Run the heartbeat checklist proactively on a schedule',      type: 'boolean', default: false },
+      { key: 'heartbeat.interval_secs',   label: 'Check interval',     desc: 'How often the heartbeat checklist runs',                    type: 'number',  default: 1800, unit: 'sec' },
+      { key: 'heartbeat.notify_channel',  label: 'Notify channel',     desc: 'Channel to notify when findings are detected (e.g. tui)',   type: 'string',  default: '' },
+      { key: 'heartbeat.notify_user',     label: 'Notify user',        desc: 'User ID to notify when heartbeat has findings',             type: 'string',  default: '' },
+    ],
+  },
+  {
+    id: 'channels', label: 'Channels',
+    settings: [
+      { key: 'channels.http_enabled',        label: 'HTTP webhook',          desc: 'Accept incoming messages via HTTP POST requests',                      type: 'boolean', default: false },
+      { key: 'channels.http_port',           label: 'HTTP webhook port',     desc: 'Port the HTTP webhook listener binds to',                              type: 'number',  default: 8080 },
+      { key: 'channels.wasm_channels_enabled', label: 'WASM channels',      desc: 'Enable WASM-based channels such as Telegram, Slack, and Discord',       type: 'boolean', default: true },
+      { key: 'channels.telegram_owner_id',   label: 'Telegram owner ID',    desc: 'Only respond to this Telegram user ID — leave empty to allow anyone',   type: 'number',  default: null },
+      { key: 'channels.discord_owner_id',    label: 'Discord owner ID',     desc: 'Only respond to this Discord user ID — leave empty to allow anyone',    type: 'string',  default: '' },
+      { key: 'channels.discord_dm_policy',   label: 'Discord DM policy',    desc: 'Who can send direct messages to the bot',                               type: 'select',  default: 'pairing', options: ['pairing', 'open', 'owner_only'] },
+    ],
+  },
+  {
+    id: 'embeddings', label: 'Embeddings',
+    settings: [
+      { key: 'embeddings.enabled',  label: 'Enable embeddings', desc: 'Use vector embeddings to power semantic memory search', type: 'boolean', default: false },
+      { key: 'embeddings.provider', label: 'Provider',          desc: 'Embeddings provider (requires matching API key)',        type: 'select',  default: 'openai', options: ['openai'] },
+      { key: 'embeddings.model',    label: 'Model',             desc: 'Embedding model name used for chunk indexing',           type: 'string',  default: 'text-embedding-3-small' },
+    ],
+  },
+  {
+    id: 'safety', label: 'Safety',
+    settings: [
+      { key: 'safety.injection_check_enabled', label: 'Injection check',    desc: 'Scan all tool outputs for prompt injection patterns before passing to LLM', type: 'boolean', default: true },
+      { key: 'safety.max_output_length',       label: 'Max output length',  desc: 'Maximum byte size of any tool output forwarded to the LLM',                 type: 'number',  default: 100000, unit: 'bytes' },
+    ],
+  },
+  {
+    id: 'wasm', label: 'WASM Sandbox',
+    settings: [
+      { key: 'wasm.enabled',               label: 'Enable WASM sandbox',    desc: 'Run WASM tools inside an isolated sandbox with resource limits', type: 'boolean', default: true },
+      { key: 'wasm.default_memory_limit',  label: 'Memory limit',           desc: 'Default RAM cap for WASM module execution',                      type: 'number',  default: 10485760, unit: 'bytes' },
+      { key: 'wasm.default_timeout_secs',  label: 'Execution timeout',      desc: 'Maximum wall-clock time for a single WASM tool call',            type: 'number',  default: 60,       unit: 'sec' },
+      { key: 'wasm.default_fuel_limit',    label: 'Fuel limit',             desc: 'CPU instruction budget per call — higher allows more compute',   type: 'number',  default: 10000000 },
+      { key: 'wasm.cache_compiled',        label: 'Cache compiled modules', desc: 'Cache compiled WASM to speed up subsequent cold starts',         type: 'boolean', default: true },
+    ],
+  },
+  {
+    id: 'sandbox', label: 'Docker Sandbox',
+    settings: [
+      { key: 'sandbox.enabled',         label: 'Enable Docker sandbox', desc: 'Run jobs inside isolated Docker containers',                        type: 'boolean', default: true },
+      { key: 'sandbox.policy',          label: 'Sandbox policy',        desc: 'Level of filesystem access granted to the container',               type: 'select',  default: 'readonly', options: ['readonly', 'workspace_write', 'full_access'] },
+      { key: 'sandbox.timeout_secs',    label: 'Command timeout',       desc: 'Maximum time a sandboxed command may run',                          type: 'number',  default: 120,  unit: 'sec' },
+      { key: 'sandbox.memory_limit_mb', label: 'Memory limit',          desc: 'RAM cap for each sandbox container',                                type: 'number',  default: 2048, unit: 'MB' },
+      { key: 'sandbox.image',           label: 'Docker image',          desc: 'Container image used for the worker sandbox',                       type: 'string',  default: 'rustytalon-worker:latest' },
+      { key: 'sandbox.auto_pull_image', label: 'Auto-pull image',       desc: 'Automatically pull the image from Docker Hub if not found locally', type: 'boolean', default: true },
+    ],
+  },
+  {
+    id: 'builder', label: 'Tool Builder',
+    settings: [
+      { key: 'builder.enabled',         label: 'Enable builder',       desc: 'Allow the agent to build new WASM tools dynamically at runtime', type: 'boolean', default: true },
+      { key: 'builder.max_iterations',  label: 'Max build iterations', desc: 'Maximum build-and-fix attempts before giving up on a tool',      type: 'number',  default: 20 },
+      { key: 'builder.timeout_secs',    label: 'Build timeout',        desc: 'Maximum total time for a complete build session',                 type: 'number',  default: 600, unit: 'sec' },
+      { key: 'builder.auto_register',   label: 'Auto-register tools',  desc: 'Automatically add newly built tools to the registry',             type: 'boolean', default: true },
+    ],
+  },
+  {
+    id: 'audit', label: 'Audit',
+    settings: [
+      { key: 'audit_retention_days', label: 'Log retention', desc: 'How many days to keep audit log entries before they are pruned', type: 'number', default: 90, unit: 'days' },
+    ],
+  },
+];
+
+// Flat lookup: key -> catalog entry
+const SETTINGS_BY_KEY = {};
+for (const sec of SETTINGS_SECTIONS) {
+  for (const s of sec.settings) SETTINGS_BY_KEY[s.key] = s;
+}
+
+// Current DB values: key -> { value, updated_at }
+let _settingsValues = {};
+
+// Key being edited in the modal (null = new custom)
+let _settingEditKey = null;
+
+function _settingDomId(key) {
+  return 'sr-' + key.replace(/[^a-zA-Z0-9]/g, '_');
+}
+
+async function loadSettings() {
+  const container = document.getElementById('settings-sections');
+  container.innerHTML = '<div class="empty-state">Loading…</div>';
+
+  try {
+    // apiFetch resolves to parsed JSON on success, throws on any HTTP error
+    const data = await apiFetch('/api/settings');
+    _settingsValues = {};
+    for (const row of (data.settings || [])) {
+      _settingsValues[row.key] = row;
+    }
+    renderSettingsSections(null);
+  } catch (e) {
+    // API unavailable or DB not connected — show sections with defaults + notice
+    _settingsValues = {};
+    renderSettingsSections('Could not load saved settings — showing defaults. Check that the database is connected.');
+  }
+
+  // Load current version into the About card (no network check on every load).
+  loadVersionInfo();
+}
+
+// ---- About / Version ----
+
+let _versionDockerCmd = null;
+
+async function loadVersionInfo() {
+  try {
+    const data = await fetch('/api/version').then(r => r.json());
+    const el = document.getElementById('version-current');
+    if (el) el.textContent = 'v' + data.version;
+  } catch (_) { /* non-critical */ }
+}
+
+async function checkForUpdate() {
+  const btn = document.getElementById('btn-check-update');
+  const statusEl = document.getElementById('version-status');
+  const latestRow = document.getElementById('version-latest-row');
+  const latestEl = document.getElementById('version-latest');
+  const releaseLink = document.getElementById('version-release-link');
+  const dockerBlock = document.getElementById('version-docker-block');
+  const dockerCmd = document.getElementById('version-docker-cmd-text');
+
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  if (statusEl) {
+    statusEl.className = 'version-status checking';
+    statusEl.textContent = '⟳ Checking';
+  }
+  if (latestRow) latestRow.style.display = '';
+  if (latestEl) latestEl.textContent = '—';
+  if (releaseLink) releaseLink.style.display = 'none';
+  if (dockerBlock) dockerBlock.style.display = 'none';
+
+  try {
+    const data = await fetch('/api/version?check=true').then(r => r.json());
+
+    if (data.check_error) {
+      if (statusEl) {
+        statusEl.className = 'version-status check-error';
+        statusEl.textContent = '✕ ' + data.check_error;
+      }
+      if (latestEl) latestEl.textContent = 'Unknown';
+      btn.textContent = 'Retry';
+      btn.disabled = false;
+      return;
+    }
+
+    if (latestEl) latestEl.textContent = 'v' + (data.latest || '?');
+
+    if (data.update_available) {
+      if (statusEl) {
+        statusEl.className = 'version-status update-available';
+        statusEl.textContent = '↑ Update available';
+      }
+      if (releaseLink && data.release_url) {
+        releaseLink.href = data.release_url;
+        releaseLink.style.display = '';
+      }
+      if (dockerBlock && data.docker_pull) {
+        _versionDockerCmd = data.docker_pull;
+        if (dockerCmd) dockerCmd.textContent = data.docker_pull;
+        dockerBlock.style.display = '';
+      }
+      btn.textContent = 'Check again';
+    } else {
+      if (statusEl) {
+        statusEl.className = 'version-status up-to-date';
+        statusEl.textContent = '✓ Up to date';
+      }
+      btn.textContent = 'Check again';
+    }
+  } catch (e) {
+    if (statusEl) {
+      statusEl.className = 'version-status check-error';
+      statusEl.textContent = '✕ Check failed';
+    }
+    if (latestEl) latestEl.textContent = 'Unknown';
+    btn.textContent = 'Retry';
+  }
+  btn.disabled = false;
+}
+
+function copyDockerCmd() {
+  if (!_versionDockerCmd) return;
+  navigator.clipboard.writeText(_versionDockerCmd).then(() => {
+    const btn = document.querySelector('.btn-copy-docker');
+    if (!btn) return;
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  }).catch(() => {
+    // Clipboard API unavailable — select the text as fallback
+    const el = document.getElementById('version-docker-cmd-text');
+    if (!el) return;
+    const range = document.createRange();
+    range.selectNode(el);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+  });
+}
+
+function renderSettingsSections(notice) {
+  const container = document.getElementById('settings-sections');
+  const knownKeys = new Set(Object.keys(SETTINGS_BY_KEY));
+  const html = [];
+
+  if (notice) {
+    html.push(`<div class="settings-notice">${escapeHtml(notice)}</div>`);
+  }
+
+  for (const sec of SETTINGS_SECTIONS) {
+    html.push(renderSettingsSection(sec));
+  }
+
+  // Custom section: any DB keys not in the catalog
+  const customRows = Object.entries(_settingsValues).filter(([k]) => !knownKeys.has(k));
+  if (customRows.length > 0) {
+    const rows = customRows.map(([key, row]) => {
+      const val = escapeHtml(JSON.stringify(row.value));
+      const updated = row.updated_at ? new Date(row.updated_at).toLocaleString() : '—';
+      return `<div class="settings-row">
+        <div class="settings-row-info">
+          <div class="settings-row-label settings-custom-key">${escapeHtml(key)}</div>
+          <div class="settings-row-desc">Updated ${updated}</div>
+        </div>
+        <div class="settings-row-control">
+          <code class="setting-val-cell">${val}</code>
+          <button class="btn-icon" title="Edit" onclick="openSettingModal(${JSON.stringify(key)},${JSON.stringify(JSON.stringify(row.value))})">&#9998;</button>
+          <button class="btn-icon btn-danger-icon" title="Delete" onclick="deleteCustomSetting(${JSON.stringify(key)})">&#10005;</button>
+        </div>
+      </div>`;
+    }).join('');
+    html.push(`<div class="settings-section">
+      <div class="settings-section-header"><span class="settings-section-title">Custom</span></div>
+      <div class="settings-section-body">${rows}</div>
+    </div>`);
+  }
+
+  container.innerHTML = '<div class="settings-sections">' + html.join('') + '</div>';
+}
+
+function renderSettingsSection(sec) {
+  const rows = sec.settings.map(s => renderSettingRow(s)).join('');
+  return `<div class="settings-section">
+    <div class="settings-section-header"><span class="settings-section-title">${escapeHtml(sec.label)}</span></div>
+    <div class="settings-section-body">${rows}</div>
+  </div>`;
+}
+
+function renderSettingRow(def) {
+  const stored   = _settingsValues[def.key];
+  const rawVal   = stored ? stored.value : undefined;
+  const isSet    = rawVal !== undefined;
+  const dispVal  = isSet ? rawVal : def.default;
+  const domId    = _settingDomId(def.key);
+  const resetBtn = isSet
+    ? `<button class="btn-icon settings-reset-btn" onclick="resetSetting(${JSON.stringify(def.key)})" title="Reset to default">&#8635;</button>`
+    : '';
+
+  let control;
+  if (def.type === 'boolean') {
+    const checked = dispVal === true || dispVal === 'true';
+    control = `<label class="settings-toggle" title="${checked ? 'Enabled' : 'Disabled'}">
+      <input type="checkbox" ${checked ? 'checked' : ''} onchange="updateBoolSetting(${JSON.stringify(def.key)}, this.checked)">
+      <span class="settings-toggle-track"></span>
+    </label>`;
+  } else if (def.type === 'select') {
+    const opts = (def.options || []).map(o =>
+      `<option value="${escapeHtml(o)}" ${String(dispVal) === o ? 'selected' : ''}>${escapeHtml(o)}</option>`
+    ).join('');
+    control = `<select class="settings-select" onchange="updateSelectSetting(${JSON.stringify(def.key)}, this.value)">${opts}</select>`;
+  } else {
+    const valStr  = dispVal !== null && dispVal !== undefined ? String(dispVal) : '';
+    const unit    = def.unit ? `<span class="settings-unit">${escapeHtml(def.unit)}</span>` : '';
+    const editBtn = `<button class="btn-icon settings-edit-btn" onclick="startEditSetting(${JSON.stringify(def.key)})" title="Edit">&#9998;</button>`;
+    control = `<span class="settings-value-wrap" id="swrap-${domId}">
+      <span class="settings-value ${!isSet ? 'settings-value-default' : ''}"
+            onclick="startEditSetting(${JSON.stringify(def.key)})"
+            title="Click to edit">${escapeHtml(valStr || (def.default !== null && def.default !== undefined ? String(def.default) : ''))}</span>
+      ${unit}${editBtn}
+    </span>`;
+  }
+
+  return `<div class="settings-row" id="${domId}">
+    <div class="settings-row-info">
+      <div class="settings-row-label">${escapeHtml(def.label)}</div>
+      <div class="settings-row-desc">${escapeHtml(def.desc)}</div>
+    </div>
+    <div class="settings-row-control">${control}${resetBtn}</div>
+  </div>`;
+}
+
+async function updateBoolSetting(key, value) {
+  try {
+    await apiFetch('/api/settings/' + encodeURIComponent(key), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    });
+    if (!_settingsValues[key]) _settingsValues[key] = {};
+    _settingsValues[key].value = value;
+  } catch (e) {
+    alert('Failed to save setting.');
+  }
+}
+
+async function updateSelectSetting(key, value) {
+  try {
+    await apiFetch('/api/settings/' + encodeURIComponent(key), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    });
+    if (!_settingsValues[key]) _settingsValues[key] = {};
+    _settingsValues[key].value = value;
+  } catch (e) {
+    alert('Failed to save setting.');
+  }
+}
+
+function startEditSetting(key) {
+  const def = SETTINGS_BY_KEY[key];
+  if (!def) return;
+  const stored  = _settingsValues[key];
+  const current = stored ? stored.value : def.default;
+  const valStr  = current !== null && current !== undefined ? String(current) : '';
+  const domId   = _settingDomId(key);
+  const wrap    = document.getElementById('swrap-' + domId);
+  if (!wrap) return;
+
+  const unit = def.unit ? `<span class="settings-unit">${escapeHtml(def.unit)}</span>` : '';
+  wrap.innerHTML = `
+    <input type="${def.type === 'number' ? 'number' : 'text'}"
+           class="settings-inline-input"
+           id="sinput-${domId}"
+           value="${escapeHtml(valStr)}"
+           onkeydown="settingInputKeydown(event, ${JSON.stringify(key)})"
+           onblur="commitEditSetting(${JSON.stringify(key)})">
+    ${unit}
+    <button class="btn-icon settings-ok-btn" onmousedown="event.preventDefault()" onclick="commitEditSetting(${JSON.stringify(key)})" title="Save">&#10003;</button>
+    <button class="btn-icon" onmousedown="event.preventDefault()" onclick="cancelEditSetting(${JSON.stringify(key)})" title="Cancel">&#10005;</button>`;
+
+  const input = document.getElementById('sinput-' + domId);
+  if (input) { input.focus(); input.select(); }
+}
+
+function settingInputKeydown(e, key) {
+  if (e.key === 'Enter')  { e.preventDefault(); commitEditSetting(key); }
+  if (e.key === 'Escape') { cancelEditSetting(key); }
+}
+
+async function commitEditSetting(key) {
+  const def   = SETTINGS_BY_KEY[key];
+  const domId = _settingDomId(key);
+  const input = document.getElementById('sinput-' + domId);
+  if (!input) return; // already committed or cancelled
+  const rawVal = input.value.trim();
+  input.id = ''; // prevent double-commit on blur after click
+
+  let parsed;
+  if (def.type === 'number') {
+    parsed = rawVal === '' ? def.default : Number(rawVal);
+    if (isNaN(parsed)) { cancelEditSetting(key); return; }
+  } else {
+    parsed = rawVal === '' ? null : rawVal;
+  }
+
+  try {
+    await apiFetch('/api/settings/' + encodeURIComponent(key), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: parsed }),
+    });
+    if (!_settingsValues[key]) _settingsValues[key] = {};
+    _settingsValues[key].value = parsed;
+  } catch (e) {
+    alert('Failed to save setting.');
+  }
+
+  // Re-render just this row
+  const row = document.getElementById(domId);
+  if (row) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = renderSettingRow(def);
+    row.replaceWith(tmp.firstElementChild);
+  }
+}
+
+function cancelEditSetting(key) {
+  const def = SETTINGS_BY_KEY[key];
+  if (!def) return;
+  const row = document.getElementById(_settingDomId(key));
+  if (row) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = renderSettingRow(def);
+    row.replaceWith(tmp.firstElementChild);
+  }
+}
+
+async function resetSetting(key) {
+  try {
+    await apiFetch('/api/settings/' + encodeURIComponent(key), { method: 'DELETE' });
+  } catch (e) { alert('Failed to reset setting.'); return; }
+  delete _settingsValues[key];
+  renderSettingsSections();
+}
+
+// ── Custom-setting modal (for arbitrary DB keys) ──────────────────────────────
+
+function openCustomSettingModal() {
+  openSettingModal(null, null);
+}
+
+function openSettingModal(key, valueJson) {
+  _settingEditKey = key || null;
+  const def = key ? SETTINGS_BY_KEY[key] : null;
+
+  // Title
+  document.getElementById('setting-modal-title').textContent =
+    def ? def.label : (key ? 'Edit Setting' : 'Custom Setting');
+
+  // Description banner (catalog settings only)
+  const descEl = document.getElementById('setting-modal-desc');
+  if (def) {
+    descEl.textContent = def.desc;
+    descEl.style.display = '';
+  } else {
+    descEl.style.display = 'none';
+  }
+
+  // Key input
+  const keyInput = document.getElementById('setting-key-input');
+  const keyLabel = document.getElementById('setting-key-label');
+  keyInput.value    = key || '';
+  keyInput.readOnly = !!key;
+  keyInput.style.display  = key && def ? 'none' : ''; // hide key field for catalog settings
+  keyLabel.style.display  = key && def ? 'none' : '';
+
+  // Value input
+  const valInput = document.getElementById('setting-value-input');
+  const hint     = document.getElementById('setting-value-hint');
+  valInput.value = valueJson != null ? valueJson : (def ? String(def.default ?? '') : '');
+
+  if (def) {
+    if (def.type === 'number') {
+      valInput.type        = 'number';
+      hint.textContent     = def.unit ? `(${def.unit})` : '(number)';
+      valInput.placeholder = String(def.default ?? '');
+    } else if (def.type === 'string') {
+      valInput.type        = 'text';
+      hint.textContent     = '';
+      valInput.placeholder = def.default || '';
+    } else {
+      valInput.type        = 'text';
+      hint.textContent     = '(JSON: number, string, true/false, or object)';
+      valInput.placeholder = 'e.g. 30 or "dark" or true';
+    }
+  } else {
+    valInput.type        = 'text';
+    hint.textContent     = '(JSON: number, string, true/false, or object)';
+    valInput.placeholder = 'e.g. 30 or "dark" or true';
+  }
+
+  document.getElementById('setting-modal-overlay').style.display = '';
+  (key && def ? valInput : (key ? valInput : keyInput)).focus();
+}
+
+function closeSettingModal() {
+  document.getElementById('setting-modal-overlay').style.display = 'none';
+  _settingEditKey = null;
+  // Reset modal to defaults
+  const valInput = document.getElementById('setting-value-input');
+  valInput.type = 'text';
+  document.getElementById('setting-key-input').style.display = '';
+  document.getElementById('setting-key-label').style.display = '';
+}
+
+function settingModalOverlayClick(e) {
+  if (e.target === document.getElementById('setting-modal-overlay')) closeSettingModal();
+}
+
+async function saveSetting() {
+  const def    = _settingEditKey ? SETTINGS_BY_KEY[_settingEditKey] : null;
+  const key    = _settingEditKey || document.getElementById('setting-key-input').value.trim();
+  const rawVal = document.getElementById('setting-value-input').value.trim();
+
+  if (!key) { alert('Key is required.'); return; }
+  if (rawVal === '' && !def) { alert('Value is required.'); return; }
+
+  let parsed;
+  if (def && def.type === 'number') {
+    parsed = Number(rawVal);
+    if (isNaN(parsed)) { alert('Expected a number.'); return; }
+  } else if (def && def.type === 'string') {
+    parsed = rawVal;
+  } else {
+    if (!rawVal) { alert('Value is required.'); return; }
+    try { parsed = JSON.parse(rawVal); }
+    catch { alert('Value must be valid JSON.\n\nExamples: 30  "dark"  true  {"x":1}'); return; }
+  }
+
+  try {
+    await apiFetch('/api/settings/' + encodeURIComponent(key), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: parsed }),
+    });
+  } catch (e) {
+    alert('Failed to save setting: ' + e.message);
+    return;
+  }
+
+  if (!_settingsValues[key]) _settingsValues[key] = {};
+  _settingsValues[key].value = parsed;
+
+  closeSettingModal();
+  renderSettingsSections();
+}
+
+async function deleteCustomSetting(key) {
+  if (!confirm('Delete setting "' + key + '"?')) return;
+  try {
+    await apiFetch('/api/settings/' + encodeURIComponent(key), { method: 'DELETE' });
+  } catch (e) { alert('Failed to delete setting.'); return; }
+  delete _settingsValues[key];
+  renderSettingsSections();
 }

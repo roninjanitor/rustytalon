@@ -19,13 +19,98 @@ use crate::channels::{ChannelManager, IncomingMessage, OutgoingResponse, StatusU
 use crate::config::{AgentConfig, HeartbeatConfig, RoutineConfig};
 use crate::context::ContextManager;
 use crate::context::JobContext;
-use crate::db::Database;
+use crate::db::{AuditEvent, Database};
 use crate::error::Error;
 use crate::extensions::ExtensionManager;
 use crate::llm::{ChatMessage, LlmProvider, Reasoning, ReasoningContext, RespondResult};
 use crate::safety::SafetyLayer;
 use crate::tools::ToolRegistry;
 use crate::workspace::Workspace;
+
+/// Emit an approval audit event (fire-and-forget).
+///
+/// `outcome` should be `"approved"` or `"denied"`.
+fn emit_approval_audit(
+    store: Option<&std::sync::Arc<dyn Database>>,
+    user_id: &str,
+    session_id: Option<uuid::Uuid>,
+    tool_name: &str,
+    params: &serde_json::Value,
+    outcome: &str,
+) {
+    if let Some(db) = store {
+        let db = db.clone();
+        let user_id = user_id.to_string();
+        let tool_name = tool_name.to_string();
+        let outcome = outcome.to_string();
+        let params_str = params.to_string();
+        let summary: String = params_str.chars().take(500).collect();
+        use sha2::{Digest as _, Sha256};
+        let hash_bytes = Sha256::new().chain_update(params_str.as_bytes()).finalize();
+        let hash = hash_bytes
+            .iter()
+            .fold(String::with_capacity(64), |mut s, b| {
+                use std::fmt::Write as _;
+                let _ = write!(s, "{b:02x}");
+                s
+            });
+        tokio::spawn(async move {
+            let meta = serde_json::Value::Null;
+            let event = AuditEvent {
+                event_type: "approval",
+                user_id: Some(&user_id),
+                session_id,
+                job_id: None,
+                actor: Some("user"),
+                tool_name: Some(&tool_name),
+                input_hash: Some(&hash),
+                input_summary: Some(&summary),
+                outcome: Some(&outcome),
+                error_msg: None,
+                duration_ms: None,
+                cost_usd: None,
+                metadata: Some(&meta),
+            };
+            if let Err(e) = db.append_audit_event(&event).await {
+                tracing::warn!(error = %e, "audit log write failed (approval)");
+            }
+        });
+    }
+}
+
+/// Emit a safety-block audit event (fire-and-forget) from the chat path.
+fn emit_safety_block_audit(
+    store: Option<&std::sync::Arc<dyn Database>>,
+    tool_name: &str,
+    rule: &str,
+) {
+    if let Some(db) = store {
+        let db = db.clone();
+        let tool_name = tool_name.to_string();
+        let rule = rule.to_string();
+        tokio::spawn(async move {
+            let meta = serde_json::json!({ "rule": rule });
+            let event = AuditEvent {
+                event_type: "safety_block",
+                user_id: None,
+                session_id: None,
+                job_id: None,
+                actor: Some("system"),
+                tool_name: Some(&tool_name),
+                input_hash: None,
+                input_summary: None,
+                outcome: Some("blocked"),
+                error_msg: None,
+                duration_ms: None,
+                cost_usd: None,
+                metadata: Some(&meta),
+            };
+            if let Err(e) = db.append_audit_event(&event).await {
+                tracing::warn!(error = %e, "audit log write failed (safety_block)");
+            }
+        });
+    }
+}
 
 /// Extract URLs from a `web_search` tool result JSON string.
 ///
@@ -436,6 +521,7 @@ impl Agent {
                         config,
                         workspace.clone(),
                         self.llm().clone(),
+                        self.store().cloned(),
                         Some(notify_tx),
                     ))
                 } else {
@@ -1340,6 +1426,17 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                 output.usage.input_tokens,
                 output.usage.output_tokens
             );
+            let _ = self
+                .channels
+                .send_status(
+                    &message.channel,
+                    StatusUpdate::TokensUsed {
+                        input_tokens: output.usage.input_tokens,
+                        output_tokens: output.usage.output_tokens,
+                    },
+                    &message.metadata,
+                )
+                .await;
 
             match output.result {
                 RespondResult::Text(text) => {
@@ -1449,6 +1546,7 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                                 &message.channel,
                                 StatusUpdate::ToolStarted {
                                     name: tc.name.clone(),
+                                    input: tc.arguments.clone(),
                                 },
                                 &message.metadata,
                             )
@@ -1911,6 +2009,16 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
         }
 
         if approved {
+            // Emit approval audit event.
+            emit_approval_audit(
+                self.store(),
+                &message.user_id,
+                Some(thread_id),
+                &pending.tool_name,
+                &pending.parameters,
+                "approved",
+            );
+
             // If always, add to auto-approved set
             if always {
                 let mut sess = session.lock().await;
@@ -1940,6 +2048,7 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                     &message.channel,
                     StatusUpdate::ToolStarted {
                         name: pending.tool_name.clone(),
+                        input: pending.parameters.clone(),
                     },
                     &message.metadata,
                 )
@@ -2032,6 +2141,15 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                     let sanitized = self
                         .safety()
                         .sanitize_tool_output(&pending.tool_name, &output);
+                    // Audit safety blocks in the chat path.
+                    if sanitized.content.starts_with("[Output blocked") {
+                        let rule = if sanitized.content.contains("secret leakage") {
+                            "secret_leakage"
+                        } else {
+                            "safety_policy"
+                        };
+                        emit_safety_block_audit(self.store(), &pending.tool_name, rule);
+                    }
                     self.safety().wrap_for_llm(
                         &pending.tool_name,
                         &sanitized.content,
@@ -2102,6 +2220,16 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                 }
             }
         } else {
+            // Emit denial audit event.
+            emit_approval_audit(
+                self.store(),
+                &message.user_id,
+                Some(thread_id),
+                &pending.tool_name,
+                &pending.parameters,
+                "denied",
+            );
+
             // Rejected - clear approval and return to idle
             {
                 let mut sess = session.lock().await;
@@ -3061,5 +3189,112 @@ mod tests {
         assert!(!is_valid_skill_name("with.dot"));
         assert!(!is_valid_skill_name("with/slash"));
         assert!(!is_valid_skill_name("../traversal"));
+    }
+
+    // ── extract_web_search_urls ───────────────────────────────────────────────
+
+    use super::{append_sources, extract_web_search_urls};
+
+    #[test]
+    fn test_extract_urls_valid_results() {
+        let json = serde_json::json!({
+            "results": [
+                {"url": "https://example.com", "title": "Example"},
+                {"url": "https://another.org", "title": "Another"}
+            ]
+        })
+        .to_string();
+        let urls = extract_web_search_urls(&json);
+        assert_eq!(urls, vec!["https://example.com", "https://another.org"]);
+    }
+
+    #[test]
+    fn test_extract_urls_empty_results() {
+        let json = serde_json::json!({"results": []}).to_string();
+        assert!(extract_web_search_urls(&json).is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_missing_results_key() {
+        let json = serde_json::json!({"query": "foo", "answer": "bar"}).to_string();
+        assert!(extract_web_search_urls(&json).is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_invalid_json() {
+        assert!(extract_web_search_urls("not json at all").is_empty());
+        assert!(extract_web_search_urls("").is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_items_missing_url_field() {
+        let json = serde_json::json!({
+            "results": [
+                {"title": "No URL here"},
+                {"url": "https://good.com"},
+                {"url": null}
+            ]
+        })
+        .to_string();
+        let urls = extract_web_search_urls(&json);
+        assert_eq!(urls, vec!["https://good.com"]);
+    }
+
+    // ── append_sources ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_append_sources_empty_urls_is_noop() {
+        let response = "Some answer.".to_string();
+        assert_eq!(append_sources(response.clone(), &[]), response);
+    }
+
+    #[test]
+    fn test_append_sources_single_url() {
+        let result = append_sources("Answer.".to_string(), &["https://example.com".to_string()]);
+        assert!(result.contains("\n\nSources:\n"));
+        assert!(result.contains("1. https://example.com\n"));
+    }
+
+    #[test]
+    fn test_append_sources_multiple_urls_numbered() {
+        let urls: Vec<String> = vec![
+            "https://first.com".to_string(),
+            "https://second.com".to_string(),
+            "https://third.com".to_string(),
+        ];
+        let result = append_sources("Answer.".to_string(), &urls);
+        assert!(result.contains("1. https://first.com\n"));
+        assert!(result.contains("2. https://second.com\n"));
+        assert!(result.contains("3. https://third.com\n"));
+    }
+
+    #[test]
+    fn test_append_sources_deduplicates_urls() {
+        let urls: Vec<String> = vec![
+            "https://example.com".to_string(),
+            "https://other.com".to_string(),
+            "https://example.com".to_string(), // duplicate
+        ];
+        let result = append_sources("Answer.".to_string(), &urls);
+        let count = result.matches("https://example.com").count();
+        assert_eq!(count, 1, "duplicate URL should appear only once");
+        assert!(result.contains("1. https://example.com\n"));
+        assert!(result.contains("2. https://other.com\n"));
+    }
+
+    #[test]
+    fn test_append_sources_preserves_insertion_order_after_dedup() {
+        let urls: Vec<String> = vec![
+            "https://b.com".to_string(),
+            "https://a.com".to_string(),
+            "https://b.com".to_string(), // duplicate of first
+        ];
+        let result = append_sources(String::new(), &urls);
+        let pos_b = result.find("https://b.com").unwrap();
+        let pos_a = result.find("https://a.com").unwrap();
+        assert!(
+            pos_b < pos_a,
+            "b.com was seen first, so it should appear first"
+        );
     }
 }

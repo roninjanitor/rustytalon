@@ -908,4 +908,112 @@ mod tests {
         assert!(parsed.thread_ts.is_none());
         assert!(parsed.team_id.is_none());
     }
+
+    // --- percent_decode ---
+
+    #[test]
+    fn test_percent_decode_plain_string() {
+        assert_eq!(percent_decode("hello"), "hello");
+    }
+
+    #[test]
+    fn test_percent_decode_encoded_chars() {
+        assert_eq!(percent_decode("hello%20world"), "hello world");
+        assert_eq!(percent_decode("%7B%22key%22%3A%22value%22%7D"), r#"{"key":"value"}"#);
+    }
+
+    #[test]
+    fn test_percent_decode_plus_as_space() {
+        assert_eq!(percent_decode("hello+world"), "hello world");
+    }
+
+    #[test]
+    fn test_percent_decode_empty_string() {
+        assert_eq!(percent_decode(""), "");
+    }
+
+    #[test]
+    fn test_percent_decode_incomplete_sequence_passthrough() {
+        // A lone '%' with no two following hex digits is passed through literally.
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%ZZ"), "%ZZ");
+    }
+
+    // --- format_params ---
+
+    #[test]
+    fn test_format_params_null() {
+        assert_eq!(format_params(&serde_json::Value::Null), "");
+    }
+
+    #[test]
+    fn test_format_params_empty_object() {
+        assert_eq!(format_params(&serde_json::json!({})), "");
+    }
+
+    #[test]
+    fn test_format_params_normal_object() {
+        let v = serde_json::json!({"key": "value"});
+        let result = format_params(&v);
+        assert_eq!(result, r#"{"key":"value"}"#);
+    }
+
+    #[test]
+    fn test_format_params_truncates_long_input() {
+        let long_str = "x".repeat(400);
+        let v = serde_json::json!({"data": long_str});
+        let result = format_params(&v);
+        assert!(result.ends_with('…'));
+        // The truncated portion is 300 bytes of the serialised JSON.
+        let without_ellipsis: String = result.chars().filter(|&c| c != '…').collect();
+        assert_eq!(without_ellipsis.len(), 300);
+    }
+
+    // --- SlackInteractivePayload parsing ---
+
+    #[test]
+    fn test_interactive_payload_block_actions_parses() {
+        let json = serde_json::json!({
+            "type": "block_actions",
+            "user": {"id": "U123", "name": "alice"},
+            "channel": {"id": "C456"},
+            "team": {"id": "T789"},
+            "actions": [{"action_id": "approve_yes", "block_id": "b1", "value": "yes"}]
+        })
+        .to_string();
+        let payload: SlackInteractivePayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(payload.payload_type, "block_actions");
+        assert_eq!(payload.user.id, "U123");
+        assert_eq!(payload.channel.as_ref().unwrap().id, "C456");
+        assert_eq!(payload.team.as_ref().unwrap().id, "T789");
+        assert_eq!(payload.actions[0].action_id, "approve_yes");
+    }
+
+    #[test]
+    fn test_interactive_payload_missing_channel_is_none() {
+        let json = serde_json::json!({
+            "type": "block_actions",
+            "user": {"id": "U123", "name": "alice"},
+            "actions": [{"action_id": "approve_deny", "block_id": "b1", "value": "no"}]
+        })
+        .to_string();
+        let payload: SlackInteractivePayload = serde_json::from_str(&json).unwrap();
+        assert!(payload.channel.is_none());
+        assert!(payload.team.is_none());
+    }
+
+    #[test]
+    fn test_interactive_payload_action_ids() {
+        for action_id in &["approve_yes", "approve_always", "approve_deny"] {
+            let json = serde_json::json!({
+                "type": "block_actions",
+                "user": {"id": "U1", "name": "u"},
+                "channel": {"id": "C1"},
+                "actions": [{"action_id": action_id, "block_id": "b", "value": "v"}]
+            })
+            .to_string();
+            let payload: SlackInteractivePayload = serde_json::from_str(&json).unwrap();
+            assert_eq!(&payload.actions[0].action_id, action_id);
+        }
+    }
 }

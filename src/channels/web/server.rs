@@ -174,7 +174,9 @@ pub async fn start_server(
             })?;
 
     // Public routes (no auth)
-    let public = Router::new().route("/api/health", get(health_handler));
+    let public = Router::new()
+        .route("/api/health", get(health_handler))
+        .route("/api/version", get(version_handler));
 
     // Protected routes (require auth)
     let auth_state = AuthState { token: auth_token };
@@ -188,6 +190,10 @@ pub async fn start_server(
         .route("/api/chat/ws", get(chat_ws_handler))
         .route("/api/chat/history", get(chat_history_handler))
         .route("/api/chat/threads", get(chat_threads_handler))
+        .route(
+            "/api/chat/threads/{id}/tokens",
+            get(chat_thread_tokens_handler),
+        )
         .route("/api/chat/thread/new", post(chat_new_thread_handler))
         // Memory
         .route("/api/memory/tree", get(memory_tree_handler))
@@ -282,6 +288,17 @@ pub async fn start_server(
         // Provider health & cost tracking
         .route("/api/providers/health", get(providers_health_handler))
         .route("/api/providers/costs", get(providers_costs_handler))
+        // Analytics
+        .route("/api/analytics/models", get(analytics_models_handler))
+        .route("/api/analytics/jobs", get(analytics_jobs_handler))
+        .route("/api/analytics/tools", get(analytics_tools_handler))
+        .route(
+            "/api/analytics/cost-over-time",
+            get(analytics_cost_over_time_handler),
+        )
+        // Audit log
+        .route("/api/audit/log", get(audit_log_handler))
+        .route("/api/audit/summary", get(audit_summary_handler))
         // OpenAI-compatible API
         .route(
             "/v1/chat/completions",
@@ -392,6 +409,107 @@ async fn health_handler() -> Json<HealthResponse> {
         status: "healthy",
         channel: "gateway",
     })
+}
+
+// --- Version ---
+
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const GITHUB_REPO: &str = "roninjanitor/rustytalon";
+const DOCKER_IMAGE: &str = "ghcr.io/roninjanitor/rustytalon";
+
+#[derive(Deserialize)]
+struct VersionQuery {
+    #[serde(default)]
+    check: bool,
+}
+
+async fn version_handler(Query(params): Query<VersionQuery>) -> Json<VersionResponse> {
+    if !params.check {
+        return Json(VersionResponse {
+            version: CURRENT_VERSION,
+            latest: None,
+            update_available: None,
+            release_url: None,
+            docker_pull: None,
+            check_error: None,
+        });
+    }
+
+    // Fetch latest release from GitHub API.
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        GITHUB_REPO
+    );
+    let result = reqwest::Client::new()
+        .get(&url)
+        .header("User-Agent", "rustytalon")
+        .header("Accept", "application/vnd.github+json")
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await;
+
+    match result {
+        Err(e) => Json(VersionResponse {
+            version: CURRENT_VERSION,
+            latest: None,
+            update_available: None,
+            release_url: None,
+            docker_pull: None,
+            check_error: Some(format!("Could not reach GitHub: {e}")),
+        }),
+        Ok(resp) => {
+            #[derive(serde::Deserialize)]
+            struct GhRelease {
+                tag_name: String,
+                html_url: String,
+            }
+
+            match resp.json::<GhRelease>().await {
+                Err(e) => Json(VersionResponse {
+                    version: CURRENT_VERSION,
+                    latest: None,
+                    update_available: None,
+                    release_url: None,
+                    docker_pull: None,
+                    check_error: Some(format!("Unexpected response from GitHub: {e}")),
+                }),
+                Ok(release) => {
+                    let latest = release.tag_name.trim_start_matches('v').to_string();
+                    let update_available = semver_gt(&latest, CURRENT_VERSION);
+                    let docker_pull = if update_available {
+                        Some(format!("docker pull {}:{}", DOCKER_IMAGE, release.tag_name))
+                    } else {
+                        None
+                    };
+                    Json(VersionResponse {
+                        version: CURRENT_VERSION,
+                        latest: Some(latest),
+                        update_available: Some(update_available),
+                        release_url: Some(release.html_url),
+                        docker_pull,
+                        check_error: None,
+                    })
+                }
+            }
+        }
+    }
+}
+
+/// Returns true if `candidate` is a strictly higher semver than `current`.
+/// Falls back to simple string inequality if either value is not valid semver,
+/// so the UI still shows *something* useful in that case.
+fn semver_gt(candidate: &str, current: &str) -> bool {
+    fn parse(s: &str) -> Option<(u64, u64, u64)> {
+        let mut parts = s.split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next()?.parse::<u64>().ok()?;
+        Some((major, minor, patch))
+    }
+    match (parse(candidate), parse(current)) {
+        (Some(c), Some(r)) => c > r,
+        _ => candidate != current,
+    }
 }
 
 // --- Chat handlers ---
@@ -895,6 +1013,31 @@ async fn chat_threads_handler(
         threads,
         active_thread: sess.active_thread,
     }))
+}
+
+async fn chat_thread_tokens_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<crate::channels::web::types::ConversationTokenStatsResponse>, (StatusCode, String)>
+{
+    let db = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
+    let stats = db
+        .get_conversation_token_stats(id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(
+        crate::channels::web::types::ConversationTokenStatsResponse {
+            thread_id: id,
+            total_input_tokens: stats.total_input_tokens,
+            total_output_tokens: stats.total_output_tokens,
+            total_tokens: stats.total_input_tokens + stats.total_output_tokens,
+            total_cost: stats.total_cost,
+            call_count: stats.call_count,
+        },
+    ))
 }
 
 async fn chat_new_thread_handler(
@@ -2578,39 +2721,39 @@ async fn settings_set_handler(
     State(state): State<Arc<GatewayState>>,
     Path(key): Path<String>,
     Json(body): Json<SettingWriteRequest>,
-) -> Result<StatusCode, StatusCode> {
-    let store = state
-        .store
-        .as_ref()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
     store
         .set_setting(&state.user_id, &key, &body.value)
         .await
         .map_err(|e| {
             tracing::error!("Failed to set setting '{}': {}", key, e);
-            StatusCode::INTERNAL_SERVER_ERROR
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         })?;
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(serde_json::json!({ "ok": true, "key": key })))
 }
 
 async fn settings_delete_handler(
     State(state): State<Arc<GatewayState>>,
     Path(key): Path<String>,
-) -> Result<StatusCode, StatusCode> {
-    let store = state
-        .store
-        .as_ref()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
     store
         .delete_setting(&state.user_id, &key)
         .await
         .map_err(|e| {
             tracing::error!("Failed to delete setting '{}': {}", key, e);
-            StatusCode::INTERNAL_SERVER_ERROR
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         })?;
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(serde_json::json!({ "ok": true, "key": key })))
 }
 
 async fn settings_export_handler(
@@ -2748,7 +2891,7 @@ async fn providers_costs_handler(State(state): State<Arc<GatewayState>>) -> impl
         }
     };
 
-    match db.get_llm_call_stats().await {
+    match db.get_llm_call_stats(None).await {
         Ok(stats) => Json(LlmCostStatsResponse { stats }).into_response(),
         Err(e) => {
             tracing::warn!(error = %e, "Failed to fetch LLM cost stats");
@@ -2759,6 +2902,336 @@ async fn providers_costs_handler(State(state): State<Arc<GatewayState>>) -> impl
                 .into_response()
         }
     }
+}
+
+// ── Analytics handlers ────────────────────────────────────────────────────────
+
+/// Parse a `?range=` query parameter into a `since` cutoff timestamp.
+///
+/// Accepted values: `24h`, `7d`, `30d`, `90d`. Anything else (or absent) → `None` (all time).
+fn parse_range_since(range: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::Utc;
+    match range? {
+        "24h" => Some(Utc::now() - chrono::Duration::hours(24)),
+        "7d" => Some(Utc::now() - chrono::Duration::days(7)),
+        "30d" => Some(Utc::now() - chrono::Duration::days(30)),
+        "90d" => Some(Utc::now() - chrono::Duration::days(90)),
+        _ => None,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RangeQuery {
+    range: Option<String>,
+}
+
+async fn analytics_models_handler(
+    State(state): State<Arc<GatewayState>>,
+    axum::extract::Query(q): axum::extract::Query<RangeQuery>,
+) -> impl IntoResponse {
+    let db = match state.store.as_ref() {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ModelAnalyticsResponse {
+                    models: vec![],
+                    total_input_tokens: 0,
+                    total_output_tokens: 0,
+                    total_cost_usd: "0".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let since = parse_range_since(q.range.as_deref());
+    match db.get_llm_call_stats(since).await {
+        Ok(stats) => {
+            let total_input_tokens: i64 = stats.iter().map(|s| s.total_input_tokens).sum();
+            let total_output_tokens: i64 = stats.iter().map(|s| s.total_output_tokens).sum();
+            let total_cost: rust_decimal::Decimal = stats.iter().map(|s| s.total_cost).sum();
+
+            let models = stats
+                .into_iter()
+                .map(|s| ModelStats {
+                    provider: s.provider,
+                    model: s.model,
+                    total_calls: s.total_calls,
+                    total_input_tokens: s.total_input_tokens,
+                    total_output_tokens: s.total_output_tokens,
+                    total_cost_usd: s.total_cost.to_string(),
+                    avg_cost_per_call_usd: s.avg_cost_per_call.to_string(),
+                    avg_latency_ms: s.avg_latency_ms,
+                    p95_latency_ms: s.p95_latency_ms,
+                })
+                .collect();
+
+            Json(ModelAnalyticsResponse {
+                models,
+                total_input_tokens,
+                total_output_tokens,
+                total_cost_usd: total_cost.to_string(),
+            })
+            .into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch model analytics");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ModelAnalyticsResponse {
+                    models: vec![],
+                    total_input_tokens: 0,
+                    total_output_tokens: 0,
+                    total_cost_usd: "0".to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn analytics_jobs_handler(
+    State(state): State<Arc<GatewayState>>,
+    axum::extract::Query(q): axum::extract::Query<RangeQuery>,
+) -> impl IntoResponse {
+    let db = match state.store.as_ref() {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(JobAnalyticsResponse {
+                    total_jobs: 0,
+                    completed_jobs: 0,
+                    failed_jobs: 0,
+                    in_progress_jobs: 0,
+                    success_rate: 0.0,
+                    avg_duration_secs: 0.0,
+                    total_cost_usd: "0".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let since = parse_range_since(q.range.as_deref());
+    match db.get_job_analytics(since).await {
+        Ok(a) => Json(JobAnalyticsResponse {
+            total_jobs: a.total_jobs,
+            completed_jobs: a.completed_jobs,
+            failed_jobs: a.failed_jobs,
+            in_progress_jobs: a.in_progress_jobs,
+            success_rate: a.success_rate,
+            avg_duration_secs: a.avg_duration_secs,
+            total_cost_usd: a.total_cost_usd,
+        })
+        .into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch job analytics");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn analytics_tools_handler(
+    State(state): State<Arc<GatewayState>>,
+    axum::extract::Query(q): axum::extract::Query<RangeQuery>,
+) -> impl IntoResponse {
+    let db = match state.store.as_ref() {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ToolAnalyticsResponse { tools: vec![] }),
+            )
+                .into_response();
+        }
+    };
+
+    let since = parse_range_since(q.range.as_deref());
+    match db.get_tool_analytics(since).await {
+        Ok(analytics) => {
+            let tools = analytics
+                .into_iter()
+                .map(|t| ToolStats {
+                    tool_name: t.tool_name,
+                    total_calls: t.total_calls,
+                    successful_calls: t.successful_calls,
+                    failed_calls: t.failed_calls,
+                    success_rate: t.success_rate,
+                    avg_duration_ms: t.avg_duration_ms,
+                    total_cost_usd: t.total_cost_usd,
+                })
+                .collect();
+            Json(ToolAnalyticsResponse { tools }).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch tool analytics");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn analytics_cost_over_time_handler(
+    State(state): State<Arc<GatewayState>>,
+    axum::extract::Query(q): axum::extract::Query<RangeQuery>,
+) -> impl IntoResponse {
+    let db = match state.store.as_ref() {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(CostOverTimeResponse { data: vec![] }),
+            )
+                .into_response();
+        }
+    };
+
+    // Default to 30 days when no range specified for the chart.
+    let since = parse_range_since(q.range.as_deref())
+        .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(30));
+
+    match db.get_cost_over_time(since).await {
+        Ok(points) => {
+            let data = points
+                .into_iter()
+                .map(|p| CostPoint {
+                    day: p.day,
+                    cost_usd: p.cost_usd,
+                    call_count: p.call_count,
+                })
+                .collect();
+            Json(CostOverTimeResponse { data }).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch cost-over-time");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+// ── Audit log handlers ────────────────────────────────────────────────────────
+
+async fn audit_log_handler(
+    State(state): State<Arc<GatewayState>>,
+    axum::extract::Query(q): axum::extract::Query<AuditLogQuery>,
+) -> impl IntoResponse {
+    let db = match state.store.as_ref() {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(AuditLogResponse {
+                    entries: vec![],
+                    count: 0,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let since = q.since.as_deref().and_then(parse_iso_or_range);
+    let until = q.until.as_deref().and_then(|s| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+    });
+    let session_id = q
+        .session_id
+        .as_deref()
+        .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+    let query = crate::db::AuditQuery {
+        since,
+        until,
+        user_id: q.user_id,
+        session_id,
+        event_type: q.event_type,
+        outcome: q.outcome,
+        limit: q.limit,
+    };
+
+    match db.query_audit_log(query).await {
+        Ok(rows) => {
+            let entries: Vec<AuditLogEntry> = rows
+                .into_iter()
+                .map(|r| AuditLogEntry {
+                    id: r.id,
+                    created_at: r.created_at.to_rfc3339(),
+                    event_type: r.event_type,
+                    user_id: r.user_id,
+                    session_id: r.session_id,
+                    job_id: r.job_id,
+                    actor: r.actor,
+                    tool_name: r.tool_name,
+                    input_hash: r.input_hash,
+                    input_summary: r.input_summary,
+                    outcome: r.outcome,
+                    error_msg: r.error_msg,
+                    duration_ms: r.duration_ms,
+                    cost_usd: r.cost_usd,
+                    metadata: r.metadata,
+                })
+                .collect();
+            let count = entries.len();
+            Json(AuditLogResponse { entries, count }).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to query audit log");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn audit_summary_handler(
+    State(state): State<Arc<GatewayState>>,
+    axum::extract::Query(q): axum::extract::Query<RangeQuery>,
+) -> impl IntoResponse {
+    let db = match state.store.as_ref() {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(AuditSummaryResponse {
+                    counts: vec![],
+                    total: 0,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let since = parse_range_since(q.range.as_deref());
+    match db.audit_log_summary(since).await {
+        Ok(counts) => {
+            let total: i64 = counts.iter().map(|c| c.count).sum();
+            let counts = counts
+                .into_iter()
+                .map(|c| AuditEventCountEntry {
+                    event_type: c.event_type,
+                    count: c.count,
+                })
+                .collect();
+            Json(AuditSummaryResponse { counts, total }).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to query audit summary");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// Parse a `since` string that may be either an ISO-8601 timestamp or a
+/// shorthand range ("24h", "7d", "30d", "90d").
+fn parse_iso_or_range(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    // Try shorthand range first.
+    if let Some(dt) = parse_range_since(Some(s)) {
+        return Some(dt);
+    }
+    // Fall back to RFC 3339.
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
 // ── Skills handlers ──────────────────────────────────────────────────────────

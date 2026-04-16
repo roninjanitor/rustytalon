@@ -276,8 +276,9 @@ impl Channel for GatewayChannel {
                 message: msg,
                 thread_id: thread_id.clone(),
             },
-            StatusUpdate::ToolStarted { name } => SseEvent::ToolStarted {
+            StatusUpdate::ToolStarted { name, input } => SseEvent::ToolStarted {
                 name,
+                input,
                 thread_id: thread_id.clone(),
             },
             StatusUpdate::ToolCompleted { name, success } => SseEvent::ToolCompleted {
@@ -338,6 +339,14 @@ impl Channel for GatewayChannel {
                 extension_name,
                 success,
                 message,
+            },
+            StatusUpdate::TokensUsed {
+                input_tokens,
+                output_tokens,
+            } => SseEvent::TokensUsed {
+                input_tokens,
+                output_tokens,
+                thread_id,
             },
         };
 
