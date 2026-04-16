@@ -307,11 +307,20 @@ impl Database for LibSqlBackend {
 
             tracing::info!(version, name, "Applying libSQL incremental migration");
 
-            conn.execute(sql, ()).await.map_err(|e| {
-                DatabaseError::Migration(format!(
-                    "libSQL migration V{version} ({name}) failed: {e}"
-                ))
-            })?;
+            match conn.execute(sql, ()).await {
+                Ok(_) => {}
+                Err(e) if e.to_string().contains("duplicate column name") => {
+                    // Column already present in the base schema (baked into SCHEMA before
+                    // this incremental migration was added). Treat as a no-op so fresh
+                    // installs don't fail — semantically equivalent to ADD COLUMN IF NOT EXISTS.
+                    tracing::debug!(version, name, "Column already exists, recording migration as applied");
+                }
+                Err(e) => {
+                    return Err(DatabaseError::Migration(format!(
+                        "libSQL migration V{version} ({name}) failed: {e}"
+                    )));
+                }
+            }
 
             conn.execute(
                 "INSERT INTO _migrations (version, name) VALUES (?1, ?2)",
@@ -3316,23 +3325,29 @@ mod tests {
 
     // ── Incremental migrations ────────────────────────────────────────────────
 
-    /// Build a LibSqlBackend backed by an in-memory DB and run its full
+    /// Build a LibSqlBackend backed by a temporary file DB and run its full
     /// migration logic (base schema + incremental).
-    async fn open_backend() -> LibSqlBackend {
+    ///
+    /// Uses a real file rather than `:memory:` because libSQL in-memory databases
+    /// are per-connection — DDL applied on one connection is invisible to the next.
+    /// A file-backed DB shares state across all connections, matching production.
+    async fn open_backend() -> (LibSqlBackend, std::path::PathBuf) {
         use crate::db::Database;
-        let db = libsql::Builder::new_local(":memory:")
+        let path = std::env::temp_dir()
+            .join(format!("rustytalon_test_{}.db", Uuid::new_v4()));
+        let db = libsql::Builder::new_local(&path)
             .build()
             .await
             .unwrap();
         let backend = LibSqlBackend { db: Arc::new(db) };
         backend.run_migrations().await.unwrap();
-        backend
+        (backend, path)
     }
 
     #[tokio::test]
     async fn test_incremental_migrations_recorded() {
         // After run_migrations, every entry in INCREMENTAL must appear in _migrations.
-        let backend = open_backend().await;
+        let (backend, _db_path) = open_backend().await;
         let conn = backend.connect().unwrap();
 
         for (version, name, _sql) in crate::db::libsql_migrations::INCREMENTAL {
@@ -3373,7 +3388,7 @@ mod tests {
         use crate::history::LlmCallRecord;
         use rust_decimal::Decimal;
 
-        let backend = open_backend().await;
+        let (backend, _db_path) = open_backend().await;
 
         let record = LlmCallRecord {
             job_id: None,
