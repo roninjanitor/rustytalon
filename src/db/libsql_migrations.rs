@@ -51,6 +51,11 @@ pub const INCREMENTAL: &[(i64, &str, &str)] = &[
     metadata      TEXT
 )"#,
     ),
+    (
+        11,
+        "add_cost_unknown_to_llm_calls",
+        "ALTER TABLE llm_calls ADD COLUMN cost_unknown INTEGER NOT NULL DEFAULT 0",
+    ),
 ];
 
 /// Consolidated schema for libSQL.
@@ -195,6 +200,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     cost TEXT NOT NULL,
     purpose TEXT,
     latency_ms INTEGER,
+    cost_unknown INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

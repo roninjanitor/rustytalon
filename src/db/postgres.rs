@@ -254,7 +254,9 @@ impl Database for PgBackend {
                 END AS avg_cost_per_call,
                 AVG(latency_ms)::float8 AS avg_latency_ms,
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
-                    FILTER (WHERE latency_ms IS NOT NULL) AS p95_latency_ms
+                    FILTER (WHERE latency_ms IS NOT NULL) AS p95_latency_ms,
+                COALESCE(SUM(CASE WHEN cost_unknown THEN 1 ELSE 0 END), 0)::bigint
+                    AS unconfigured_calls
             FROM llm_calls
             {where_clause}
             GROUP BY provider, model
@@ -276,6 +278,7 @@ impl Database for PgBackend {
                 avg_cost_per_call: row.get("avg_cost_per_call"),
                 avg_latency_ms: row.get("avg_latency_ms"),
                 p95_latency_ms: row.get("p95_latency_ms"),
+                unconfigured_calls: row.get("unconfigured_calls"),
             })
             .collect();
 

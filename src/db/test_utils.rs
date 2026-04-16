@@ -35,6 +35,7 @@ pub(crate) struct CapturedLlmCall {
     pub cost: rust_decimal::Decimal,
     pub latency_ms: u64,
     pub purpose: Option<String>,
+    pub cost_unknown: bool,
 }
 
 /// A mock database that counts `record_llm_call` invocations and stubs everything else.
@@ -79,6 +80,7 @@ impl Database for MockDatabase {
             cost: record.cost,
             latency_ms: record.latency_ms,
             purpose: record.purpose.map(|s| s.to_string()),
+            cost_unknown: record.cost_unknown,
         });
         Ok(Uuid::new_v4())
     }
@@ -395,7 +397,9 @@ impl Database for MockDatabase {
         _: &str,
         _: &str,
     ) -> Result<Option<serde_json::Value>, DatabaseError> {
-        unimplemented!()
+        // No custom settings in the mock; cost resolution falls through to the
+        // built-in table (or default_cost for unknown models).
+        Ok(None)
     }
     async fn get_setting_full(
         &self,
