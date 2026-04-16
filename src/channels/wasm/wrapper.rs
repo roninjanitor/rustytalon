@@ -3203,7 +3203,10 @@ mod tests {
         for status in [
             crate::channels::StatusUpdate::Thinking("t".into()),
             crate::channels::StatusUpdate::Status("Done".into()),
-            crate::channels::StatusUpdate::ToolStarted { name: "x".into(), input: serde_json::Value::Null },
+            crate::channels::StatusUpdate::ToolStarted {
+                name: "x".into(),
+                input: serde_json::Value::Null,
+            },
             crate::channels::StatusUpdate::ToolCompleted {
                 name: "x".into(),
                 success: true,

@@ -3550,13 +3550,49 @@ function formatDate(isoString) {
 
 // --- Analytics tab ---
 
+let analyticsRange = '';        // '', '24h', '7d', '30d', '90d'
+let analyticsModelSort = { col: 'total_cost', dir: -1 };
+let analyticsToolSort  = { col: 'calls', dir: -1 };
+let analyticsModels = [];       // last-fetched model rows (for re-sort without refetch)
+let analyticsTools  = [];       // last-fetched tool rows
+
+// Wire up range pills on first render
+(function initAnalyticsPills() {
+  document.addEventListener('DOMContentLoaded', () => {
+    const pills = document.getElementById('analytics-range-pills');
+    if (!pills) return;
+    pills.addEventListener('click', (e) => {
+      const btn = e.target.closest('.range-pill');
+      if (!btn) return;
+      pills.querySelectorAll('.range-pill').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      analyticsRange = btn.dataset.range || '';
+      loadAnalytics();
+    });
+  });
+})();
+
 async function loadAnalytics() {
+  const qs = analyticsRange ? '?range=' + analyticsRange : '';
   try {
-    const res = await fetch('/api/analytics/models', { headers: authHeaders() });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    renderAnalyticsSummary(data);
-    renderAnalyticsTable(data.models);
+    const [models, jobs, tools, chart] = await Promise.all([
+      apiFetch('/api/analytics/models' + qs),
+      apiFetch('/api/analytics/jobs'   + qs),
+      apiFetch('/api/analytics/tools'  + qs),
+      apiFetch('/api/analytics/cost-over-time' + qs),
+    ]);
+
+    analyticsModels = models.models || [];
+    analyticsTools  = tools.tools  || [];
+
+    renderAnalyticsSummary(models);
+    renderCostChart(chart.data || []);
+    renderJobsSummary(jobs);
+    renderAnalyticsTable(analyticsModels);
+    renderAnalyticsToolsTable(analyticsTools);
+
+    const updated = document.getElementById('analytics-updated');
+    if (updated) updated.textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch (e) {
     document.getElementById('analytics-summary').innerHTML =
       '<div class="empty-state">Failed to load analytics: ' + escapeHtml(e.message) + '</div>';
@@ -3565,16 +3601,35 @@ async function loadAnalytics() {
 
 function renderAnalyticsSummary(data) {
   const totalTokens = data.total_input_tokens + data.total_output_tokens;
-  const totalModels = data.models.length;
-  const totalCalls = data.models.reduce((s, m) => s + m.total_calls, 0);
+  const totalModels = (data.models || []).length;
+  const totalCalls  = (data.models || []).reduce((s, m) => s + m.total_calls, 0);
+  const ratio = data.total_output_tokens > 0
+    ? (data.total_input_tokens / data.total_output_tokens).toFixed(1) + ':1'
+    : '—';
 
   document.getElementById('analytics-summary').innerHTML =
-      analyticsCard('Models', totalModels, '')
-    + analyticsCard('Total Calls', totalCalls.toLocaleString(), '')
-    + analyticsCard('Input Tokens', fmtTokens(data.total_input_tokens), 'accent')
-    + analyticsCard('Output Tokens', fmtTokens(data.total_output_tokens), 'accent')
-    + analyticsCard('Total Tokens', fmtTokens(totalTokens), '')
-    + analyticsCard('Total Cost', '$' + fmtCost(data.total_cost_usd), 'cost');
+      analyticsCard('Models',        totalModels,                                    '')
+    + analyticsCard('Total Calls',   totalCalls.toLocaleString(),                    '')
+    + analyticsCard('Input Tokens',  fmtTokens(data.total_input_tokens),             'accent')
+    + analyticsCard('Output Tokens', fmtTokens(data.total_output_tokens),            'accent')
+    + analyticsCard('Total Tokens',  fmtTokens(totalTokens),                         '')
+    + analyticsCard('In / Out Ratio',ratio,                                          '')
+    + analyticsCard('Total Cost',    '$' + fmtCost(data.total_cost_usd),             'cost');
+}
+
+function renderJobsSummary(jobs) {
+  const ratePct = (jobs.success_rate * 100).toFixed(1) + '%';
+  const rateClass = jobs.success_rate >= 0.9 ? 'cost' : jobs.success_rate >= 0.7 ? 'accent' : 'error';
+  const dur = jobs.avg_duration_secs > 0 ? fmtDuration(jobs.avg_duration_secs) : '—';
+
+  document.getElementById('analytics-jobs-summary').innerHTML =
+      analyticsCard('Total Jobs',     jobs.total_jobs.toLocaleString(),    '')
+    + analyticsCard('Completed',      jobs.completed_jobs.toLocaleString(),'cost')
+    + analyticsCard('Failed',         jobs.failed_jobs.toLocaleString(),   jobs.failed_jobs > 0 ? 'error' : '')
+    + analyticsCard('In Progress',    jobs.in_progress_jobs.toLocaleString(), '')
+    + analyticsCard('Success Rate',   ratePct,                              rateClass)
+    + analyticsCard('Avg Duration',   dur,                                  '')
+    + analyticsCard('Total Job Cost', '$' + fmtCost(jobs.total_cost_usd),  'cost');
 }
 
 function analyticsCard(label, value, cls) {
@@ -3584,10 +3639,158 @@ function analyticsCard(label, value, cls) {
     + '</div>';
 }
 
+// ── Cost-over-time SVG bar chart ──────────────────────────────────────────────
+
+function renderCostChart(data) {
+  const svg   = document.getElementById('analytics-cost-chart');
+  const empty = document.getElementById('analytics-chart-empty');
+  svg.innerHTML = '';
+
+  const nonZero = data.filter(d => parseFloat(d.cost_usd) > 0);
+  if (!nonZero.length) {
+    svg.style.display = 'none';
+    empty.style.display = '';
+    return;
+  }
+  svg.style.display = '';
+  empty.style.display = 'none';
+
+  const W = svg.parentElement.clientWidth || 600;
+  const H = 120;
+  const padL = 52, padR = 12, padT = 10, padB = 28;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('height', H);
+
+  const costs = data.map(d => parseFloat(d.cost_usd));
+  const maxCost = Math.max(...costs, 0.000001);
+  const barW = Math.max(2, Math.floor(chartW / data.length) - 2);
+
+  // Y-axis label
+  const yLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  yLabel.setAttribute('x', padL - 4);
+  yLabel.setAttribute('y', padT + chartH / 2);
+  yLabel.setAttribute('text-anchor', 'end');
+  yLabel.setAttribute('dominant-baseline', 'middle');
+  yLabel.setAttribute('class', 'chart-axis-label');
+  yLabel.textContent = '$' + fmtCost(maxCost.toString());
+  svg.appendChild(yLabel);
+
+  // Zero line
+  const zeroLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  zeroLine.setAttribute('x1', padL);
+  zeroLine.setAttribute('x2', padL + chartW);
+  zeroLine.setAttribute('y1', padT + chartH);
+  zeroLine.setAttribute('y2', padT + chartH);
+  zeroLine.setAttribute('class', 'chart-baseline');
+  svg.appendChild(zeroLine);
+
+  data.forEach((d, i) => {
+    const cost = parseFloat(d.cost_usd);
+    const barH = Math.max(1, (cost / maxCost) * chartH);
+    const x    = padL + i * (chartW / data.length) + (chartW / data.length - barW) / 2;
+    const y    = padT + chartH - barH;
+
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', x.toFixed(1));
+    rect.setAttribute('y', y.toFixed(1));
+    rect.setAttribute('width', barW);
+    rect.setAttribute('height', barH.toFixed(1));
+    rect.setAttribute('class', 'chart-bar');
+    rect.setAttribute('rx', '2');
+
+    // Tooltip via <title>
+    const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    title.textContent = d.day + '\n$' + fmtCost(d.cost_usd) + ' · ' + d.call_count + ' calls';
+    rect.appendChild(title);
+    svg.appendChild(rect);
+
+    // X-axis date label — only show for first, last, and every ~7th bar
+    if (i === 0 || i === data.length - 1 || i % 7 === 0) {
+      const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      label.setAttribute('x', (x + barW / 2).toFixed(1));
+      label.setAttribute('y', padT + chartH + 14);
+      label.setAttribute('text-anchor', 'middle');
+      label.setAttribute('class', 'chart-axis-label');
+      label.textContent = d.day.slice(5); // MM-DD
+      svg.appendChild(label);
+    }
+  });
+}
+
+// ── Model table ───────────────────────────────────────────────────────────────
+
+// Sortable table headers — delegate from table
+document.addEventListener('DOMContentLoaded', () => {
+  const modelTable = document.getElementById('analytics-table');
+  if (modelTable) {
+    modelTable.querySelector('thead').addEventListener('click', (e) => {
+      const th = e.target.closest('th[data-col]');
+      if (!th) return;
+      const col = th.dataset.col;
+      if (analyticsModelSort.col === col) analyticsModelSort.dir *= -1;
+      else { analyticsModelSort.col = col; analyticsModelSort.dir = -1; }
+      renderAnalyticsTable(analyticsModels);
+    });
+  }
+
+  const toolsTable = document.getElementById('analytics-tools-table');
+  if (toolsTable) {
+    toolsTable.querySelector('thead').addEventListener('click', (e) => {
+      const th = e.target.closest('th[data-col]');
+      if (!th) return;
+      const col = th.dataset.col;
+      if (analyticsToolSort.col === col) analyticsToolSort.dir *= -1;
+      else { analyticsToolSort.col = col; analyticsToolSort.dir = -1; }
+      renderAnalyticsToolsTable(analyticsTools);
+    });
+  }
+});
+
+function sortedModels(models) {
+  const totalCost = models.reduce((s, m) => s + parseFloat(m.total_cost_usd || 0), 0) || 1;
+  return [...models].sort((a, b) => {
+    let av, bv;
+    switch (analyticsModelSort.col) {
+      case 'provider':    av = a.provider; bv = b.provider; break;
+      case 'model':       av = a.model;    bv = b.model;    break;
+      case 'calls':       av = a.total_calls;  bv = b.total_calls; break;
+      case 'input':       av = a.total_input_tokens;  bv = b.total_input_tokens;  break;
+      case 'output':      av = a.total_output_tokens; bv = b.total_output_tokens; break;
+      case 'ratio':       av = a.total_input_tokens  / (a.total_output_tokens  || 1);
+                          bv = b.total_input_tokens  / (b.total_output_tokens  || 1); break;
+      case 'latency':     av = a.avg_latency_ms ?? -1; bv = b.avg_latency_ms ?? -1; break;
+      case 'cost_share':  av = parseFloat(a.total_cost_usd || 0) / totalCost;
+                          bv = parseFloat(b.total_cost_usd || 0) / totalCost; break;
+      case 'avg_cost':    av = parseFloat(a.avg_cost_per_call_usd || 0);
+                          bv = parseFloat(b.avg_cost_per_call_usd || 0); break;
+      default:            av = parseFloat(a.total_cost_usd || 0);
+                          bv = parseFloat(b.total_cost_usd || 0);
+    }
+    if (av < bv) return -analyticsModelSort.dir;
+    if (av > bv) return  analyticsModelSort.dir;
+    return 0;
+  });
+}
+
 function renderAnalyticsTable(models) {
+  const thead = document.querySelector('#analytics-table thead tr');
   const tbody = document.getElementById('analytics-tbody');
   const empty = document.getElementById('analytics-empty');
   tbody.innerHTML = '';
+
+  // Update sort indicators on headers
+  if (thead) {
+    thead.querySelectorAll('th[data-col]').forEach(th => {
+      th.classList.remove('sort-asc', 'sort-desc');
+      if (th.dataset.col === analyticsModelSort.col) {
+        th.classList.add(analyticsModelSort.dir === 1 ? 'sort-asc' : 'sort-desc');
+      }
+    });
+  }
 
   if (!models || models.length === 0) {
     empty.style.display = '';
@@ -3595,24 +3798,116 @@ function renderAnalyticsTable(models) {
   }
   empty.style.display = 'none';
 
-  for (const m of models) {
-    const latency = m.avg_latency_ms != null
-      ? Math.round(m.avg_latency_ms) + ' ms'
-      : '<span class="text-muted">—</span>';
+  const totalCost = models.reduce((s, m) => s + parseFloat(m.total_cost_usd || 0), 0) || 1;
+  const sorted = sortedModels(models);
+
+  for (const m of sorted) {
+    const latencyCell = fmtLatencyCell(m.avg_latency_ms, m.p95_latency_ms);
+    const shareVal    = parseFloat(m.total_cost_usd || 0) / totalCost;
+    const sharePct    = (shareVal * 100).toFixed(1);
+    const ratio       = m.total_output_tokens > 0
+      ? (m.total_input_tokens / m.total_output_tokens).toFixed(1)
+      : '—';
 
     const tr = document.createElement('tr');
     tr.innerHTML =
         '<td><span class="provider-badge">' + escapeHtml(m.provider) + '</span></td>'
       + '<td class="model-name">' + escapeHtml(m.model) + '</td>'
       + '<td class="num">' + m.total_calls.toLocaleString() + '</td>'
-      + '<td class="num">' + fmtTokens(m.total_input_tokens) + '</td>'
+      + '<td class="num">' + fmtTokens(m.total_input_tokens)  + '</td>'
       + '<td class="num">' + fmtTokens(m.total_output_tokens) + '</td>'
-      + '<td class="num">' + latency + '</td>'
+      + '<td class="num">' + ratio + '</td>'
+      + '<td class="num">' + latencyCell + '</td>'
+      + '<td class="num">'
+        + '<div class="cost-share-wrap">'
+        + '<span class="cost-share-pct">' + sharePct + '%</span>'
+        + '<div class="cost-share-bar"><div class="cost-share-fill" style="width:' + sharePct + '%"></div></div>'
+        + '</div></td>'
       + '<td class="num cost">' + fmtCostCell(m.avg_cost_per_call_usd) + '</td>'
       + '<td class="num cost">' + fmtCostCell(m.total_cost_usd) + '</td>';
     tbody.appendChild(tr);
   }
 }
+
+function fmtLatencyCell(avg, p95) {
+  if (avg == null) return '<span class="text-muted">—</span>';
+  const cls = avg < 1000 ? 'lat-green' : avg < 3000 ? 'lat-yellow' : 'lat-red';
+  let text = '<span class="lat-badge ' + cls + '">' + fmtMs(avg) + '</span>';
+  if (p95 != null) text += ' <span class="text-muted p95-label">p95 ' + fmtMs(p95) + '</span>';
+  return text;
+}
+
+function fmtMs(ms) {
+  if (ms >= 1000) return (ms / 1000).toFixed(1) + ' s';
+  return Math.round(ms) + ' ms';
+}
+
+// ── Tool usage table ──────────────────────────────────────────────────────────
+
+function sortedTools(tools) {
+  return [...tools].sort((a, b) => {
+    let av, bv;
+    switch (analyticsToolSort.col) {
+      case 'tool':         av = a.tool_name;        bv = b.tool_name;        break;
+      case 'calls':        av = a.total_calls;       bv = b.total_calls;      break;
+      case 'success_rate': av = a.success_rate;      bv = b.success_rate;     break;
+      case 'avg_ms':       av = a.avg_duration_ms;   bv = b.avg_duration_ms;  break;
+      case 'cost':         av = parseFloat(a.total_cost_usd || 0);
+                           bv = parseFloat(b.total_cost_usd || 0); break;
+      default:             av = a.total_calls; bv = b.total_calls;
+    }
+    if (av < bv) return -analyticsToolSort.dir;
+    if (av > bv) return  analyticsToolSort.dir;
+    return 0;
+  });
+}
+
+function renderAnalyticsToolsTable(tools) {
+  const thead = document.querySelector('#analytics-tools-table thead tr');
+  const tbody = document.getElementById('analytics-tools-tbody');
+  const empty = document.getElementById('analytics-tools-empty');
+  tbody.innerHTML = '';
+
+  if (thead) {
+    thead.querySelectorAll('th[data-col]').forEach(th => {
+      th.classList.remove('sort-asc', 'sort-desc');
+      if (th.dataset.col === analyticsToolSort.col) {
+        th.classList.add(analyticsToolSort.dir === 1 ? 'sort-asc' : 'sort-desc');
+      }
+    });
+  }
+
+  if (!tools || tools.length === 0) {
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  for (const t of sortedTools(tools)) {
+    const ratePct = (t.success_rate * 100).toFixed(1);
+    const rateClass = t.success_rate >= 0.95 ? 'sr-green'
+                    : t.success_rate >= 0.80  ? 'sr-yellow'
+                    : 'sr-red';
+    const dur = t.avg_duration_ms > 0 ? fmtMs(t.avg_duration_ms) : '—';
+    const cost = parseFloat(t.total_cost_usd || 0);
+
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+        '<td class="tool-name-cell">' + escapeHtml(t.tool_name) + '</td>'
+      + '<td class="num">' + t.total_calls.toLocaleString() + '</td>'
+      + '<td class="num">'
+        + '<div class="sr-wrap">'
+        + '<span class="sr-badge ' + rateClass + '">' + ratePct + '%</span>'
+        + '<span class="sr-counts text-muted">('
+        + t.successful_calls + '&#x2714; ' + t.failed_calls + '&#x2718;)</span>'
+        + '</div></td>'
+      + '<td class="num">' + dur + '</td>'
+      + '<td class="num cost">' + (cost > 0 ? fmtCostCell(t.total_cost_usd) : '<span class="text-muted">—</span>') + '</td>';
+    tbody.appendChild(tr);
+  }
+}
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
 
 /** Format a token count as e.g. "1.2M", "45.3K", "800" */
 function fmtTokens(n) {
@@ -3627,10 +3922,16 @@ function fmtCost(usd) {
   if (isNaN(n)) return '0.000000';
   if (n === 0)  return '0.000000';
   if (n >= 1)   return n.toFixed(4);
-  // Show at least 4 significant figures for small values
   return n.toPrecision(4);
 }
 
 function fmtCostCell(usd) {
   return '$' + fmtCost(usd);
+}
+
+/** Format seconds as "1h 23m", "45s", etc. */
+function fmtDuration(secs) {
+  if (secs >= 3600) return Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm';
+  if (secs >= 60)   return Math.floor(secs / 60) + 'm ' + Math.round(secs % 60) + 's';
+  return secs.toFixed(1) + 's';
 }

@@ -82,7 +82,31 @@ impl Database for MockDatabase {
         Ok(Uuid::new_v4())
     }
 
-    async fn get_llm_call_stats(&self) -> Result<Vec<LlmCallStats>, DatabaseError> {
+    async fn get_llm_call_stats(
+        &self,
+        _since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<LlmCallStats>, DatabaseError> {
+        Ok(vec![])
+    }
+
+    async fn get_job_analytics(
+        &self,
+        _since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<crate::db::JobAnalytics, DatabaseError> {
+        Ok(crate::db::JobAnalytics::default())
+    }
+
+    async fn get_tool_analytics(
+        &self,
+        _since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<crate::db::ToolAnalytics>, DatabaseError> {
+        Ok(vec![])
+    }
+
+    async fn get_cost_over_time(
+        &self,
+        _since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::db::CostDataPoint>, DatabaseError> {
         Ok(vec![])
     }
 

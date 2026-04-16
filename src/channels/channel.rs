@@ -105,7 +105,10 @@ pub enum StatusUpdate {
     /// Agent is thinking/processing.
     Thinking(String),
     /// Tool execution started.
-    ToolStarted { name: String, input: serde_json::Value },
+    ToolStarted {
+        name: String,
+        input: serde_json::Value,
+    },
     /// Tool execution completed.
     ToolCompleted { name: String, success: bool },
     /// Brief preview of tool execution output.
@@ -115,7 +118,10 @@ pub enum StatusUpdate {
     /// General status message.
     Status(String),
     /// Token usage for the most recent LLM call.
-    TokensUsed { input_tokens: u32, output_tokens: u32 },
+    TokensUsed {
+        input_tokens: u32,
+        output_tokens: u32,
+    },
     /// A sandbox job has started (shown as a clickable card in the UI).
     JobStarted {
         job_id: String,

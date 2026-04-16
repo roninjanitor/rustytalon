@@ -21,7 +21,7 @@ use crate::agent::routine::{
     NotifyConfig, Routine, RoutineAction, RoutineGuardrails, RoutineRun, RunStatus, Trigger,
 };
 use crate::context::{ActionRecord, JobContext, JobState};
-use crate::db::Database;
+use crate::db::{CostDataPoint, Database, JobAnalytics, ToolAnalytics};
 use crate::error::{DatabaseError, WorkspaceError};
 use crate::history::{
     ConversationMessage, ConversationSummary, JobEventRecord, LlmCallRecord, SandboxJobRecord,
@@ -304,13 +304,11 @@ impl Database for LibSqlBackend {
 
             tracing::info!(version, name, "Applying libSQL incremental migration");
 
-            conn.execute(sql, ())
-                .await
-                .map_err(|e| {
-                    DatabaseError::Migration(format!(
-                        "libSQL migration V{version} ({name}) failed: {e}"
-                    ))
-                })?;
+            conn.execute(sql, ()).await.map_err(|e| {
+                DatabaseError::Migration(format!(
+                    "libSQL migration V{version} ({name}) failed: {e}"
+                ))
+            })?;
 
             conn.execute(
                 "INSERT INTO _migrations (version, name) VALUES (?1, ?2)",
@@ -950,31 +948,46 @@ impl Database for LibSqlBackend {
         Ok(id)
     }
 
-    async fn get_llm_call_stats(&self) -> Result<Vec<LlmCallStats>, DatabaseError> {
+    async fn get_llm_call_stats(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<LlmCallStats>, DatabaseError> {
         let conn = self.connect()?;
-        let mut rows = conn
-            .query(
-                r#"
-                SELECT
-                    provider,
-                    model,
-                    COUNT(*) AS total_calls,
-                    COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
-                    COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
-                    COALESCE(SUM(CAST(cost AS REAL)), 0.0) AS total_cost,
-                    CASE WHEN COUNT(*) > 0
-                        THEN COALESCE(SUM(CAST(cost AS REAL)), 0.0) / COUNT(*)
-                        ELSE 0.0
-                    END AS avg_cost_per_call,
-                    AVG(CAST(latency_ms AS REAL)) AS avg_latency_ms
-                FROM llm_calls
-                GROUP BY provider, model
-                ORDER BY total_cost DESC
-                "#,
-                (),
-            )
-            .await
-            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        // libSQL lacks percentile functions; p95 is returned as NULL.
+        let (where_clause, since_str) = if let Some(ts) = since {
+            ("WHERE created_at >= ?1", Some(ts.to_rfc3339()))
+        } else {
+            ("", None)
+        };
+        let sql = format!(
+            r#"
+            SELECT
+                provider,
+                model,
+                COUNT(*) AS total_calls,
+                COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
+                COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
+                COALESCE(SUM(CAST(cost AS REAL)), 0.0) AS total_cost,
+                CASE WHEN COUNT(*) > 0
+                    THEN COALESCE(SUM(CAST(cost AS REAL)), 0.0) / COUNT(*)
+                    ELSE 0.0
+                END AS avg_cost_per_call,
+                AVG(CAST(latency_ms AS REAL)) AS avg_latency_ms
+            FROM llm_calls
+            {where_clause}
+            GROUP BY provider, model
+            ORDER BY total_cost DESC
+            "#
+        );
+        let mut rows = if let Some(ref ts_str) = since_str {
+            conn.query(&sql, params![ts_str.as_str()])
+                .await
+                .map_err(|e| DatabaseError::Query(e.to_string()))?
+        } else {
+            conn.query(&sql, ())
+                .await
+                .map_err(|e| DatabaseError::Query(e.to_string()))?
+        };
 
         let mut stats = Vec::new();
         while let Some(row) = rows
@@ -1014,10 +1027,206 @@ impl Database for LibSqlBackend {
                 total_cost: Decimal::from_f64_retain(total_cost_f64).unwrap_or_default(),
                 avg_cost_per_call: Decimal::from_f64_retain(avg_cost_f64).unwrap_or_default(),
                 avg_latency_ms,
+                // libSQL lacks a percentile aggregate; always NULL here.
+                p95_latency_ms: None,
             });
         }
 
         Ok(stats)
+    }
+
+    async fn get_job_analytics(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<JobAnalytics, DatabaseError> {
+        let conn = self.connect()?;
+        let (where_clause, since_str) = if let Some(ts) = since {
+            ("WHERE created_at >= ?1", Some(ts.to_rfc3339()))
+        } else {
+            ("", None)
+        };
+        let sql = format!(
+            r#"
+            SELECT
+                COUNT(*) AS total_jobs,
+                SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) AS completed_jobs,
+                SUM(CASE WHEN status = 'failed'   THEN 1 ELSE 0 END) AS failed_jobs,
+                SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress_jobs,
+                COALESCE(AVG(
+                    CASE WHEN completed_at IS NOT NULL AND started_at IS NOT NULL
+                        THEN (julianday(completed_at) - julianday(started_at)) * 86400.0
+                        ELSE NULL
+                    END
+                ), 0.0) AS avg_duration_secs,
+                COALESCE(SUM(CAST(actual_cost AS REAL)), 0.0) AS total_cost
+            FROM agent_jobs
+            {where_clause}
+            "#
+        );
+
+        let mut rows = if let Some(ref ts_str) = since_str {
+            conn.query(&sql, params![ts_str.as_str()])
+                .await
+                .map_err(|e| DatabaseError::Query(e.to_string()))?
+        } else {
+            conn.query(&sql, ())
+                .await
+                .map_err(|e| DatabaseError::Query(e.to_string()))?
+        };
+
+        let row = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+            .ok_or_else(|| DatabaseError::Query("No job_analytics row returned".to_string()))?;
+
+        let total: i64 = row.get(0).unwrap_or(0);
+        let completed: i64 = row.get(1).unwrap_or(0);
+        let failed: i64 = row.get(2).unwrap_or(0);
+        let in_progress: i64 = row.get(3).unwrap_or(0);
+        let avg_duration: f64 = row.get(4).unwrap_or(0.0);
+        let total_cost_f64: f64 = row.get(5).unwrap_or(0.0);
+
+        Ok(JobAnalytics {
+            total_jobs: total,
+            completed_jobs: completed,
+            failed_jobs: failed,
+            in_progress_jobs: in_progress,
+            success_rate: if total > 0 {
+                completed as f64 / total as f64
+            } else {
+                0.0
+            },
+            avg_duration_secs: avg_duration,
+            total_cost_usd: Decimal::from_f64_retain(total_cost_f64)
+                .unwrap_or_default()
+                .to_string(),
+        })
+    }
+
+    async fn get_tool_analytics(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<ToolAnalytics>, DatabaseError> {
+        let conn = self.connect()?;
+        let (where_clause, since_str) = if let Some(ts) = since {
+            ("WHERE created_at >= ?1", Some(ts.to_rfc3339()))
+        } else {
+            ("", None)
+        };
+        let sql = format!(
+            r#"
+            SELECT
+                tool_name,
+                COUNT(*) AS total_calls,
+                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS successful_calls,
+                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failed_calls,
+                COALESCE(AVG(CAST(duration_ms AS REAL)), 0.0) AS avg_duration_ms,
+                COALESCE(SUM(CAST(cost AS REAL)), 0.0) AS total_cost
+            FROM job_actions
+            {where_clause}
+            GROUP BY tool_name
+            ORDER BY total_calls DESC
+            "#
+        );
+
+        let mut rows = if let Some(ref ts_str) = since_str {
+            conn.query(&sql, params![ts_str.as_str()])
+                .await
+                .map_err(|e| DatabaseError::Query(e.to_string()))?
+        } else {
+            conn.query(&sql, ())
+                .await
+                .map_err(|e| DatabaseError::Query(e.to_string()))?
+        };
+
+        let mut stats = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            let tool_name: String = row
+                .get(0)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let total: i64 = row
+                .get(1)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let successful: i64 = row
+                .get(2)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let failed_calls: i64 = row
+                .get(3)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let avg_duration_ms: f64 = row.get(4).unwrap_or(0.0);
+            let total_cost_f64: f64 = row.get(5).unwrap_or(0.0);
+
+            stats.push(ToolAnalytics {
+                tool_name,
+                total_calls: total,
+                successful_calls: successful,
+                failed_calls,
+                success_rate: if total > 0 {
+                    successful as f64 / total as f64
+                } else {
+                    0.0
+                },
+                avg_duration_ms,
+                total_cost_usd: Decimal::from_f64_retain(total_cost_f64)
+                    .unwrap_or_default()
+                    .to_string(),
+            });
+        }
+
+        Ok(stats)
+    }
+
+    async fn get_cost_over_time(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<CostDataPoint>, DatabaseError> {
+        let conn = self.connect()?;
+        let since_str = since.to_rfc3339();
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT
+                    DATE(created_at) AS day,
+                    COALESCE(SUM(CAST(cost AS REAL)), 0.0) AS daily_cost,
+                    COUNT(*) AS call_count
+                FROM llm_calls
+                WHERE created_at >= ?1
+                GROUP BY DATE(created_at)
+                ORDER BY day ASC
+                "#,
+                params![since_str.as_str()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let mut points = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            let day: String = row
+                .get(0)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let daily_cost_f64: f64 = row.get(1).unwrap_or(0.0);
+            let call_count: i64 = row
+                .get(2)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            points.push(CostDataPoint {
+                day,
+                cost_usd: Decimal::from_f64_retain(daily_cost_f64)
+                    .unwrap_or_default()
+                    .to_string(),
+                call_count,
+            });
+        }
+
+        Ok(points)
     }
 
     async fn get_conversation_token_stats(
@@ -1046,14 +1255,18 @@ impl Database for LibSqlBackend {
             .await
             .map_err(|e| DatabaseError::Query(e.to_string()))?
         {
-            let total_input_tokens: i64 =
-                row.get(0).map_err(|e| DatabaseError::Query(e.to_string()))?;
-            let total_output_tokens: i64 =
-                row.get(1).map_err(|e| DatabaseError::Query(e.to_string()))?;
-            let total_cost_f64: f64 =
-                row.get(2).map_err(|e| DatabaseError::Query(e.to_string()))?;
-            let call_count: i64 =
-                row.get(3).map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let total_input_tokens: i64 = row
+                .get(0)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let total_output_tokens: i64 = row
+                .get(1)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let total_cost_f64: f64 = row
+                .get(2)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
+            let call_count: i64 = row
+                .get(3)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
             Ok(crate::db::ConversationTokenStats {
                 conversation_id,
                 total_input_tokens,
@@ -2908,7 +3121,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let backend = LibSqlBackend { db };
+        let backend = LibSqlBackend { db: Arc::new(db) };
         backend.run_migrations().await.unwrap();
         backend
     }
@@ -2945,7 +3158,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let backend = LibSqlBackend { db };
+        let backend = LibSqlBackend { db: Arc::new(db) };
         backend.run_migrations().await.unwrap();
         backend.run_migrations().await.unwrap(); // second run — must succeed
     }
@@ -2972,10 +3185,13 @@ mod tests {
         };
         backend.record_llm_call(&record).await.unwrap();
 
-        let record2 = LlmCallRecord { latency_ms: 766, ..record };
+        let record2 = LlmCallRecord {
+            latency_ms: 766,
+            ..record
+        };
         backend.record_llm_call(&record2).await.unwrap();
 
-        let stats = backend.get_llm_call_stats().await.unwrap();
+        let stats = backend.get_llm_call_stats(None).await.unwrap();
         assert_eq!(stats.len(), 1);
 
         let s = &stats[0];
@@ -2987,6 +3203,9 @@ mod tests {
 
         // avg of 1234 and 766 = 1000
         let avg = s.avg_latency_ms.expect("avg_latency_ms should be Some");
-        assert!((avg - 1000.0).abs() < 1.0, "expected avg ~1000 ms, got {avg}");
+        assert!(
+            (avg - 1000.0).abs() < 1.0,
+            "expected avg ~1000 ms, got {avg}"
+        );
     }
 }

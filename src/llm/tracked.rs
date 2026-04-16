@@ -279,6 +279,8 @@ pub struct LlmCallStats {
     pub avg_cost_per_call: Decimal,
     /// Average end-to-end latency in milliseconds (null for calls recorded before V9 migration).
     pub avg_latency_ms: Option<f64>,
+    /// 95th-percentile latency in milliseconds (null on backends that lack percentile functions).
+    pub p95_latency_ms: Option<f64>,
 }
 
 #[cfg(test)]

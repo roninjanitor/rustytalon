@@ -188,7 +188,10 @@ pub async fn start_server(
         .route("/api/chat/ws", get(chat_ws_handler))
         .route("/api/chat/history", get(chat_history_handler))
         .route("/api/chat/threads", get(chat_threads_handler))
-        .route("/api/chat/threads/{id}/tokens", get(chat_thread_tokens_handler))
+        .route(
+            "/api/chat/threads/{id}/tokens",
+            get(chat_thread_tokens_handler),
+        )
         .route("/api/chat/thread/new", post(chat_new_thread_handler))
         // Memory
         .route("/api/memory/tree", get(memory_tree_handler))
@@ -285,6 +288,12 @@ pub async fn start_server(
         .route("/api/providers/costs", get(providers_costs_handler))
         // Analytics
         .route("/api/analytics/models", get(analytics_models_handler))
+        .route("/api/analytics/jobs", get(analytics_jobs_handler))
+        .route("/api/analytics/tools", get(analytics_tools_handler))
+        .route(
+            "/api/analytics/cost-over-time",
+            get(analytics_cost_over_time_handler),
+        )
         // OpenAI-compatible API
         .route(
             "/v1/chat/completions",
@@ -2776,7 +2785,7 @@ async fn providers_costs_handler(State(state): State<Arc<GatewayState>>) -> impl
         }
     };
 
-    match db.get_llm_call_stats().await {
+    match db.get_llm_call_stats(None).await {
         Ok(stats) => Json(LlmCostStatsResponse { stats }).into_response(),
         Err(e) => {
             tracing::warn!(error = %e, "Failed to fetch LLM cost stats");
@@ -2791,7 +2800,29 @@ async fn providers_costs_handler(State(state): State<Arc<GatewayState>>) -> impl
 
 // ── Analytics handlers ────────────────────────────────────────────────────────
 
-async fn analytics_models_handler(State(state): State<Arc<GatewayState>>) -> impl IntoResponse {
+/// Parse a `?range=` query parameter into a `since` cutoff timestamp.
+///
+/// Accepted values: `24h`, `7d`, `30d`, `90d`. Anything else (or absent) → `None` (all time).
+fn parse_range_since(range: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::Utc;
+    match range? {
+        "24h" => Some(Utc::now() - chrono::Duration::hours(24)),
+        "7d" => Some(Utc::now() - chrono::Duration::days(7)),
+        "30d" => Some(Utc::now() - chrono::Duration::days(30)),
+        "90d" => Some(Utc::now() - chrono::Duration::days(90)),
+        _ => None,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RangeQuery {
+    range: Option<String>,
+}
+
+async fn analytics_models_handler(
+    State(state): State<Arc<GatewayState>>,
+    axum::extract::Query(q): axum::extract::Query<RangeQuery>,
+) -> impl IntoResponse {
     let db = match state.store.as_ref() {
         Some(db) => db,
         None => {
@@ -2808,12 +2839,12 @@ async fn analytics_models_handler(State(state): State<Arc<GatewayState>>) -> imp
         }
     };
 
-    match db.get_llm_call_stats().await {
+    let since = parse_range_since(q.range.as_deref());
+    match db.get_llm_call_stats(since).await {
         Ok(stats) => {
             let total_input_tokens: i64 = stats.iter().map(|s| s.total_input_tokens).sum();
             let total_output_tokens: i64 = stats.iter().map(|s| s.total_output_tokens).sum();
-            let total_cost: rust_decimal::Decimal =
-                stats.iter().map(|s| s.total_cost).sum();
+            let total_cost: rust_decimal::Decimal = stats.iter().map(|s| s.total_cost).sum();
 
             let models = stats
                 .into_iter()
@@ -2826,6 +2857,7 @@ async fn analytics_models_handler(State(state): State<Arc<GatewayState>>) -> imp
                     total_cost_usd: s.total_cost.to_string(),
                     avg_cost_per_call_usd: s.avg_cost_per_call.to_string(),
                     avg_latency_ms: s.avg_latency_ms,
+                    p95_latency_ms: s.p95_latency_ms,
                 })
                 .collect();
 
@@ -2849,6 +2881,125 @@ async fn analytics_models_handler(State(state): State<Arc<GatewayState>>) -> imp
                 }),
             )
                 .into_response()
+        }
+    }
+}
+
+async fn analytics_jobs_handler(
+    State(state): State<Arc<GatewayState>>,
+    axum::extract::Query(q): axum::extract::Query<RangeQuery>,
+) -> impl IntoResponse {
+    let db = match state.store.as_ref() {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(JobAnalyticsResponse {
+                    total_jobs: 0,
+                    completed_jobs: 0,
+                    failed_jobs: 0,
+                    in_progress_jobs: 0,
+                    success_rate: 0.0,
+                    avg_duration_secs: 0.0,
+                    total_cost_usd: "0".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let since = parse_range_since(q.range.as_deref());
+    match db.get_job_analytics(since).await {
+        Ok(a) => Json(JobAnalyticsResponse {
+            total_jobs: a.total_jobs,
+            completed_jobs: a.completed_jobs,
+            failed_jobs: a.failed_jobs,
+            in_progress_jobs: a.in_progress_jobs,
+            success_rate: a.success_rate,
+            avg_duration_secs: a.avg_duration_secs,
+            total_cost_usd: a.total_cost_usd,
+        })
+        .into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch job analytics");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn analytics_tools_handler(
+    State(state): State<Arc<GatewayState>>,
+    axum::extract::Query(q): axum::extract::Query<RangeQuery>,
+) -> impl IntoResponse {
+    let db = match state.store.as_ref() {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ToolAnalyticsResponse { tools: vec![] }),
+            )
+                .into_response();
+        }
+    };
+
+    let since = parse_range_since(q.range.as_deref());
+    match db.get_tool_analytics(since).await {
+        Ok(analytics) => {
+            let tools = analytics
+                .into_iter()
+                .map(|t| ToolStats {
+                    tool_name: t.tool_name,
+                    total_calls: t.total_calls,
+                    successful_calls: t.successful_calls,
+                    failed_calls: t.failed_calls,
+                    success_rate: t.success_rate,
+                    avg_duration_ms: t.avg_duration_ms,
+                    total_cost_usd: t.total_cost_usd,
+                })
+                .collect();
+            Json(ToolAnalyticsResponse { tools }).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch tool analytics");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn analytics_cost_over_time_handler(
+    State(state): State<Arc<GatewayState>>,
+    axum::extract::Query(q): axum::extract::Query<RangeQuery>,
+) -> impl IntoResponse {
+    let db = match state.store.as_ref() {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(CostOverTimeResponse { data: vec![] }),
+            )
+                .into_response();
+        }
+    };
+
+    // Default to 30 days when no range specified for the chart.
+    let since = parse_range_since(q.range.as_deref())
+        .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(30));
+
+    match db.get_cost_over_time(since).await {
+        Ok(points) => {
+            let data = points
+                .into_iter()
+                .map(|p| CostPoint {
+                    day: p.day,
+                    cost_usd: p.cost_usd,
+                    call_count: p.call_count,
+                })
+                .collect();
+            Json(CostOverTimeResponse { data }).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch cost-over-time");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }

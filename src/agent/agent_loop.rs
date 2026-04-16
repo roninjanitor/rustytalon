@@ -3177,6 +3177,9 @@ mod tests {
         let result = append_sources(String::new(), &urls);
         let pos_b = result.find("https://b.com").unwrap();
         let pos_a = result.find("https://a.com").unwrap();
-        assert!(pos_b < pos_a, "b.com was seen first, so it should appear first");
+        assert!(
+            pos_b < pos_a,
+            "b.com was seen first, so it should appear first"
+        );
     }
 }

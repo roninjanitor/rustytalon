@@ -24,13 +24,11 @@
 /// - `version` must be unique and monotonically increasing.
 /// - `sql` is executed as a single statement.
 /// - Entries are applied exactly once per database, tracked via `_migrations`.
-pub const INCREMENTAL: &[(i64, &str, &str)] = &[
-    (
-        9,
-        "add_latency_ms_to_llm_calls",
-        "ALTER TABLE llm_calls ADD COLUMN latency_ms INTEGER",
-    ),
-];
+pub const INCREMENTAL: &[(i64, &str, &str)] = &[(
+    9,
+    "add_latency_ms_to_llm_calls",
+    "ALTER TABLE llm_calls ADD COLUMN latency_ms INTEGER",
+)];
 
 /// Consolidated schema for libSQL.
 ///

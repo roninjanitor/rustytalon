@@ -15,7 +15,7 @@ use crate::agent::BrokenTool;
 use crate::agent::routine::{Routine, RoutineRun, RunStatus};
 use crate::config::DatabaseConfig;
 use crate::context::{ActionRecord, JobContext, JobState};
-use crate::db::Database;
+use crate::db::{CostDataPoint, Database, JobAnalytics, ToolAnalytics};
 use crate::error::{DatabaseError, WorkspaceError};
 use crate::history::{
     ConversationMessage, ConversationSummary, JobEventRecord, LlmCallRecord, SandboxJobRecord,
@@ -221,30 +221,42 @@ impl Database for PgBackend {
         self.store.record_llm_call(record).await
     }
 
-    async fn get_llm_call_stats(&self) -> Result<Vec<LlmCallStats>, DatabaseError> {
+    async fn get_llm_call_stats(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<LlmCallStats>, DatabaseError> {
         let conn = self.store.conn().await?;
-        let rows = conn
-            .query(
-                r#"
-                SELECT
-                    provider,
-                    model,
-                    COUNT(*)::bigint AS total_calls,
-                    COALESCE(SUM(input_tokens), 0)::bigint AS total_input_tokens,
-                    COALESCE(SUM(output_tokens), 0)::bigint AS total_output_tokens,
-                    COALESCE(SUM(cost), 0) AS total_cost,
-                    CASE WHEN COUNT(*) > 0
-                        THEN COALESCE(SUM(cost), 0) / COUNT(*)
-                        ELSE 0
-                    END AS avg_cost_per_call,
-                    AVG(latency_ms)::float8 AS avg_latency_ms
-                FROM llm_calls
-                GROUP BY provider, model
-                ORDER BY total_cost DESC
-                "#,
-                &[],
-            )
-            .await?;
+        let (where_clause, params): (&str, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) =
+            if since.is_some() {
+                ("WHERE created_at >= $1", vec![since.as_ref().unwrap()])
+            } else {
+                ("", vec![])
+            };
+
+        let sql = format!(
+            r#"
+            SELECT
+                provider,
+                model,
+                COUNT(*)::bigint AS total_calls,
+                COALESCE(SUM(input_tokens), 0)::bigint AS total_input_tokens,
+                COALESCE(SUM(output_tokens), 0)::bigint AS total_output_tokens,
+                COALESCE(SUM(cost), 0) AS total_cost,
+                CASE WHEN COUNT(*) > 0
+                    THEN COALESCE(SUM(cost), 0) / COUNT(*)
+                    ELSE 0
+                END AS avg_cost_per_call,
+                AVG(latency_ms)::float8 AS avg_latency_ms,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
+                    FILTER (WHERE latency_ms IS NOT NULL) AS p95_latency_ms
+            FROM llm_calls
+            {where_clause}
+            GROUP BY provider, model
+            ORDER BY total_cost DESC
+            "#
+        );
+
+        let rows = conn.query(&sql, &params).await?;
 
         let stats = rows
             .iter()
@@ -257,10 +269,161 @@ impl Database for PgBackend {
                 total_cost: row.get("total_cost"),
                 avg_cost_per_call: row.get("avg_cost_per_call"),
                 avg_latency_ms: row.get("avg_latency_ms"),
+                p95_latency_ms: row.get("p95_latency_ms"),
             })
             .collect();
 
         Ok(stats)
+    }
+
+    async fn get_job_analytics(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<JobAnalytics, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let (where_clause, params): (&str, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) =
+            if since.is_some() {
+                ("WHERE created_at >= $1", vec![since.as_ref().unwrap()])
+            } else {
+                ("", vec![])
+            };
+
+        let sql = format!(
+            r#"
+            SELECT
+                COUNT(*)::bigint AS total_jobs,
+                COUNT(*) FILTER (WHERE status = 'accepted')::bigint AS completed_jobs,
+                COUNT(*) FILTER (WHERE status = 'failed')::bigint AS failed_jobs,
+                COUNT(*) FILTER (WHERE status = 'in_progress')::bigint AS in_progress_jobs,
+                COALESCE(
+                    AVG(EXTRACT(EPOCH FROM (completed_at - started_at)))
+                        FILTER (WHERE completed_at IS NOT NULL),
+                    0.0
+                ) AS avg_duration_secs,
+                COALESCE(SUM(actual_cost), 0) AS total_cost
+            FROM agent_jobs
+            {where_clause}
+            "#
+        );
+
+        let row = conn.query_one(&sql, &params).await?;
+        let total: i64 = row.get("total_jobs");
+        let completed: i64 = row.get("completed_jobs");
+        let failed: i64 = row.get("failed_jobs");
+        let in_progress: i64 = row.get("in_progress_jobs");
+        let avg_duration: f64 = row.get("avg_duration_secs");
+        let total_cost: Decimal = row
+            .get::<_, Option<Decimal>>("total_cost")
+            .unwrap_or_default();
+
+        Ok(JobAnalytics {
+            total_jobs: total,
+            completed_jobs: completed,
+            failed_jobs: failed,
+            in_progress_jobs: in_progress,
+            success_rate: if total > 0 {
+                completed as f64 / total as f64
+            } else {
+                0.0
+            },
+            avg_duration_secs: avg_duration,
+            total_cost_usd: total_cost.to_string(),
+        })
+    }
+
+    async fn get_tool_analytics(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<ToolAnalytics>, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let (where_clause, params): (&str, Vec<&(dyn tokio_postgres::types::ToSql + Sync)>) =
+            if since.is_some() {
+                ("WHERE created_at >= $1", vec![since.as_ref().unwrap()])
+            } else {
+                ("", vec![])
+            };
+
+        let sql = format!(
+            r#"
+            SELECT
+                tool_name,
+                COUNT(*)::bigint AS total_calls,
+                COUNT(*) FILTER (WHERE success = true)::bigint AS successful_calls,
+                COUNT(*) FILTER (WHERE success = false)::bigint AS failed_calls,
+                COALESCE(AVG(duration_ms), 0.0) AS avg_duration_ms,
+                COALESCE(SUM(cost), 0) AS total_cost
+            FROM job_actions
+            {where_clause}
+            GROUP BY tool_name
+            ORDER BY total_calls DESC
+            "#
+        );
+
+        let rows = conn.query(&sql, &params).await?;
+
+        let stats = rows
+            .iter()
+            .map(|row| {
+                let total: i64 = row.get("total_calls");
+                let successful: i64 = row.get("successful_calls");
+                let total_cost: Decimal = row
+                    .get::<_, Option<Decimal>>("total_cost")
+                    .unwrap_or_default();
+                ToolAnalytics {
+                    tool_name: row.get("tool_name"),
+                    total_calls: total,
+                    successful_calls: successful,
+                    failed_calls: row.get("failed_calls"),
+                    success_rate: if total > 0 {
+                        successful as f64 / total as f64
+                    } else {
+                        0.0
+                    },
+                    avg_duration_ms: row.get("avg_duration_ms"),
+                    total_cost_usd: total_cost.to_string(),
+                }
+            })
+            .collect();
+
+        Ok(stats)
+    }
+
+    async fn get_cost_over_time(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<CostDataPoint>, DatabaseError> {
+        let conn = self.store.conn().await?;
+        let rows = conn
+            .query(
+                r#"
+                SELECT
+                    DATE(created_at AT TIME ZONE 'UTC')::text AS day,
+                    COALESCE(SUM(cost), 0) AS daily_cost,
+                    COUNT(*)::bigint AS call_count
+                FROM llm_calls
+                WHERE created_at >= $1
+                GROUP BY DATE(created_at AT TIME ZONE 'UTC')
+                ORDER BY day ASC
+                "#,
+                &[&since],
+            )
+            .await?;
+
+        let points = rows
+            .iter()
+            .map(|row| {
+                let cost: Decimal = row
+                    .get::<_, Option<Decimal>>("daily_cost")
+                    .unwrap_or_default();
+                CostDataPoint {
+                    day: row.get("day"),
+                    cost_usd: cost.to_string(),
+                    call_count: row.get("call_count"),
+                }
+            })
+            .collect();
+
+        Ok(points)
     }
 
     async fn get_conversation_token_stats(

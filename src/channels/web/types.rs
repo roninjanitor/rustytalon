@@ -1078,7 +1078,10 @@ mod tests {
             total_cost: Decimal::ZERO,
             call_count: 1,
         };
-        assert_eq!(resp.total_tokens, resp.total_input_tokens + resp.total_output_tokens);
+        assert_eq!(
+            resp.total_tokens,
+            resp.total_input_tokens + resp.total_output_tokens
+        );
     }
 
     // ── Analytics types ───────────────────────────────────────────────────────
@@ -1094,6 +1097,7 @@ mod tests {
             total_cost_usd: "0.001234".to_string(),
             avg_cost_per_call_usd: "0.000029".to_string(),
             avg_latency_ms: Some(823.5),
+            p95_latency_ms: Some(1200.0),
         };
         let v = serde_json::to_value(&stats).unwrap();
         assert_eq!(v["provider"], "anthropic");
@@ -1114,10 +1118,13 @@ mod tests {
             total_cost_usd: "0.000010".to_string(),
             avg_cost_per_call_usd: "0.000010".to_string(),
             avg_latency_ms: None,
+            p95_latency_ms: None,
         };
         let v = serde_json::to_value(&stats).unwrap();
-        assert!(!v.as_object().unwrap().contains_key("avg_latency_ms"),
-            "avg_latency_ms should be absent when None, not serialized as null");
+        assert!(
+            !v.as_object().unwrap().contains_key("avg_latency_ms"),
+            "avg_latency_ms should be absent when None, not serialized as null"
+        );
     }
 
     #[test]
@@ -1214,6 +1221,53 @@ pub struct ModelStats {
     /// Average end-to-end latency in milliseconds, absent for calls recorded before V9.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub avg_latency_ms: Option<f64>,
+    /// 95th-percentile latency in milliseconds (PostgreSQL only; null on libSQL).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p95_latency_ms: Option<f64>,
+}
+
+/// Response for GET /api/analytics/jobs — job health summary.
+#[derive(Debug, Serialize)]
+pub struct JobAnalyticsResponse {
+    pub total_jobs: i64,
+    pub completed_jobs: i64,
+    pub failed_jobs: i64,
+    pub in_progress_jobs: i64,
+    pub success_rate: f64,
+    pub avg_duration_secs: f64,
+    pub total_cost_usd: String,
+}
+
+/// Response for GET /api/analytics/tools — per-tool usage breakdown.
+#[derive(Debug, Serialize)]
+pub struct ToolAnalyticsResponse {
+    pub tools: Vec<ToolStats>,
+}
+
+/// Per-tool stats row.
+#[derive(Debug, Serialize)]
+pub struct ToolStats {
+    pub tool_name: String,
+    pub total_calls: i64,
+    pub successful_calls: i64,
+    pub failed_calls: i64,
+    pub success_rate: f64,
+    pub avg_duration_ms: f64,
+    pub total_cost_usd: String,
+}
+
+/// Response for GET /api/analytics/cost-over-time.
+#[derive(Debug, Serialize)]
+pub struct CostOverTimeResponse {
+    pub data: Vec<CostPoint>,
+}
+
+/// One day's worth of cost data.
+#[derive(Debug, Serialize)]
+pub struct CostPoint {
+    pub day: String,
+    pub cost_usd: String,
+    pub call_count: i64,
 }
 
 // --- Skills ---

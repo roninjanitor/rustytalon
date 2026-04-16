@@ -42,6 +42,39 @@ use crate::llm::tracked::LlmCallStats;
 use crate::workspace::{MemoryChunk, MemoryDocument, WorkspaceEntry};
 use crate::workspace::{SearchConfig, SearchResult};
 
+/// Aggregated job health statistics.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct JobAnalytics {
+    pub total_jobs: i64,
+    pub completed_jobs: i64,
+    pub failed_jobs: i64,
+    pub in_progress_jobs: i64,
+    pub success_rate: f64,
+    pub avg_duration_secs: f64,
+    pub total_cost_usd: String,
+}
+
+/// Per-tool usage statistics.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolAnalytics {
+    pub tool_name: String,
+    pub total_calls: i64,
+    pub successful_calls: i64,
+    pub failed_calls: i64,
+    pub success_rate: f64,
+    pub avg_duration_ms: f64,
+    pub total_cost_usd: String,
+}
+
+/// A single daily cost data point for the cost-over-time chart.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CostDataPoint {
+    /// ISO-8601 date string (YYYY-MM-DD).
+    pub day: String,
+    pub cost_usd: String,
+    pub call_count: i64,
+}
+
 /// Cumulative token and cost totals for a single conversation (thread).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ConversationTokenStats {
@@ -241,8 +274,36 @@ pub trait Database: Send + Sync {
 
     /// Get aggregated LLM call statistics grouped by provider and model.
     ///
-    /// Returns cost, token, and call count summaries for dashboard display.
-    async fn get_llm_call_stats(&self) -> Result<Vec<LlmCallStats>, DatabaseError>;
+    /// Pass `since` to restrict to calls after a cutoff timestamp (for time-range
+    /// filtering in the analytics dashboard). `None` returns all-time stats.
+    async fn get_llm_call_stats(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<LlmCallStats>, DatabaseError>;
+
+    /// Get aggregated job health statistics.
+    ///
+    /// Pass `since` to restrict to jobs created after a cutoff. `None` = all time.
+    async fn get_job_analytics(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<JobAnalytics, DatabaseError>;
+
+    /// Get per-tool usage statistics sorted by call count descending.
+    ///
+    /// Pass `since` to restrict to actions after a cutoff. `None` = all time.
+    async fn get_tool_analytics(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<ToolAnalytics>, DatabaseError>;
+
+    /// Get daily cost aggregates for the cost-over-time chart.
+    ///
+    /// Returns one row per day from `since` to today, ordered ascending.
+    async fn get_cost_over_time(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<CostDataPoint>, DatabaseError>;
 
     /// Get cumulative token and cost totals for a single conversation (thread).
     async fn get_conversation_token_stats(
