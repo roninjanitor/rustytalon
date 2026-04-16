@@ -452,29 +452,40 @@
     <!-- Settings Tab -->
     <div class="tab-panel" id="tab-settings">
       <div class="settings-container">
+        <!-- About / Version card -->
+        <div class="version-card" id="version-card" style="margin-bottom:20px">
+          <div class="version-card-header">
+            <div>
+              <div class="version-card-name">RustyTalon</div>
+              <div class="version-card-tagline">Secure personal AI assistant</div>
+            </div>
+          </div>
+          <div class="version-row">
+            <span class="version-label">Current version</span>
+            <span class="version-value" id="version-current">—</span>
+          </div>
+          <div class="version-row" id="version-latest-row" style="display:none">
+            <span class="version-label">Latest release</span>
+            <span class="version-value" id="version-latest">—</span>
+            <span class="version-status" id="version-status"></span>
+          </div>
+          <div class="version-card-actions">
+            <button class="btn-check-update" id="btn-check-update" onclick="checkForUpdate()">Check for updates</button>
+            <a id="version-release-link" class="version-release-link" style="display:none" target="_blank" rel="noopener">View release ↗</a>
+          </div>
+          <div id="version-docker-block" style="display:none">
+            <div class="version-docker-cmd">
+              <code id="version-docker-cmd-text"></code>
+              <button class="btn-copy-docker" onclick="copyDockerCmd()" title="Copy to clipboard">Copy</button>
+            </div>
+          </div>
+        </div>
+
         <div class="settings-toolbar">
           <h2 class="settings-heading">Settings</h2>
-          <button class="btn-add-skill" onclick="openSettingModal()">+ Add Setting</button>
+          <button class="btn-add-skill" onclick="openCustomSettingModal()">+ Custom Setting</button>
         </div>
-
-        <!-- Well-known settings reference -->
-        <div class="settings-reference">
-          <strong>Well-known keys:</strong>
-          <span class="settings-hint-pill">audit_retention_days</span> &mdash; how many days to keep audit log rows (default 90)
-        </div>
-
-        <table class="analytics-table settings-table" id="settings-table">
-          <thead>
-            <tr>
-              <th>Key</th>
-              <th>Value</th>
-              <th>Updated</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="settings-tbody"></tbody>
-        </table>
-        <div class="empty-state" id="settings-empty" style="display:none">No settings saved yet.</div>
+        <div id="settings-sections"><div class="empty-state">Loading…</div></div>
       </div>
     </div>
 
@@ -482,12 +493,14 @@
     <div class="wizard-overlay" id="setting-modal-overlay" style="display:none" onclick="settingModalOverlayClick(event)">
       <div class="wizard-modal" id="setting-modal">
         <button class="wizard-close" onclick="closeSettingModal()">&times;</button>
-        <div class="wizard-step-title" id="setting-modal-title">New Setting</div>
+        <div class="wizard-step-title" id="setting-modal-title">Edit Setting</div>
+        <div class="settings-modal-desc" id="setting-modal-desc" style="display:none"></div>
         <div class="skill-form">
-          <label class="wizard-step-label">Key</label>
-          <input type="text" id="setting-key-input" class="wizard-token-input" placeholder="e.g. audit_retention_days" autocomplete="off" spellcheck="false">
-          <label class="wizard-step-label">Value <span class="skill-name-hint">(JSON: number, string, true/false, or object)</span></label>
-          <input type="text" id="setting-value-input" class="wizard-token-input" placeholder='e.g. 30 or "dark" or true'>
+          <label class="wizard-step-label" id="setting-key-label">Key</label>
+          <input type="text" id="setting-key-input" class="wizard-token-input" placeholder="e.g. my.custom.key" autocomplete="off" spellcheck="false">
+          <label class="wizard-step-label">Value <span class="skill-name-hint" id="setting-value-hint">(JSON: number, string, true/false, or object)</span></label>
+          <input type="text" id="setting-value-input" class="wizard-token-input" placeholder='e.g. 30 or "dark" or true'
+                 onkeydown="if(event.key==='Enter')saveSetting()">
         </div>
         <div class="wizard-actions">
           <button class="wizard-btn-secondary" onclick="closeSettingModal()">Cancel</button>

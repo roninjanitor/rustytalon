@@ -4076,58 +4076,506 @@ function toggleAuditRow(idx) {
 
 // ── Settings tab ─────────────────────────────────────────────────────────────
 
-let _settingEditKey = null; // null = new, string = editing existing key
+// Catalog of all well-known settings with metadata for rendering.
+const SETTINGS_SECTIONS = [
+  {
+    id: 'agent', label: 'Agent',
+    settings: [
+      { key: 'agent.name',                    label: 'Agent name',              desc: 'Display name shown in messages and notifications',               type: 'string',  default: 'rustytalon' },
+      { key: 'agent.max_parallel_jobs',       label: 'Max parallel jobs',       desc: 'Maximum number of jobs the agent runs concurrently',            type: 'number',  default: 5 },
+      { key: 'agent.job_timeout_secs',        label: 'Job timeout',             desc: 'Maximum time a job can run before being forcefully stopped',     type: 'number',  default: 3600,   unit: 'sec' },
+      { key: 'agent.stuck_threshold_secs',    label: 'Stuck job threshold',     desc: 'How long a job must stall before self-repair kicks in',          type: 'number',  default: 300,    unit: 'sec' },
+      { key: 'agent.use_planning',            label: 'Use planning',            desc: 'Run a planning step before executing tools (improves accuracy)', type: 'boolean', default: true },
+      { key: 'agent.session_idle_timeout_secs', label: 'Session idle timeout', desc: 'Sessions idle longer than this are pruned from memory',          type: 'number',  default: 604800, unit: 'sec' },
+      { key: 'agent.repair_check_interval_secs', label: 'Repair check interval', desc: 'How often the self-repair process polls for stuck jobs',       type: 'number',  default: 60,     unit: 'sec' },
+      { key: 'agent.max_repair_attempts',     label: 'Max repair attempts',     desc: 'How many times a stuck job will be automatically retried',       type: 'number',  default: 3 },
+    ],
+  },
+  {
+    id: 'heartbeat', label: 'Heartbeat',
+    settings: [
+      { key: 'heartbeat.enabled',         label: 'Enable heartbeat',   desc: 'Run the heartbeat checklist proactively on a schedule',      type: 'boolean', default: false },
+      { key: 'heartbeat.interval_secs',   label: 'Check interval',     desc: 'How often the heartbeat checklist runs',                    type: 'number',  default: 1800, unit: 'sec' },
+      { key: 'heartbeat.notify_channel',  label: 'Notify channel',     desc: 'Channel to notify when findings are detected (e.g. tui)',   type: 'string',  default: '' },
+      { key: 'heartbeat.notify_user',     label: 'Notify user',        desc: 'User ID to notify when heartbeat has findings',             type: 'string',  default: '' },
+    ],
+  },
+  {
+    id: 'channels', label: 'Channels',
+    settings: [
+      { key: 'channels.http_enabled',        label: 'HTTP webhook',          desc: 'Accept incoming messages via HTTP POST requests',                      type: 'boolean', default: false },
+      { key: 'channels.http_port',           label: 'HTTP webhook port',     desc: 'Port the HTTP webhook listener binds to',                              type: 'number',  default: 8080 },
+      { key: 'channels.wasm_channels_enabled', label: 'WASM channels',      desc: 'Enable WASM-based channels such as Telegram, Slack, and Discord',       type: 'boolean', default: true },
+      { key: 'channels.telegram_owner_id',   label: 'Telegram owner ID',    desc: 'Only respond to this Telegram user ID — leave empty to allow anyone',   type: 'number',  default: null },
+      { key: 'channels.discord_owner_id',    label: 'Discord owner ID',     desc: 'Only respond to this Discord user ID — leave empty to allow anyone',    type: 'string',  default: '' },
+      { key: 'channels.discord_dm_policy',   label: 'Discord DM policy',    desc: 'Who can send direct messages to the bot',                               type: 'select',  default: 'pairing', options: ['pairing', 'open', 'owner_only'] },
+    ],
+  },
+  {
+    id: 'embeddings', label: 'Embeddings',
+    settings: [
+      { key: 'embeddings.enabled',  label: 'Enable embeddings', desc: 'Use vector embeddings to power semantic memory search', type: 'boolean', default: false },
+      { key: 'embeddings.provider', label: 'Provider',          desc: 'Embeddings provider (requires matching API key)',        type: 'select',  default: 'openai', options: ['openai'] },
+      { key: 'embeddings.model',    label: 'Model',             desc: 'Embedding model name used for chunk indexing',           type: 'string',  default: 'text-embedding-3-small' },
+    ],
+  },
+  {
+    id: 'safety', label: 'Safety',
+    settings: [
+      { key: 'safety.injection_check_enabled', label: 'Injection check',    desc: 'Scan all tool outputs for prompt injection patterns before passing to LLM', type: 'boolean', default: true },
+      { key: 'safety.max_output_length',       label: 'Max output length',  desc: 'Maximum byte size of any tool output forwarded to the LLM',                 type: 'number',  default: 100000, unit: 'bytes' },
+    ],
+  },
+  {
+    id: 'wasm', label: 'WASM Sandbox',
+    settings: [
+      { key: 'wasm.enabled',               label: 'Enable WASM sandbox',    desc: 'Run WASM tools inside an isolated sandbox with resource limits', type: 'boolean', default: true },
+      { key: 'wasm.default_memory_limit',  label: 'Memory limit',           desc: 'Default RAM cap for WASM module execution',                      type: 'number',  default: 10485760, unit: 'bytes' },
+      { key: 'wasm.default_timeout_secs',  label: 'Execution timeout',      desc: 'Maximum wall-clock time for a single WASM tool call',            type: 'number',  default: 60,       unit: 'sec' },
+      { key: 'wasm.default_fuel_limit',    label: 'Fuel limit',             desc: 'CPU instruction budget per call — higher allows more compute',   type: 'number',  default: 10000000 },
+      { key: 'wasm.cache_compiled',        label: 'Cache compiled modules', desc: 'Cache compiled WASM to speed up subsequent cold starts',         type: 'boolean', default: true },
+    ],
+  },
+  {
+    id: 'sandbox', label: 'Docker Sandbox',
+    settings: [
+      { key: 'sandbox.enabled',         label: 'Enable Docker sandbox', desc: 'Run jobs inside isolated Docker containers',                        type: 'boolean', default: true },
+      { key: 'sandbox.policy',          label: 'Sandbox policy',        desc: 'Level of filesystem access granted to the container',               type: 'select',  default: 'readonly', options: ['readonly', 'workspace_write', 'full_access'] },
+      { key: 'sandbox.timeout_secs',    label: 'Command timeout',       desc: 'Maximum time a sandboxed command may run',                          type: 'number',  default: 120,  unit: 'sec' },
+      { key: 'sandbox.memory_limit_mb', label: 'Memory limit',          desc: 'RAM cap for each sandbox container',                                type: 'number',  default: 2048, unit: 'MB' },
+      { key: 'sandbox.image',           label: 'Docker image',          desc: 'Container image used for the worker sandbox',                       type: 'string',  default: 'rustytalon-worker:latest' },
+      { key: 'sandbox.auto_pull_image', label: 'Auto-pull image',       desc: 'Automatically pull the image from Docker Hub if not found locally', type: 'boolean', default: true },
+    ],
+  },
+  {
+    id: 'builder', label: 'Tool Builder',
+    settings: [
+      { key: 'builder.enabled',         label: 'Enable builder',       desc: 'Allow the agent to build new WASM tools dynamically at runtime', type: 'boolean', default: true },
+      { key: 'builder.max_iterations',  label: 'Max build iterations', desc: 'Maximum build-and-fix attempts before giving up on a tool',      type: 'number',  default: 20 },
+      { key: 'builder.timeout_secs',    label: 'Build timeout',        desc: 'Maximum total time for a complete build session',                 type: 'number',  default: 600, unit: 'sec' },
+      { key: 'builder.auto_register',   label: 'Auto-register tools',  desc: 'Automatically add newly built tools to the registry',             type: 'boolean', default: true },
+    ],
+  },
+  {
+    id: 'audit', label: 'Audit',
+    settings: [
+      { key: 'audit_retention_days', label: 'Log retention', desc: 'How many days to keep audit log entries before they are pruned', type: 'number', default: 90, unit: 'days' },
+    ],
+  },
+];
+
+// Flat lookup: key -> catalog entry
+const SETTINGS_BY_KEY = {};
+for (const sec of SETTINGS_SECTIONS) {
+  for (const s of sec.settings) SETTINGS_BY_KEY[s.key] = s;
+}
+
+// Current DB values: key -> { value, updated_at }
+let _settingsValues = {};
+
+// Key being edited in the modal (null = new custom)
+let _settingEditKey = null;
+
+function _settingDomId(key) {
+  return 'sr-' + key.replace(/[^a-zA-Z0-9]/g, '_');
+}
 
 async function loadSettings() {
-  const tbody = document.getElementById('settings-tbody');
-  const empty = document.getElementById('settings-empty');
-  tbody.innerHTML = '<tr><td colspan="4" class="empty-state">Loading…</td></tr>';
+  const container = document.getElementById('settings-sections');
+  container.innerHTML = '<div class="empty-state">Loading…</div>';
 
-  const res = await apiFetch('/api/settings');
-  if (!res.ok) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty-state">Failed to load settings.</td></tr>';
-    return;
+  try {
+    // apiFetch resolves to parsed JSON on success, throws on any HTTP error
+    const data = await apiFetch('/api/settings');
+    _settingsValues = {};
+    for (const row of (data.settings || [])) {
+      _settingsValues[row.key] = row;
+    }
+    renderSettingsSections(null);
+  } catch (e) {
+    // API unavailable or DB not connected — show sections with defaults + notice
+    _settingsValues = {};
+    renderSettingsSections('Could not load saved settings — showing defaults. Check that the database is connected.');
   }
-  const data = await res.json();
-  const rows = data.settings || [];
 
-  if (rows.length === 0) {
-    tbody.innerHTML = '';
-    empty.style.display = '';
-    return;
+  // Load current version into the About card (no network check on every load).
+  loadVersionInfo();
+}
+
+// ---- About / Version ----
+
+let _versionDockerCmd = null;
+
+async function loadVersionInfo() {
+  try {
+    const data = await fetch('/api/version').then(r => r.json());
+    const el = document.getElementById('version-current');
+    if (el) el.textContent = 'v' + data.version;
+  } catch (_) { /* non-critical */ }
+}
+
+async function checkForUpdate() {
+  const btn = document.getElementById('btn-check-update');
+  const statusEl = document.getElementById('version-status');
+  const latestRow = document.getElementById('version-latest-row');
+  const latestEl = document.getElementById('version-latest');
+  const releaseLink = document.getElementById('version-release-link');
+  const dockerBlock = document.getElementById('version-docker-block');
+  const dockerCmd = document.getElementById('version-docker-cmd-text');
+
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  if (statusEl) {
+    statusEl.className = 'version-status checking';
+    statusEl.textContent = '⟳ Checking';
   }
-  empty.style.display = 'none';
+  if (latestRow) latestRow.style.display = '';
+  if (latestEl) latestEl.textContent = '—';
+  if (releaseLink) releaseLink.style.display = 'none';
+  if (dockerBlock) dockerBlock.style.display = 'none';
 
-  tbody.innerHTML = rows.map(s => {
-    const val  = escapeHtml(JSON.stringify(s.value));
-    const updated = s.updated_at ? new Date(s.updated_at).toLocaleString() : '—';
-    return `<tr>
-      <td class="setting-key-cell">${escapeHtml(s.key)}</td>
-      <td class="setting-val-cell"><code>${val}</code></td>
-      <td class="setting-ts-cell">${updated}</td>
-      <td class="setting-actions-cell">
-        <button class="btn-icon" title="Edit" onclick="openSettingModal(${JSON.stringify(s.key)}, ${JSON.stringify(JSON.stringify(s.value))})">&#9998;</button>
-        <button class="btn-icon btn-danger-icon" title="Delete" onclick="deleteSetting(${JSON.stringify(s.key)})">&#10005;</button>
-      </td>
-    </tr>`;
-  }).join('');
+  try {
+    const data = await fetch('/api/version?check=true').then(r => r.json());
+
+    if (data.check_error) {
+      if (statusEl) {
+        statusEl.className = 'version-status check-error';
+        statusEl.textContent = '✕ ' + data.check_error;
+      }
+      if (latestEl) latestEl.textContent = 'Unknown';
+      btn.textContent = 'Retry';
+      btn.disabled = false;
+      return;
+    }
+
+    if (latestEl) latestEl.textContent = 'v' + (data.latest || '?');
+
+    if (data.update_available) {
+      if (statusEl) {
+        statusEl.className = 'version-status update-available';
+        statusEl.textContent = '↑ Update available';
+      }
+      if (releaseLink && data.release_url) {
+        releaseLink.href = data.release_url;
+        releaseLink.style.display = '';
+      }
+      if (dockerBlock && data.docker_pull) {
+        _versionDockerCmd = data.docker_pull;
+        if (dockerCmd) dockerCmd.textContent = data.docker_pull;
+        dockerBlock.style.display = '';
+      }
+      btn.textContent = 'Check again';
+    } else {
+      if (statusEl) {
+        statusEl.className = 'version-status up-to-date';
+        statusEl.textContent = '✓ Up to date';
+      }
+      btn.textContent = 'Check again';
+    }
+  } catch (e) {
+    if (statusEl) {
+      statusEl.className = 'version-status check-error';
+      statusEl.textContent = '✕ Check failed';
+    }
+    if (latestEl) latestEl.textContent = 'Unknown';
+    btn.textContent = 'Retry';
+  }
+  btn.disabled = false;
+}
+
+function copyDockerCmd() {
+  if (!_versionDockerCmd) return;
+  navigator.clipboard.writeText(_versionDockerCmd).then(() => {
+    const btn = document.querySelector('.btn-copy-docker');
+    if (!btn) return;
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  }).catch(() => {
+    // Clipboard API unavailable — select the text as fallback
+    const el = document.getElementById('version-docker-cmd-text');
+    if (!el) return;
+    const range = document.createRange();
+    range.selectNode(el);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+  });
+}
+
+function renderSettingsSections(notice) {
+  const container = document.getElementById('settings-sections');
+  const knownKeys = new Set(Object.keys(SETTINGS_BY_KEY));
+  const html = [];
+
+  if (notice) {
+    html.push(`<div class="settings-notice">${escapeHtml(notice)}</div>`);
+  }
+
+  for (const sec of SETTINGS_SECTIONS) {
+    html.push(renderSettingsSection(sec));
+  }
+
+  // Custom section: any DB keys not in the catalog
+  const customRows = Object.entries(_settingsValues).filter(([k]) => !knownKeys.has(k));
+  if (customRows.length > 0) {
+    const rows = customRows.map(([key, row]) => {
+      const val = escapeHtml(JSON.stringify(row.value));
+      const updated = row.updated_at ? new Date(row.updated_at).toLocaleString() : '—';
+      return `<div class="settings-row">
+        <div class="settings-row-info">
+          <div class="settings-row-label settings-custom-key">${escapeHtml(key)}</div>
+          <div class="settings-row-desc">Updated ${updated}</div>
+        </div>
+        <div class="settings-row-control">
+          <code class="setting-val-cell">${val}</code>
+          <button class="btn-icon" title="Edit" onclick="openSettingModal(${JSON.stringify(key)},${JSON.stringify(JSON.stringify(row.value))})">&#9998;</button>
+          <button class="btn-icon btn-danger-icon" title="Delete" onclick="deleteCustomSetting(${JSON.stringify(key)})">&#10005;</button>
+        </div>
+      </div>`;
+    }).join('');
+    html.push(`<div class="settings-section">
+      <div class="settings-section-header"><span class="settings-section-title">Custom</span></div>
+      <div class="settings-section-body">${rows}</div>
+    </div>`);
+  }
+
+  container.innerHTML = '<div class="settings-sections">' + html.join('') + '</div>';
+}
+
+function renderSettingsSection(sec) {
+  const rows = sec.settings.map(s => renderSettingRow(s)).join('');
+  return `<div class="settings-section">
+    <div class="settings-section-header"><span class="settings-section-title">${escapeHtml(sec.label)}</span></div>
+    <div class="settings-section-body">${rows}</div>
+  </div>`;
+}
+
+function renderSettingRow(def) {
+  const stored   = _settingsValues[def.key];
+  const rawVal   = stored ? stored.value : undefined;
+  const isSet    = rawVal !== undefined;
+  const dispVal  = isSet ? rawVal : def.default;
+  const domId    = _settingDomId(def.key);
+  const resetBtn = isSet
+    ? `<button class="btn-icon settings-reset-btn" onclick="resetSetting(${JSON.stringify(def.key)})" title="Reset to default">&#8635;</button>`
+    : '';
+
+  let control;
+  if (def.type === 'boolean') {
+    const checked = dispVal === true || dispVal === 'true';
+    control = `<label class="settings-toggle" title="${checked ? 'Enabled' : 'Disabled'}">
+      <input type="checkbox" ${checked ? 'checked' : ''} onchange="updateBoolSetting(${JSON.stringify(def.key)}, this.checked)">
+      <span class="settings-toggle-track"></span>
+    </label>`;
+  } else if (def.type === 'select') {
+    const opts = (def.options || []).map(o =>
+      `<option value="${escapeHtml(o)}" ${String(dispVal) === o ? 'selected' : ''}>${escapeHtml(o)}</option>`
+    ).join('');
+    control = `<select class="settings-select" onchange="updateSelectSetting(${JSON.stringify(def.key)}, this.value)">${opts}</select>`;
+  } else {
+    const valStr  = dispVal !== null && dispVal !== undefined ? String(dispVal) : '';
+    const unit    = def.unit ? `<span class="settings-unit">${escapeHtml(def.unit)}</span>` : '';
+    const editBtn = `<button class="btn-icon settings-edit-btn" onclick="startEditSetting(${JSON.stringify(def.key)})" title="Edit">&#9998;</button>`;
+    control = `<span class="settings-value-wrap" id="swrap-${domId}">
+      <span class="settings-value ${!isSet ? 'settings-value-default' : ''}"
+            onclick="startEditSetting(${JSON.stringify(def.key)})"
+            title="Click to edit">${escapeHtml(valStr || (def.default !== null && def.default !== undefined ? String(def.default) : ''))}</span>
+      ${unit}${editBtn}
+    </span>`;
+  }
+
+  return `<div class="settings-row" id="${domId}">
+    <div class="settings-row-info">
+      <div class="settings-row-label">${escapeHtml(def.label)}</div>
+      <div class="settings-row-desc">${escapeHtml(def.desc)}</div>
+    </div>
+    <div class="settings-row-control">${control}${resetBtn}</div>
+  </div>`;
+}
+
+async function updateBoolSetting(key, value) {
+  try {
+    await apiFetch('/api/settings/' + encodeURIComponent(key), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    });
+    if (!_settingsValues[key]) _settingsValues[key] = {};
+    _settingsValues[key].value = value;
+  } catch (e) {
+    alert('Failed to save setting.');
+  }
+}
+
+async function updateSelectSetting(key, value) {
+  try {
+    await apiFetch('/api/settings/' + encodeURIComponent(key), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    });
+    if (!_settingsValues[key]) _settingsValues[key] = {};
+    _settingsValues[key].value = value;
+  } catch (e) {
+    alert('Failed to save setting.');
+  }
+}
+
+function startEditSetting(key) {
+  const def = SETTINGS_BY_KEY[key];
+  if (!def) return;
+  const stored  = _settingsValues[key];
+  const current = stored ? stored.value : def.default;
+  const valStr  = current !== null && current !== undefined ? String(current) : '';
+  const domId   = _settingDomId(key);
+  const wrap    = document.getElementById('swrap-' + domId);
+  if (!wrap) return;
+
+  const unit = def.unit ? `<span class="settings-unit">${escapeHtml(def.unit)}</span>` : '';
+  wrap.innerHTML = `
+    <input type="${def.type === 'number' ? 'number' : 'text'}"
+           class="settings-inline-input"
+           id="sinput-${domId}"
+           value="${escapeHtml(valStr)}"
+           onkeydown="settingInputKeydown(event, ${JSON.stringify(key)})"
+           onblur="commitEditSetting(${JSON.stringify(key)})">
+    ${unit}
+    <button class="btn-icon settings-ok-btn" onmousedown="event.preventDefault()" onclick="commitEditSetting(${JSON.stringify(key)})" title="Save">&#10003;</button>
+    <button class="btn-icon" onmousedown="event.preventDefault()" onclick="cancelEditSetting(${JSON.stringify(key)})" title="Cancel">&#10005;</button>`;
+
+  const input = document.getElementById('sinput-' + domId);
+  if (input) { input.focus(); input.select(); }
+}
+
+function settingInputKeydown(e, key) {
+  if (e.key === 'Enter')  { e.preventDefault(); commitEditSetting(key); }
+  if (e.key === 'Escape') { cancelEditSetting(key); }
+}
+
+async function commitEditSetting(key) {
+  const def   = SETTINGS_BY_KEY[key];
+  const domId = _settingDomId(key);
+  const input = document.getElementById('sinput-' + domId);
+  if (!input) return; // already committed or cancelled
+  const rawVal = input.value.trim();
+  input.id = ''; // prevent double-commit on blur after click
+
+  let parsed;
+  if (def.type === 'number') {
+    parsed = rawVal === '' ? def.default : Number(rawVal);
+    if (isNaN(parsed)) { cancelEditSetting(key); return; }
+  } else {
+    parsed = rawVal === '' ? null : rawVal;
+  }
+
+  try {
+    await apiFetch('/api/settings/' + encodeURIComponent(key), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: parsed }),
+    });
+    if (!_settingsValues[key]) _settingsValues[key] = {};
+    _settingsValues[key].value = parsed;
+  } catch (e) {
+    alert('Failed to save setting.');
+  }
+
+  // Re-render just this row
+  const row = document.getElementById(domId);
+  if (row) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = renderSettingRow(def);
+    row.replaceWith(tmp.firstElementChild);
+  }
+}
+
+function cancelEditSetting(key) {
+  const def = SETTINGS_BY_KEY[key];
+  if (!def) return;
+  const row = document.getElementById(_settingDomId(key));
+  if (row) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = renderSettingRow(def);
+    row.replaceWith(tmp.firstElementChild);
+  }
+}
+
+async function resetSetting(key) {
+  try {
+    await apiFetch('/api/settings/' + encodeURIComponent(key), { method: 'DELETE' });
+  } catch (e) { alert('Failed to reset setting.'); return; }
+  delete _settingsValues[key];
+  renderSettingsSections();
+}
+
+// ── Custom-setting modal (for arbitrary DB keys) ──────────────────────────────
+
+function openCustomSettingModal() {
+  openSettingModal(null, null);
 }
 
 function openSettingModal(key, valueJson) {
   _settingEditKey = key || null;
-  document.getElementById('setting-modal-title').textContent = key ? 'Edit Setting' : 'New Setting';
+  const def = key ? SETTINGS_BY_KEY[key] : null;
+
+  // Title
+  document.getElementById('setting-modal-title').textContent =
+    def ? def.label : (key ? 'Edit Setting' : 'Custom Setting');
+
+  // Description banner (catalog settings only)
+  const descEl = document.getElementById('setting-modal-desc');
+  if (def) {
+    descEl.textContent = def.desc;
+    descEl.style.display = '';
+  } else {
+    descEl.style.display = 'none';
+  }
+
+  // Key input
   const keyInput = document.getElementById('setting-key-input');
-  keyInput.value = key || '';
+  const keyLabel = document.getElementById('setting-key-label');
+  keyInput.value    = key || '';
   keyInput.readOnly = !!key;
-  keyInput.style.opacity = key ? '0.6' : '';
-  document.getElementById('setting-value-input').value = valueJson != null ? valueJson : '';
+  keyInput.style.display  = key && def ? 'none' : ''; // hide key field for catalog settings
+  keyLabel.style.display  = key && def ? 'none' : '';
+
+  // Value input
+  const valInput = document.getElementById('setting-value-input');
+  const hint     = document.getElementById('setting-value-hint');
+  valInput.value = valueJson != null ? valueJson : (def ? String(def.default ?? '') : '');
+
+  if (def) {
+    if (def.type === 'number') {
+      valInput.type        = 'number';
+      hint.textContent     = def.unit ? `(${def.unit})` : '(number)';
+      valInput.placeholder = String(def.default ?? '');
+    } else if (def.type === 'string') {
+      valInput.type        = 'text';
+      hint.textContent     = '';
+      valInput.placeholder = def.default || '';
+    } else {
+      valInput.type        = 'text';
+      hint.textContent     = '(JSON: number, string, true/false, or object)';
+      valInput.placeholder = 'e.g. 30 or "dark" or true';
+    }
+  } else {
+    valInput.type        = 'text';
+    hint.textContent     = '(JSON: number, string, true/false, or object)';
+    valInput.placeholder = 'e.g. 30 or "dark" or true';
+  }
+
   document.getElementById('setting-modal-overlay').style.display = '';
-  (key ? document.getElementById('setting-value-input') : keyInput).focus();
+  (key && def ? valInput : (key ? valInput : keyInput)).focus();
 }
 
 function closeSettingModal() {
   document.getElementById('setting-modal-overlay').style.display = 'none';
   _settingEditKey = null;
+  // Reset modal to defaults
+  const valInput = document.getElementById('setting-value-input');
+  valInput.type = 'text';
+  document.getElementById('setting-key-input').style.display = '';
+  document.getElementById('setting-key-label').style.display = '';
 }
 
 function settingModalOverlayClick(e) {
@@ -4135,34 +4583,48 @@ function settingModalOverlayClick(e) {
 }
 
 async function saveSetting() {
-  const key   = _settingEditKey || document.getElementById('setting-key-input').value.trim();
+  const def    = _settingEditKey ? SETTINGS_BY_KEY[_settingEditKey] : null;
+  const key    = _settingEditKey || document.getElementById('setting-key-input').value.trim();
   const rawVal = document.getElementById('setting-value-input').value.trim();
 
   if (!key) { alert('Key is required.'); return; }
-  if (!rawVal) { alert('Value is required.'); return; }
+  if (rawVal === '' && !def) { alert('Value is required.'); return; }
 
   let parsed;
-  try { parsed = JSON.parse(rawVal); }
-  catch { alert('Value must be valid JSON.\n\nExamples: 30  "dark"  true  {"x":1}'); return; }
+  if (def && def.type === 'number') {
+    parsed = Number(rawVal);
+    if (isNaN(parsed)) { alert('Expected a number.'); return; }
+  } else if (def && def.type === 'string') {
+    parsed = rawVal;
+  } else {
+    if (!rawVal) { alert('Value is required.'); return; }
+    try { parsed = JSON.parse(rawVal); }
+    catch { alert('Value must be valid JSON.\n\nExamples: 30  "dark"  true  {"x":1}'); return; }
+  }
 
-  const res = await apiFetch('/api/settings/' + encodeURIComponent(key), {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value: parsed }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    alert('Failed to save setting: ' + err);
+  try {
+    await apiFetch('/api/settings/' + encodeURIComponent(key), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: parsed }),
+    });
+  } catch (e) {
+    alert('Failed to save setting: ' + e.message);
     return;
   }
+
+  if (!_settingsValues[key]) _settingsValues[key] = {};
+  _settingsValues[key].value = parsed;
+
   closeSettingModal();
-  loadSettings();
+  renderSettingsSections();
 }
 
-async function deleteSetting(key) {
+async function deleteCustomSetting(key) {
   if (!confirm('Delete setting "' + key + '"?')) return;
-  const res = await apiFetch('/api/settings/' + encodeURIComponent(key), { method: 'DELETE' });
-  if (!res.ok) { alert('Failed to delete setting.'); return; }
-  loadSettings();
+  try {
+    await apiFetch('/api/settings/' + encodeURIComponent(key), { method: 'DELETE' });
+  } catch (e) { alert('Failed to delete setting.'); return; }
+  delete _settingsValues[key];
+  renderSettingsSections();
 }

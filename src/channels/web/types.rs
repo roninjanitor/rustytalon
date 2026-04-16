@@ -702,6 +702,30 @@ pub struct HealthResponse {
     pub channel: &'static str,
 }
 
+// --- Version ---
+
+#[derive(Debug, Serialize)]
+pub struct VersionResponse {
+    /// Current running version (from Cargo.toml at compile time).
+    pub version: &'static str,
+    /// Latest published version tag from GitHub releases, if the update check
+    /// was requested and succeeded.  `None` if not checked or the check failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest: Option<String>,
+    /// Whether a newer version is available (only set when `latest` is present).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_available: Option<bool>,
+    /// Direct URL to the GitHub release page for `latest`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_url: Option<String>,
+    /// Docker pull command for the latest image, if an update is available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker_pull: Option<String>,
+    /// Human-readable error if the update check failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

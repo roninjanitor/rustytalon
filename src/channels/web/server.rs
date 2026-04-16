@@ -174,7 +174,9 @@ pub async fn start_server(
             })?;
 
     // Public routes (no auth)
-    let public = Router::new().route("/api/health", get(health_handler));
+    let public = Router::new()
+        .route("/api/health", get(health_handler))
+        .route("/api/version", get(version_handler));
 
     // Protected routes (require auth)
     let auth_state = AuthState { token: auth_token };
@@ -407,6 +409,107 @@ async fn health_handler() -> Json<HealthResponse> {
         status: "healthy",
         channel: "gateway",
     })
+}
+
+// --- Version ---
+
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const GITHUB_REPO: &str = "roninjanitor/rustytalon";
+const DOCKER_IMAGE: &str = "ghcr.io/roninjanitor/rustytalon";
+
+#[derive(Deserialize)]
+struct VersionQuery {
+    #[serde(default)]
+    check: bool,
+}
+
+async fn version_handler(Query(params): Query<VersionQuery>) -> Json<VersionResponse> {
+    if !params.check {
+        return Json(VersionResponse {
+            version: CURRENT_VERSION,
+            latest: None,
+            update_available: None,
+            release_url: None,
+            docker_pull: None,
+            check_error: None,
+        });
+    }
+
+    // Fetch latest release from GitHub API.
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        GITHUB_REPO
+    );
+    let result = reqwest::Client::new()
+        .get(&url)
+        .header("User-Agent", "rustytalon")
+        .header("Accept", "application/vnd.github+json")
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await;
+
+    match result {
+        Err(e) => Json(VersionResponse {
+            version: CURRENT_VERSION,
+            latest: None,
+            update_available: None,
+            release_url: None,
+            docker_pull: None,
+            check_error: Some(format!("Could not reach GitHub: {e}")),
+        }),
+        Ok(resp) => {
+            #[derive(serde::Deserialize)]
+            struct GhRelease {
+                tag_name: String,
+                html_url: String,
+            }
+
+            match resp.json::<GhRelease>().await {
+                Err(e) => Json(VersionResponse {
+                    version: CURRENT_VERSION,
+                    latest: None,
+                    update_available: None,
+                    release_url: None,
+                    docker_pull: None,
+                    check_error: Some(format!("Unexpected response from GitHub: {e}")),
+                }),
+                Ok(release) => {
+                    let latest = release.tag_name.trim_start_matches('v').to_string();
+                    let update_available = semver_gt(&latest, CURRENT_VERSION);
+                    let docker_pull = if update_available {
+                        Some(format!("docker pull {}:{}", DOCKER_IMAGE, release.tag_name))
+                    } else {
+                        None
+                    };
+                    Json(VersionResponse {
+                        version: CURRENT_VERSION,
+                        latest: Some(latest),
+                        update_available: Some(update_available),
+                        release_url: Some(release.html_url),
+                        docker_pull,
+                        check_error: None,
+                    })
+                }
+            }
+        }
+    }
+}
+
+/// Returns true if `candidate` is a strictly higher semver than `current`.
+/// Falls back to simple string inequality if either value is not valid semver,
+/// so the UI still shows *something* useful in that case.
+fn semver_gt(candidate: &str, current: &str) -> bool {
+    fn parse(s: &str) -> Option<(u64, u64, u64)> {
+        let mut parts = s.split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next()?.parse::<u64>().ok()?;
+        Some((major, minor, patch))
+    }
+    match (parse(candidate), parse(current)) {
+        (Some(c), Some(r)) => c > r,
+        _ => candidate != current,
+    }
 }
 
 // --- Chat handlers ---
@@ -2618,39 +2721,39 @@ async fn settings_set_handler(
     State(state): State<Arc<GatewayState>>,
     Path(key): Path<String>,
     Json(body): Json<SettingWriteRequest>,
-) -> Result<StatusCode, StatusCode> {
-    let store = state
-        .store
-        .as_ref()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
     store
         .set_setting(&state.user_id, &key, &body.value)
         .await
         .map_err(|e| {
             tracing::error!("Failed to set setting '{}': {}", key, e);
-            StatusCode::INTERNAL_SERVER_ERROR
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         })?;
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(serde_json::json!({ "ok": true, "key": key })))
 }
 
 async fn settings_delete_handler(
     State(state): State<Arc<GatewayState>>,
     Path(key): Path<String>,
-) -> Result<StatusCode, StatusCode> {
-    let store = state
-        .store
-        .as_ref()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
     store
         .delete_setting(&state.user_id, &key)
         .await
         .map_err(|e| {
             tracing::error!("Failed to delete setting '{}': {}", key, e);
-            StatusCode::INTERNAL_SERVER_ERROR
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         })?;
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(serde_json::json!({ "ok": true, "key": key })))
 }
 
 async fn settings_export_handler(
