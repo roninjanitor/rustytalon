@@ -362,7 +362,7 @@ impl Database for PgBackend {
                 COUNT(*)::bigint AS total_calls,
                 COUNT(*) FILTER (WHERE success = true)::bigint AS successful_calls,
                 COUNT(*) FILTER (WHERE success = false)::bigint AS failed_calls,
-                COALESCE(AVG(duration_ms), 0.0) AS avg_duration_ms,
+                COALESCE(AVG(duration_ms)::float8, 0.0) AS avg_duration_ms,
                 COALESCE(SUM(cost), 0) AS total_cost
             FROM job_actions
             {where_clause}

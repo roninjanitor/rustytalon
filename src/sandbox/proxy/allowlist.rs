@@ -145,13 +145,9 @@ impl Default for DomainAllowlist {
 /// Parse host from a URL string.
 pub fn extract_host(url: &str) -> Option<String> {
     // Determine scheme and extract the rest
-    let rest = if let Some(stripped) = url.strip_prefix("https://") {
-        stripped
-    } else if let Some(stripped) = url.strip_prefix("http://") {
-        stripped
-    } else {
-        return None;
-    };
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
 
     // Find the end of the host (start of path, query, or end of string)
     let host_end = rest.find('/').unwrap_or(rest.len());

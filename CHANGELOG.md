@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-04-17
+
+### Fixed
+- Analytics tab in the web UI returning `ERR_EMPTY_RESPONSE` on PostgreSQL — `AVG(duration_ms)` over an `INTEGER` column returns `NUMERIC` in PostgreSQL, but the tool-analytics handler read it as `float8`, causing a `tokio-postgres` type-mismatch panic that dropped the connection before any HTTP response was sent; fixed by adding an explicit `::float8` cast in the SQL query
+
 ## [0.2.3] - 2026-04-16
 
 ### Added
