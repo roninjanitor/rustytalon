@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-04-19
+
 ### Fixed
 - **PostgreSQL FK violation on LLM call recording** — `ensure_conversation` was called fire-and-forget inside `persist_turn` *after* the agentic loop finished, so the `conversations` row often didn't exist yet when `TrackedProvider` tried to `INSERT INTO llm_calls`; PostgreSQL's strict FK enforcement rejected every insert. Fixed by awaiting `ensure_conversation` synchronously *before* `run_agentic_loop`. libSQL was unaffected because SQLite disables FK checks by default.
 - **Analytics "Failed to fetch" on error paths** — the `GET /api/analytics/cost-over-time` error handler returned `500` with no body; `apiFetch` calling `res.json()` on an empty body in certain browser/fetch implementations surfaces as `TypeError: Failed to fetch` rather than a proper HTTP error. Fixed by returning `{"data":[]}` like the other analytics endpoints.
