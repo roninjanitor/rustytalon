@@ -3587,6 +3587,7 @@ async function loadAnalytics() {
     analyticsModels = models.models || [];
     analyticsTools  = tools.tools  || [];
 
+    renderAnalyticsCostWarning(models);
     renderAnalyticsSummary(models);
     renderCostChart(chart.data || []);
     renderJobsSummary(jobs);
@@ -3599,6 +3600,19 @@ async function loadAnalytics() {
     document.getElementById('analytics-summary').innerHTML =
       '<div class="empty-state">Failed to load analytics: ' + escapeHtml(e.message) + '</div>';
   }
+}
+
+function renderAnalyticsCostWarning(data) {
+  const banner = document.getElementById('analytics-cost-warning');
+  if (!banner) return;
+  const models = data.unconfigured_models || [];
+  if (models.length === 0) { banner.innerHTML = ''; return; }
+  const list = models.map(m => `<code>${escapeHtml(m)}</code>`).join(', ');
+  banner.innerHTML = `<div class="analytics-cost-notice">
+    <span>&#9888; Cost data may be inaccurate for ${list} — no price rate is configured for
+    ${models.length === 1 ? 'this model' : 'these models'}.
+    <button class="btn-link" onclick="switchTab('settings')">Set prices in Settings &#8594;</button></span>
+  </div>`;
 }
 
 function renderAnalyticsSummary(data) {
@@ -4162,6 +4176,12 @@ const SETTINGS_SECTIONS = [
       { key: 'audit_retention_days', label: 'Log retention', desc: 'How many days to keep audit log entries before they are pruned', type: 'number', default: 90, unit: 'days' },
     ],
   },
+  {
+    id: 'llm',
+    label: 'LLM Model Costs',
+    special: 'model_costs_table',
+    settings: [],
+  },
 ];
 
 // Flat lookup: key -> catalog entry
@@ -4315,8 +4335,10 @@ function renderSettingsSections(notice) {
     html.push(renderSettingsSection(sec));
   }
 
-  // Custom section: any DB keys not in the catalog
-  const customRows = Object.entries(_settingsValues).filter(([k]) => !knownKeys.has(k));
+  // Custom section: any DB keys not in the catalog and not handled by a special section.
+  const customRows = Object.entries(_settingsValues).filter(
+    ([k]) => !knownKeys.has(k) && !k.startsWith(MODEL_COSTS_PREFIX)
+  );
   if (customRows.length > 0) {
     const rows = customRows.map(([key, row]) => {
       const val = escapeHtml(JSON.stringify(row.value));
@@ -4343,11 +4365,150 @@ function renderSettingsSections(notice) {
 }
 
 function renderSettingsSection(sec) {
+  if (sec.special === 'model_costs_table') return renderModelCostsSection(sec);
   const rows = sec.settings.map(s => renderSettingRow(s)).join('');
   return `<div class="settings-section">
     <div class="settings-section-header"><span class="settings-section-title">${escapeHtml(sec.label)}</span></div>
     <div class="settings-section-body">${rows}</div>
   </div>`;
+}
+
+// ── LLM Model Costs section ───────────────────────────────────────────────────
+
+const MODEL_COSTS_PREFIX = 'llm.model_costs.';
+
+function renderModelCostsSection(sec) {
+  const entries = Object.entries(_settingsValues)
+    .filter(([k]) => k.startsWith(MODEL_COSTS_PREFIX))
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  const rows = entries.map(([key, row]) => {
+    const modelId = key.slice(MODEL_COSTS_PREFIX.length);
+    const val = (row && row.value) ? row.value : {};
+    const inp = val.input  !== undefined ? val.input  : '—';
+    const out = val.output !== undefined ? val.output : '—';
+    return `<div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">${escapeHtml(modelId)}</div>
+        <div class="settings-row-desc">Input: <code>$${escapeHtml(String(inp))}</code> &nbsp; Output: <code>$${escapeHtml(String(out))}</code> per token</div>
+      </div>
+      <div class="settings-row-control">
+        <button class="btn-icon settings-edit-btn" title="Edit" onclick="editModelCost(${JSON.stringify(modelId)})">&#9998;</button>
+        <button class="btn-icon btn-danger-icon" title="Remove" onclick="deleteModelCost(${JSON.stringify(modelId)})">&#10005;</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  const emptyNote = entries.length === 0
+    ? `<div class="settings-row"><div class="settings-row-info"><div class="settings-row-desc">
+        No custom rates configured. Built-in rates are used for known models; unknown models trigger a warning in Analytics.
+       </div></div></div>`
+    : '';
+
+  return `<div class="settings-section">
+    <div class="settings-section-header"><span class="settings-section-title">${escapeHtml(sec.label)}</span>
+      <span class="settings-section-desc">Per-token USD prices for LLM models. Overrides built-in rates.</span>
+    </div>
+    <div class="settings-section-body">
+      ${rows}${emptyNote}
+      <div class="settings-row" id="model-cost-add-row">
+        <div class="settings-row-info">
+          <div class="settings-row-desc">Add a cost rate for a model not in the built-in list.</div>
+        </div>
+        <div class="settings-row-control">
+          <button class="btn-secondary" onclick="showAddModelCostForm()">+ Add model cost</button>
+        </div>
+      </div>
+      <div id="model-cost-form" style="display:none;" class="settings-row">
+        <div class="settings-row-info" style="flex:1">
+          <div class="model-cost-form">
+            <input id="mc-model-id" type="text" class="settings-inline-input mc-model-input"
+                   placeholder="Model ID (e.g. claude-haiku-4-5-20251001)">
+            <input id="mc-input"    type="text" class="settings-inline-input mc-cost-input"
+                   placeholder="Input $/token (e.g. 0.0000008)"
+                   onkeydown="if(event.key==='Enter')commitAddModelCost();if(event.key==='Escape')hideAddModelCostForm()">
+            <input id="mc-output"   type="text" class="settings-inline-input mc-cost-input"
+                   placeholder="Output $/token (e.g. 0.000004)"
+                   onkeydown="if(event.key==='Enter')commitAddModelCost();if(event.key==='Escape')hideAddModelCostForm()">
+            <button class="btn-secondary" onclick="commitAddModelCost()">Save</button>
+            <button class="btn-icon" onclick="hideAddModelCostForm()" title="Cancel">&#10005;</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function showAddModelCostForm() {
+  const form = document.getElementById('model-cost-form');
+  const addRow = document.getElementById('model-cost-add-row');
+  if (form) form.style.display = '';
+  if (addRow) addRow.style.display = 'none';
+  const inp = document.getElementById('mc-model-id');
+  if (inp) { inp.value = ''; inp.focus(); }
+  const inpCost = document.getElementById('mc-input');
+  if (inpCost) inpCost.value = '';
+  const outCost = document.getElementById('mc-output');
+  if (outCost) outCost.value = '';
+}
+
+function hideAddModelCostForm() {
+  const form = document.getElementById('model-cost-form');
+  const addRow = document.getElementById('model-cost-add-row');
+  if (form) form.style.display = 'none';
+  if (addRow) addRow.style.display = '';
+}
+
+async function commitAddModelCost() {
+  const modelId = (document.getElementById('mc-model-id').value || '').trim();
+  const input   = (document.getElementById('mc-input').value   || '').trim();
+  const output  = (document.getElementById('mc-output').value  || '').trim();
+  if (!modelId) { alert('Model ID is required.'); return; }
+  if (!input || isNaN(parseFloat(input)))  { alert('Enter a valid input cost (e.g. 0.0000008).'); return; }
+  if (!output || isNaN(parseFloat(output))) { alert('Enter a valid output cost (e.g. 0.000004).'); return; }
+  await saveModelCost(modelId, input, output);
+}
+
+async function editModelCost(modelId) {
+  const key    = MODEL_COSTS_PREFIX + modelId;
+  const stored = _settingsValues[key];
+  const val    = (stored && stored.value) ? stored.value : {};
+  const input  = prompt('Input cost per token (USD):', val.input  || '');
+  if (input  === null) return;
+  const output = prompt('Output cost per token (USD):', val.output || '');
+  if (output === null) return;
+  const inp = input.trim();
+  const out = output.trim();
+  if (isNaN(parseFloat(inp)) || isNaN(parseFloat(out))) { alert('Costs must be decimal numbers.'); return; }
+  await saveModelCost(modelId, inp, out);
+}
+
+async function saveModelCost(modelId, input, output) {
+  const key = MODEL_COSTS_PREFIX + modelId;
+  try {
+    await apiFetch('/api/settings/' + encodeURIComponent(key), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: { input, output } }),
+    });
+    if (!_settingsValues[key]) _settingsValues[key] = {};
+    _settingsValues[key].value = { input, output };
+    renderSettingsSections(null);
+  } catch (e) {
+    alert('Failed to save model cost: ' + e.message);
+  }
+}
+
+async function deleteModelCost(modelId) {
+  if (!confirm('Remove cost configuration for "' + modelId + '"?')) return;
+  const key = MODEL_COSTS_PREFIX + modelId;
+  try {
+    await apiFetch('/api/settings/' + encodeURIComponent(key), { method: 'DELETE' });
+    delete _settingsValues[key];
+    renderSettingsSections(null);
+  } catch (e) {
+    alert('Failed to remove model cost: ' + e.message);
+  }
 }
 
 function renderSettingRow(def) {

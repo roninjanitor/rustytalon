@@ -943,8 +943,8 @@ impl Database for LibSqlBackend {
         let id = Uuid::new_v4();
         conn.execute(
                 r#"
-                INSERT INTO llm_calls (id, job_id, conversation_id, provider, model, input_tokens, output_tokens, cost, purpose, latency_ms)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                INSERT INTO llm_calls (id, job_id, conversation_id, provider, model, input_tokens, output_tokens, cost, purpose, latency_ms, cost_unknown)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                 "#,
                 params![
                     id.to_string(),
@@ -957,6 +957,7 @@ impl Database for LibSqlBackend {
                     record.cost.to_string(),
                     opt_text(record.purpose),
                     record.latency_ms as i64,
+                    record.cost_unknown as i64,
                 ],
             )
             .await
@@ -988,7 +989,9 @@ impl Database for LibSqlBackend {
                     THEN COALESCE(SUM(CAST(cost AS REAL)), 0.0) / COUNT(*)
                     ELSE 0.0
                 END AS avg_cost_per_call,
-                AVG(CAST(latency_ms AS REAL)) AS avg_latency_ms
+                AVG(CAST(latency_ms AS REAL)) AS avg_latency_ms,
+                COALESCE(SUM(CASE WHEN cost_unknown = 1 THEN 1 ELSE 0 END), 0)
+                    AS unconfigured_calls
             FROM llm_calls
             {where_clause}
             GROUP BY provider, model
@@ -1033,6 +1036,9 @@ impl Database for LibSqlBackend {
                 .get(6)
                 .map_err(|e| DatabaseError::Query(e.to_string()))?;
             let avg_latency_ms: Option<f64> = row.get(7).ok();
+            let unconfigured_calls: i64 = row
+                .get(8)
+                .map_err(|e| DatabaseError::Query(e.to_string()))?;
 
             stats.push(LlmCallStats {
                 provider,
@@ -1045,6 +1051,7 @@ impl Database for LibSqlBackend {
                 avg_latency_ms,
                 // libSQL lacks a percentile aggregate; always NULL here.
                 p95_latency_ms: None,
+                unconfigured_calls,
             });
         }
 
@@ -3400,6 +3407,7 @@ mod tests {
             cost: Decimal::new(5, 4), // 0.0005
             purpose: Some("complete"),
             latency_ms: 1234,
+            cost_unknown: false,
         };
         backend.record_llm_call(&record).await.unwrap();
 

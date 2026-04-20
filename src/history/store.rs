@@ -28,6 +28,10 @@ pub struct LlmCallRecord<'a> {
     pub purpose: Option<&'a str>,
     /// End-to-end latency of the LLM call in milliseconds.
     pub latency_ms: u64,
+    /// True when no user-configured or built-in cost rate was found for this
+    /// model. The recorded cost used the default fallback rate and may be
+    /// inaccurate. Users should set `llm.model_costs.<model_id>` in Settings.
+    pub cost_unknown: bool,
 }
 
 /// Database store for the agent.
@@ -381,8 +385,8 @@ impl Store {
 
         conn.execute(
             r#"
-            INSERT INTO llm_calls (id, job_id, conversation_id, provider, model, input_tokens, output_tokens, cost, purpose, latency_ms)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            INSERT INTO llm_calls (id, job_id, conversation_id, provider, model, input_tokens, output_tokens, cost, purpose, latency_ms, cost_unknown)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             "#,
             &[
                 &id,
@@ -395,6 +399,7 @@ impl Store {
                 &record.cost,
                 &record.purpose,
                 &(record.latency_ms as i64),
+                &record.cost_unknown,
             ],
         )
         .await?;

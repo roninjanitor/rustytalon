@@ -1122,6 +1122,7 @@ mod tests {
             avg_cost_per_call_usd: "0.000029".to_string(),
             avg_latency_ms: Some(823.5),
             p95_latency_ms: Some(1200.0),
+            unconfigured_calls: 0,
         };
         let v = serde_json::to_value(&stats).unwrap();
         assert_eq!(v["provider"], "anthropic");
@@ -1143,6 +1144,7 @@ mod tests {
             avg_cost_per_call_usd: "0.000010".to_string(),
             avg_latency_ms: None,
             p95_latency_ms: None,
+            unconfigured_calls: 0,
         };
         let v = serde_json::to_value(&stats).unwrap();
         assert!(
@@ -1158,6 +1160,7 @@ mod tests {
             total_input_tokens: 1_000_000,
             total_output_tokens: 500_000,
             total_cost_usd: "1.5000".to_string(),
+            unconfigured_models: vec![],
         };
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["total_input_tokens"], 1_000_000);
@@ -1228,6 +1231,10 @@ pub struct ModelAnalyticsResponse {
     pub total_output_tokens: i64,
     /// Grand total cost across all models (USD string).
     pub total_cost_usd: String,
+    /// Models that have calls recorded with an unknown cost rate.
+    /// Cost data for these models is inaccurate — the user should configure
+    /// `llm.model_costs.<model_id>` in Settings.
+    pub unconfigured_models: Vec<String>,
 }
 
 /// Per-model stats row returned by the analytics endpoint.
@@ -1248,6 +1255,9 @@ pub struct ModelStats {
     /// 95th-percentile latency in milliseconds (PostgreSQL only; null on libSQL).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub p95_latency_ms: Option<f64>,
+    /// Number of calls where no configured or built-in cost rate was found.
+    /// Non-zero means cost data for this model is unreliable.
+    pub unconfigured_calls: i64,
 }
 
 /// Response for GET /api/analytics/jobs — job health summary.

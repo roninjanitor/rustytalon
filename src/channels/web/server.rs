@@ -2939,6 +2939,7 @@ async fn analytics_models_handler(
                     total_input_tokens: 0,
                     total_output_tokens: 0,
                     total_cost_usd: "0".to_string(),
+                    unconfigured_models: vec![],
                 }),
             )
                 .into_response();
@@ -2952,6 +2953,13 @@ async fn analytics_models_handler(
             let total_output_tokens: i64 = stats.iter().map(|s| s.total_output_tokens).sum();
             let total_cost: rust_decimal::Decimal = stats.iter().map(|s| s.total_cost).sum();
 
+            let mut unconfigured_models: Vec<String> = stats
+                .iter()
+                .filter(|s| s.unconfigured_calls > 0)
+                .map(|s| s.model.clone())
+                .collect();
+            unconfigured_models.sort();
+
             let models = stats
                 .into_iter()
                 .map(|s| ModelStats {
@@ -2964,6 +2972,7 @@ async fn analytics_models_handler(
                     avg_cost_per_call_usd: s.avg_cost_per_call.to_string(),
                     avg_latency_ms: s.avg_latency_ms,
                     p95_latency_ms: s.p95_latency_ms,
+                    unconfigured_calls: s.unconfigured_calls,
                 })
                 .collect();
 
@@ -2972,6 +2981,7 @@ async fn analytics_models_handler(
                 total_input_tokens,
                 total_output_tokens,
                 total_cost_usd: total_cost.to_string(),
+                unconfigured_models,
             })
             .into_response()
         }
@@ -2984,6 +2994,7 @@ async fn analytics_models_handler(
                     total_input_tokens: 0,
                     total_output_tokens: 0,
                     total_cost_usd: "0".to_string(),
+                    unconfigured_models: vec![],
                 }),
             )
                 .into_response()
@@ -3105,7 +3116,11 @@ async fn analytics_cost_over_time_handler(
         }
         Err(e) => {
             tracing::warn!(error = %e, "Failed to fetch cost-over-time");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(CostOverTimeResponse { data: vec![] }),
+            )
+                .into_response()
         }
     }
 }

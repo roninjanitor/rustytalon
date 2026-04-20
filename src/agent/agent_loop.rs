@@ -1096,6 +1096,29 @@ impl Agent {
             thread.messages()
         };
 
+        // Ensure the conversation row exists in the DB *before* making any LLM
+        // calls.  TrackedProvider records each call with this thread_id as the
+        // conversation_id (FK → conversations.id).  PostgreSQL enforces the
+        // constraint strictly, so the INSERT into llm_calls would fail with a
+        // FK violation if the conversation row hasn't been committed yet.
+        // (SQLite/libSQL skips FK checks by default, masking this race.)
+        if let Some(store) = self.store()
+            && let Err(e) = store
+                .ensure_conversation(
+                    thread_id,
+                    &message.channel,
+                    &self.config.primary_user_id,
+                    None,
+                )
+                .await
+        {
+            tracing::warn!(
+                "Failed to ensure conversation {} before LLM call: {}",
+                thread_id,
+                e
+            );
+        }
+
         // Send thinking status
         let _ = self
             .channels

@@ -247,14 +247,16 @@ impl Database for PgBackend {
                 COUNT(*)::bigint AS total_calls,
                 COALESCE(SUM(input_tokens), 0)::bigint AS total_input_tokens,
                 COALESCE(SUM(output_tokens), 0)::bigint AS total_output_tokens,
-                COALESCE(SUM(cost), 0) AS total_cost,
+                COALESCE(SUM(cost), 0)::numeric AS total_cost,
                 CASE WHEN COUNT(*) > 0
-                    THEN COALESCE(SUM(cost), 0) / COUNT(*)
-                    ELSE 0
+                    THEN COALESCE(SUM(cost), 0)::numeric / COUNT(*)
+                    ELSE 0::numeric
                 END AS avg_cost_per_call,
                 AVG(latency_ms)::float8 AS avg_latency_ms,
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
-                    FILTER (WHERE latency_ms IS NOT NULL) AS p95_latency_ms
+                    FILTER (WHERE latency_ms IS NOT NULL) AS p95_latency_ms,
+                COALESCE(SUM(CASE WHEN cost_unknown THEN 1 ELSE 0 END), 0)::bigint
+                    AS unconfigured_calls
             FROM llm_calls
             {where_clause}
             GROUP BY provider, model
@@ -276,6 +278,7 @@ impl Database for PgBackend {
                 avg_cost_per_call: row.get("avg_cost_per_call"),
                 avg_latency_ms: row.get("avg_latency_ms"),
                 p95_latency_ms: row.get("p95_latency_ms"),
+                unconfigured_calls: row.get("unconfigured_calls"),
             })
             .collect();
 
@@ -309,7 +312,7 @@ impl Database for PgBackend {
                         FILTER (WHERE completed_at IS NOT NULL),
                     0.0
                 ) AS avg_duration_secs,
-                COALESCE(SUM(actual_cost), 0) AS total_cost
+                COALESCE(SUM(actual_cost), 0)::numeric AS total_cost
             FROM agent_jobs
             {where_clause}
             "#

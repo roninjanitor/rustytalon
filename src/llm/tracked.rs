@@ -62,29 +62,67 @@ impl TrackedProvider {
         }
     }
 
+    /// Resolve per-token cost rates for the current model.
+    ///
+    /// Priority:
+    /// 1. User-configured setting `llm.model_costs.<model_id>` (JSON object with
+    ///    `"input"` and `"output"` decimal string fields).
+    /// 2. Built-in hardcoded table (`costs::model_cost`).
+    /// 3. Default fallback (`costs::default_cost`) — sets `cost_unknown = true`
+    ///    and logs a warning so the user knows to configure the model.
+    ///
+    /// Returns `(input_rate, output_rate, cost_unknown)`.
+    async fn resolve_cost_rates(&self) -> (Decimal, Decimal, bool) {
+        use crate::llm::costs;
+
+        let model = self.inner.model_name();
+        let setting_key = format!("llm.model_costs.{model}");
+
+        // 1. Check user-configured setting.
+        if let Ok(Some(value)) = self.db.get_setting("default", &setting_key).await {
+            if let (Some(input), Some(output)) = (
+                value.get("input").and_then(|v| v.as_str()),
+                value.get("output").and_then(|v| v.as_str()),
+            ) {
+                let parsed_input = input.parse::<Decimal>();
+                let parsed_output = output.parse::<Decimal>();
+                if let (Ok(i), Ok(o)) = (parsed_input, parsed_output) {
+                    return (i, o, false);
+                }
+            }
+            tracing::warn!(
+                model,
+                setting = setting_key,
+                "Setting found but could not parse input/output cost fields; \
+                 expected {{\"input\": \"0.000003\", \"output\": \"0.000015\"}}"
+            );
+        }
+
+        // 2. Fall back to built-in table.
+        if let Some((i, o)) = costs::model_cost(model) {
+            return (i, o, false);
+        }
+
+        // 3. Default fallback — cost data is unreliable.
+        tracing::warn!(
+            model,
+            "No cost rate configured or known for this model. \
+             Cost data will be inaccurate. \
+             Set `llm.model_costs.{model}` in Settings: \
+             {{\"input\": \"<per-token USD>\", \"output\": \"<per-token USD>\"}}"
+        );
+        let (i, o) = costs::default_cost();
+        (i, o, true)
+    }
+
     /// Record an LLM call to the database.
     ///
     /// Best-effort: logs a warning on failure rather than propagating the error.
-    async fn record_call(
-        &self,
-        input_tokens: u32,
-        output_tokens: u32,
-        cost: Decimal,
-        purpose: &str,
-        latency_ms: u64,
-        conversation_id: Option<uuid::Uuid>,
-    ) {
-        let record = crate::history::LlmCallRecord {
-            job_id: None,
-            conversation_id,
-            provider: &self.provider_name,
-            model: self.inner.model_name(),
-            input_tokens,
-            output_tokens,
-            cost,
-            purpose: Some(purpose),
-            latency_ms,
-        };
+    async fn record_call(&self, record: crate::history::LlmCallRecord<'_>) {
+        let input_tokens = record.input_tokens;
+        let output_tokens = record.output_tokens;
+        let cost = record.cost;
+        let latency_ms = record.latency_ms;
 
         if let Err(e) = self.db.record_llm_call(&record).await {
             tracing::warn!(
@@ -137,17 +175,21 @@ impl LlmProvider for TrackedProvider {
             match self.inner.complete(request.clone()).await {
                 Ok(response) => {
                     let latency_ms = start.elapsed().as_millis() as u64;
-                    let cost = self
-                        .inner
-                        .calculate_cost(response.input_tokens, response.output_tokens);
-                    self.record_call(
-                        response.input_tokens,
-                        response.output_tokens,
+                    let (input_rate, output_rate, cost_unknown) = self.resolve_cost_rates().await;
+                    let cost = input_rate * Decimal::from(response.input_tokens)
+                        + output_rate * Decimal::from(response.output_tokens);
+                    self.record_call(crate::history::LlmCallRecord {
+                        job_id: None,
+                        conversation_id: None,
+                        provider: &self.provider_name,
+                        model: self.inner.model_name(),
+                        input_tokens: response.input_tokens,
+                        output_tokens: response.output_tokens,
                         cost,
-                        "complete",
+                        cost_unknown,
+                        purpose: Some("complete"),
                         latency_ms,
-                        None,
-                    )
+                    })
                     .await;
                     return Ok(response);
                 }
@@ -199,17 +241,21 @@ impl LlmProvider for TrackedProvider {
             match self.inner.complete_with_tools(request.clone()).await {
                 Ok(response) => {
                     let latency_ms = start.elapsed().as_millis() as u64;
-                    let cost = self
-                        .inner
-                        .calculate_cost(response.input_tokens, response.output_tokens);
-                    self.record_call(
-                        response.input_tokens,
-                        response.output_tokens,
-                        cost,
-                        "complete_with_tools",
-                        latency_ms,
+                    let (input_rate, output_rate, cost_unknown) = self.resolve_cost_rates().await;
+                    let cost = input_rate * Decimal::from(response.input_tokens)
+                        + output_rate * Decimal::from(response.output_tokens);
+                    self.record_call(crate::history::LlmCallRecord {
+                        job_id: None,
                         conversation_id,
-                    )
+                        provider: &self.provider_name,
+                        model: self.inner.model_name(),
+                        input_tokens: response.input_tokens,
+                        output_tokens: response.output_tokens,
+                        cost,
+                        cost_unknown,
+                        purpose: Some("complete_with_tools"),
+                        latency_ms,
+                    })
                     .await;
                     return Ok(response);
                 }
@@ -281,6 +327,10 @@ pub struct LlmCallStats {
     pub avg_latency_ms: Option<f64>,
     /// 95th-percentile latency in milliseconds (null on backends that lack percentile functions).
     pub p95_latency_ms: Option<f64>,
+    /// Number of calls recorded without a known cost rate (used the default
+    /// fallback). Non-zero means cost data for this model is unreliable and
+    /// the user should configure `llm.model_costs.<model_id>` in Settings.
+    pub unconfigured_calls: i64,
 }
 
 #[cfg(test)]
