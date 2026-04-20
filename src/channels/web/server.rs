@@ -3116,7 +3116,11 @@ async fn analytics_cost_over_time_handler(
         }
         Err(e) => {
             tracing::warn!(error = %e, "Failed to fetch cost-over-time");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(CostOverTimeResponse { data: vec![] }),
+            )
+                .into_response()
         }
     }
 }

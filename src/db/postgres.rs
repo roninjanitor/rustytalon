@@ -247,10 +247,10 @@ impl Database for PgBackend {
                 COUNT(*)::bigint AS total_calls,
                 COALESCE(SUM(input_tokens), 0)::bigint AS total_input_tokens,
                 COALESCE(SUM(output_tokens), 0)::bigint AS total_output_tokens,
-                COALESCE(SUM(cost), 0) AS total_cost,
+                COALESCE(SUM(cost), 0)::numeric AS total_cost,
                 CASE WHEN COUNT(*) > 0
-                    THEN COALESCE(SUM(cost), 0) / COUNT(*)
-                    ELSE 0
+                    THEN COALESCE(SUM(cost), 0)::numeric / COUNT(*)
+                    ELSE 0::numeric
                 END AS avg_cost_per_call,
                 AVG(latency_ms)::float8 AS avg_latency_ms,
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
@@ -312,7 +312,7 @@ impl Database for PgBackend {
                         FILTER (WHERE completed_at IS NOT NULL),
                     0.0
                 ) AS avg_duration_secs,
-                COALESCE(SUM(actual_cost), 0) AS total_cost
+                COALESCE(SUM(actual_cost), 0)::numeric AS total_cost
             FROM agent_jobs
             {where_clause}
             "#
