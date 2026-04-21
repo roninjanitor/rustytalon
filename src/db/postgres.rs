@@ -310,7 +310,7 @@ impl Database for PgBackend {
                 COALESCE(
                     AVG(EXTRACT(EPOCH FROM (completed_at - started_at)))
                         FILTER (WHERE completed_at IS NOT NULL),
-                    0.0
+                    0.0::float8
                 ) AS avg_duration_secs,
                 COALESCE(SUM(actual_cost), 0)::numeric AS total_cost
             FROM agent_jobs
@@ -366,7 +366,7 @@ impl Database for PgBackend {
                 COUNT(*) FILTER (WHERE success = true)::bigint AS successful_calls,
                 COUNT(*) FILTER (WHERE success = false)::bigint AS failed_calls,
                 COALESCE(AVG(duration_ms)::float8, 0.0) AS avg_duration_ms,
-                COALESCE(SUM(cost), 0) AS total_cost
+                COALESCE(SUM(cost), 0)::numeric AS total_cost
             FROM job_actions
             {where_clause}
             GROUP BY tool_name

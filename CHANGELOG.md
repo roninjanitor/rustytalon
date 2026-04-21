@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-04-21
+
+### Fixed
+- **PostgreSQL analytics panic (`ERR_EMPTY_RESPONSE`)** — `COALESCE(AVG(EXTRACT(EPOCH FROM ...)), 0.0)` in `get_job_analytics` resolved to type `numeric` at parse time because the `0.0` fallback literal is a PostgreSQL `numeric` constant. When all jobs have NULL `completed_at`, `AVG` returns NULL and COALESCE falls back to the numeric `0.0`, which `tokio-postgres` cannot decode as `f64`, causing a panic that drops the TCP connection before any HTTP response is sent. Fixed by casting the fallback to `0.0::float8`.
+- **Analytics error paths returning empty body** — `GET /api/analytics/jobs` and `GET /api/analytics/tools` error handlers returned `500` with no body; the frontend `apiFetch` surfaced this as `TypeError: Failed to fetch`. Fixed by returning zero-value JSON on error, consistent with the other analytics endpoints.
+
 ## [0.2.5] - 2026-04-19
 
 ### Fixed
