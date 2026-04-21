@@ -3039,7 +3039,19 @@ async fn analytics_jobs_handler(
         .into_response(),
         Err(e) => {
             tracing::warn!(error = %e, "Failed to fetch job analytics");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(JobAnalyticsResponse {
+                    total_jobs: 0,
+                    completed_jobs: 0,
+                    failed_jobs: 0,
+                    in_progress_jobs: 0,
+                    success_rate: 0.0,
+                    avg_duration_secs: 0.0,
+                    total_cost_usd: "0".to_string(),
+                }),
+            )
+                .into_response()
         }
     }
 }
@@ -3078,7 +3090,11 @@ async fn analytics_tools_handler(
         }
         Err(e) => {
             tracing::warn!(error = %e, "Failed to fetch tool analytics");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ToolAnalyticsResponse { tools: vec![] }),
+            )
+                .into_response()
         }
     }
 }
