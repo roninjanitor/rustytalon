@@ -2962,13 +2962,13 @@ async fn analytics_models_handler(
 
             // Remove models the user has since configured in Settings so the
             // warning doesn't persist after they've added a price.
-            if !unconfigured_models.is_empty() {
-                if let Ok(settings) = db.get_all_settings(&state.user_id).await {
-                    unconfigured_models.retain(|model| {
-                        let key = format!("llm.model_costs.{model}");
-                        !settings.contains_key(&key)
-                    });
-                }
+            if !unconfigured_models.is_empty()
+                && let Ok(settings) = db.get_all_settings(&state.user_id).await
+            {
+                unconfigured_models.retain(|model| {
+                    let key = format!("llm.model_costs.{model}");
+                    !settings.contains_key(&key)
+                });
             }
 
             unconfigured_models.sort();
