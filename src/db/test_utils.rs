@@ -239,6 +239,16 @@ impl Database for MockDatabase {
         unimplemented!()
     }
 
+    async fn save_tool_event(
+        &self,
+        _tool_name: &str,
+        _success: bool,
+        _duration_ms: u64,
+        _cost: Decimal,
+    ) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+
     async fn save_estimation_snapshot(
         &self,
         _: Uuid,

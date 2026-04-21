@@ -2953,11 +2953,24 @@ async fn analytics_models_handler(
             let total_output_tokens: i64 = stats.iter().map(|s| s.total_output_tokens).sum();
             let total_cost: rust_decimal::Decimal = stats.iter().map(|s| s.total_cost).sum();
 
+            // Collect models that have historical calls with no configured cost rate.
             let mut unconfigured_models: Vec<String> = stats
                 .iter()
                 .filter(|s| s.unconfigured_calls > 0)
                 .map(|s| s.model.clone())
                 .collect();
+
+            // Remove models the user has since configured in Settings so the
+            // warning doesn't persist after they've added a price.
+            if !unconfigured_models.is_empty() {
+                if let Ok(settings) = db.get_all_settings(&state.user_id).await {
+                    unconfigured_models.retain(|model| {
+                        let key = format!("llm.model_costs.{model}");
+                        !settings.contains_key(&key)
+                    });
+                }
+            }
+
             unconfigured_models.sort();
 
             let models = stats

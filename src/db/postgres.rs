@@ -218,6 +218,29 @@ impl Database for PgBackend {
         self.store.get_job_actions(job_id).await
     }
 
+    async fn save_tool_event(
+        &self,
+        tool_name: &str,
+        success: bool,
+        duration_ms: u64,
+        cost: Decimal,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.store.conn().await?;
+        conn.execute(
+            r#"INSERT INTO tool_event_log (id, tool_name, success, duration_ms, cost, created_at)
+               VALUES ($1, $2, $3, $4, $5, NOW())"#,
+            &[
+                &Uuid::new_v4(),
+                &tool_name,
+                &success,
+                &(duration_ms as i64),
+                &cost,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
     // ==================== LLM Calls ====================
 
     async fn record_llm_call(&self, record: &LlmCallRecord<'_>) -> Result<Uuid, DatabaseError> {
@@ -367,7 +390,11 @@ impl Database for PgBackend {
                 COUNT(*) FILTER (WHERE success = false)::bigint AS failed_calls,
                 COALESCE(AVG(duration_ms)::float8, 0.0) AS avg_duration_ms,
                 COALESCE(SUM(cost), 0)::numeric AS total_cost
-            FROM job_actions
+            FROM (
+                SELECT tool_name, success, duration_ms, cost, created_at FROM job_actions
+                UNION ALL
+                SELECT tool_name, success, duration_ms, cost, created_at FROM tool_event_log
+            ) combined
             {where_clause}
             GROUP BY tool_name
             ORDER BY total_calls DESC

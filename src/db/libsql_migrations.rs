@@ -56,6 +56,20 @@ pub const INCREMENTAL: &[(i64, &str, &str)] = &[
         "add_cost_unknown_to_llm_calls",
         "ALTER TABLE llm_calls ADD COLUMN cost_unknown INTEGER NOT NULL DEFAULT 0",
     ),
+    (
+        12,
+        "add_tool_event_log",
+        r#"CREATE TABLE IF NOT EXISTS tool_event_log (
+    id          TEXT PRIMARY KEY,
+    tool_name   TEXT NOT NULL,
+    success     INTEGER NOT NULL,
+    duration_ms INTEGER,
+    cost        TEXT NOT NULL DEFAULT '0',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tool_event_log_tool_name ON tool_event_log(tool_name);
+CREATE INDEX IF NOT EXISTS idx_tool_event_log_created_at ON tool_event_log(created_at)"#,
+    ),
 ];
 
 /// Consolidated schema for libSQL.
@@ -603,6 +617,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_audit_log_created_at   ON audit_log (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_log_user_session ON audit_log (user_id, session_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_event_type   ON audit_log (event_type);
+
+-- ==================== Tool Event Log ====================
+
+CREATE TABLE IF NOT EXISTS tool_event_log (
+    id          TEXT PRIMARY KEY,
+    tool_name   TEXT NOT NULL,
+    success     INTEGER NOT NULL,
+    duration_ms INTEGER,
+    cost        TEXT NOT NULL DEFAULT '0',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_event_log_tool_name ON tool_event_log(tool_name);
+CREATE INDEX IF NOT EXISTS idx_tool_event_log_created_at ON tool_event_log(created_at);
 
 -- ==================== Seed data ====================
 

@@ -936,6 +936,30 @@ impl Database for LibSqlBackend {
         Ok(actions)
     }
 
+    async fn save_tool_event(
+        &self,
+        tool_name: &str,
+        success: bool,
+        duration_ms: u64,
+        cost: Decimal,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.connect()?;
+        conn.execute(
+            r#"INSERT INTO tool_event_log (id, tool_name, success, duration_ms, cost, created_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))"#,
+            params![
+                Uuid::new_v4().to_string(),
+                tool_name,
+                success as i64,
+                duration_ms as i64,
+                cost.to_string(),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        Ok(())
+    }
+
     // ==================== LLM Calls ====================
 
     async fn record_llm_call(&self, record: &LlmCallRecord<'_>) -> Result<Uuid, DatabaseError> {
@@ -1146,7 +1170,11 @@ impl Database for LibSqlBackend {
                 SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failed_calls,
                 COALESCE(AVG(CAST(duration_ms AS REAL)), 0.0) AS avg_duration_ms,
                 COALESCE(SUM(CAST(cost AS REAL)), 0.0) AS total_cost
-            FROM job_actions
+            FROM (
+                SELECT tool_name, success, duration_ms, cost, created_at FROM job_actions
+                UNION ALL
+                SELECT tool_name, success, duration_ms, CAST(cost AS REAL), created_at FROM tool_event_log
+            ) combined
             {where_clause}
             GROUP BY tool_name
             ORDER BY total_calls DESC

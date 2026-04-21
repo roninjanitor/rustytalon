@@ -334,6 +334,15 @@ pub trait Database: Send + Sync {
     /// Save a job action.
     async fn save_action(&self, job_id: Uuid, action: &ActionRecord) -> Result<(), DatabaseError>;
 
+    /// Record a lightweight tool event from the chat (non-job) flow.
+    async fn save_tool_event(
+        &self,
+        tool_name: &str,
+        success: bool,
+        duration_ms: u64,
+        cost: Decimal,
+    ) -> Result<(), DatabaseError>;
+
     /// Get actions for a job.
     async fn get_job_actions(&self, job_id: Uuid) -> Result<Vec<ActionRecord>, DatabaseError>;
 

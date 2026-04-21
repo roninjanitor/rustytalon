@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-04-21
+
+### Added
+- **Tool call analytics** — chat-mode tool calls (invoked directly in conversation, not via a formal job) are now tracked in a new `tool_event_log` table and appear in the Analytics → Tool Usage table; previously the table always showed "No tool calls recorded yet" for users who never created sandbox jobs
+- `save_tool_event` method added to the `Database` trait; implemented in both PostgreSQL and libSQL backends; `get_tool_analytics` now unions `job_actions` and `tool_event_log` so all tool calls appear in one view
+- PostgreSQL migration `V12__tool_event_log.sql`; libSQL incremental migration 12
+
+### Fixed
+- **Cost warning persists after configuring model pricing** — the "Cost data may be inaccurate" banner in Analytics remained visible for a model even after the user had added a price in Settings, because the warning was driven by historical `cost_unknown` records in `llm_calls`; now cross-references the current Settings so the banner is suppressed for any model that has a configured price
+
 ## [0.2.6] - 2026-04-21
 
 ### Fixed
