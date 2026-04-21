@@ -1575,9 +1575,31 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                             )
                             .await;
 
+                        let tool_start = std::time::Instant::now();
                         let tool_result = self
                             .execute_chat_tool(&tc.name, &tc.arguments, &job_ctx)
                             .await;
+                        let tool_duration_ms = tool_start.elapsed().as_millis() as u64;
+
+                        // Persist tool event for analytics (best-effort, non-blocking).
+                        if let Some(db) = self.store() {
+                            let db = db.clone();
+                            let tname = tc.name.clone();
+                            let success = tool_result.is_ok();
+                            tokio::spawn(async move {
+                                if let Err(e) = db
+                                    .save_tool_event(
+                                        &tname,
+                                        success,
+                                        tool_duration_ms,
+                                        rust_decimal::Decimal::ZERO,
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(tool = %tname, error = %e, "Failed to persist tool event");
+                                }
+                            });
+                        }
 
                         // Collect source URLs for the references section appended to the final response.
                         if let Ok(ref result_str) = tool_result {
