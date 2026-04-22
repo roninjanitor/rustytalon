@@ -910,12 +910,13 @@ Default k=60. Results from both methods are combined, with documents appearing i
 
 ### Heartbeat System
 
-Proactive periodic execution (default: 30 minutes):
+Proactive periodic execution (default: 30 minutes). Each tick does three things in order:
 
-1. Reads `HEARTBEAT.md` checklist
-2. Runs agent turn with checklist prompt
-3. If findings, notifies via channel
-4. If nothing, agent replies "HEARTBEAT_OK" (no notification)
+1. **Checklist** — reads `HEARTBEAT.md`, runs an LLM turn, notifies if findings (skipped if checklist is empty)
+2. **Memory consolidation** — for each daily log older than today, makes a lightweight LLM call to extract atomic facts (`USER:` / `MEMORY:` lines) into `USER.md` and `MEMORY.md`, then deletes the raw log
+3. **Pruning** — deletes any daily logs older than `audit_retention_days` (default 90) that consolidation missed; also prunes the audit log
+
+Boot-time: `update_agents_md_if_outdated()` and `prune_old_daily_logs()` run on every startup regardless of whether the heartbeat is enabled, so cleanup and instruction upgrades are never gated on heartbeat being on.
 
 ```rust
 use crate::agent::{HeartbeatConfig, spawn_heartbeat};
@@ -926,6 +927,10 @@ let config = HeartbeatConfig::default()
 
 spawn_heartbeat(config, workspace, llm, response_tx);
 ```
+
+#### AGENTS.md versioning
+
+`AGENTS.md` carries a version marker (`<!-- agents-v3 -->`). `Workspace::update_agents_md_if_outdated()` rewrites the file on boot if the marker is absent, so existing users automatically pick up new behavioral instructions without wiping the file manually. Bump the marker constant (`AGENTS_VERSION_MARKER` in `workspace/mod.rs`) and update `AGENTS_SEED` whenever instructions change materially.
 
 ### Chunking Strategy
 

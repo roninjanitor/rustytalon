@@ -243,6 +243,69 @@ impl WorkspaceStorage {
     }
 }
 
+/// Version marker embedded in AGENTS.md — bump when instructions change materially.
+/// `update_agents_md_if_outdated` rewrites the file for existing users if this
+/// marker is absent, so they pick up the new rules without wiping custom edits
+/// that the user added AFTER the marker line.
+const AGENTS_VERSION_MARKER: &str = "<!-- agents-v3 -->";
+
+/// Canonical AGENTS.md content seeded on first boot (and forced on upgrade).
+const AGENTS_SEED: &str = "\
+# Agent Instructions
+<!-- agents-v3 -->
+
+You are a personal AI assistant with access to tools and persistent memory.
+
+## Memory — Required Rules
+
+Memory does not persist automatically. If you don't write it, it is gone after
+this session. Follow these rules on every conversation:
+
+### USER.md — update whenever you learn anything about the user
+Call `memory_write` with path `USER.md` as soon as you learn:
+- Their name, job, location, timezone, or role
+- Technical stack, preferred languages, or domain
+- Preferences (communication style, tool choices, habits)
+- Goals, projects, or recurring responsibilities
+
+**If USER.md still contains only the default placeholder text and you learned
+something about the user in this conversation, you MUST update it before the
+session ends.**
+
+### MEMORY.md — append important facts and decisions
+Call `memory_write` (append mode) with path `MEMORY.md` when:
+- The user makes a decision: \"use postgres\", \"keep it simple\", \"switch to X\"
+- You complete a non-trivial task or fix a recurring issue
+- A lesson is worth remembering across sessions
+
+### daily_log — log every substantive exchange
+At the end of any exchange lasting more than one turn, call `memory_write` with
+path `daily_log`. Write one or two lines: topic + outcome.
+Never skip this for multi-turn conversations.
+
+**Before answering any question about prior conversations, always call
+`memory_search` first. Memory search is the only way to retrieve facts from
+past sessions.**
+
+## Guidelines
+
+- Search memory before answering questions about prior conversations
+- Be concise but thorough
+- Prefer editing existing memory entries over appending duplicates
+
+## Action vs Information
+
+\"How do I...\" and \"Can you...\" questions are requests for information, not action.
+Explain options and let the user decide. Never create routines, install tools,
+configure channels, or make other persistent changes unless the user says
+something unambiguous like \"set it up\", \"create it\", or \"do it\".
+
+## Channels
+
+Your installed channels (how users can reach you) are listed in `channels/installed.md`.
+That file is refreshed on every boot and always reflects the current state.
+Refer to it when answering questions about how to chat with you.";
+
 /// Default template seeded into HEARTBEAT.md on first access.
 ///
 /// Intentionally comment-only so the heartbeat runner treats it as
@@ -715,36 +778,7 @@ impl Workspace {
                  - Ask for clarification before doing anything irreversible or side-effectful\n\
                  - Learn from mistakes and remember lessons",
             ),
-            (
-                paths::AGENTS,
-                "# Agent Instructions\n\n\
-                 You are a personal AI assistant with access to tools and persistent memory.\n\n\
-                 ## Memory — When and What to Write\n\n\
-                 Use `memory_write` to persist information that should survive across sessions:\n\n\
-                 - **USER.md** — anything you learn about the user: name, preferences, role, goals\n\
-                 - **MEMORY.md** — important facts, decisions, recurring themes, lessons learned\n\
-                 - **daily_log** — what you worked on today (write a short note at the end of any\n\
-                   substantive exchange: topic + outcome, one or two lines)\n\n\
-                 **Before answering questions about past conversations, always call `memory_search`.**\n\
-                 Memory is the only way facts survive between sessions — if you don't write it, it's gone.\n\n\
-                 Examples of things worth writing:\n\
-                 - User says their name → write to USER.md\n\
-                 - User makes a decision (\"use postgres\", \"keep it simple\") → write to MEMORY.md\n\
-                 - You complete a task → log a one-liner to daily_log\n\
-                 - You learn a preference → write to USER.md\n\n\
-                 ## Guidelines\n\n\
-                 - Search memory before answering questions about prior conversations\n\
-                 - Be concise but thorough\n\n\
-                 ## Action vs Information\n\n\
-                 \"How do I...\" and \"Can you...\" questions are requests for information, not for action.\n\
-                 Explain the options and let the user decide. Never create routines, install tools,\n\
-                 configure channels, or make other persistent changes unless the user says something\n\
-                 unambiguous like \"set it up\", \"create it\", or \"do it\".\n\n\
-                 ## Channels\n\n\
-                 Your installed channels (how users can reach you) are listed in `channels/installed.md`.\n\
-                 That file is refreshed on every boot and always reflects the current state.\n\
-                 Refer to it when answering questions about how to chat with you.",
-            ),
+            (paths::AGENTS, AGENTS_SEED),
             (
                 paths::USER,
                 "# User Context\n\n\
@@ -777,6 +811,79 @@ impl Workspace {
             tracing::info!("Seeded {} workspace files", count);
         }
         Ok(count)
+    }
+
+    /// Update AGENTS.md if it is at an older version (missing the version marker).
+    ///
+    /// Called on every boot alongside `seed_if_empty`. Rewrites AGENTS.md with
+    /// the current `AGENTS_SEED` content when the marker is absent, so existing
+    /// users pick up new behavioral instructions without needing to delete their
+    /// workspace. Returns `true` if the file was updated.
+    pub async fn update_agents_md_if_outdated(&self) -> bool {
+        match self.read(paths::AGENTS).await {
+            Ok(doc) if doc.content.contains(AGENTS_VERSION_MARKER) => false,
+            Ok(_) => {
+                if let Err(e) = self.write(paths::AGENTS, AGENTS_SEED).await {
+                    tracing::warn!("Failed to update AGENTS.md: {}", e);
+                    false
+                } else {
+                    tracing::info!(
+                        "Updated AGENTS.md to latest version ({})",
+                        AGENTS_VERSION_MARKER
+                    );
+                    true
+                }
+            }
+            Err(WorkspaceError::DocumentNotFound { .. }) => false,
+            Err(e) => {
+                tracing::warn!("Failed to read AGENTS.md for version check: {}", e);
+                false
+            }
+        }
+    }
+
+    /// Prune daily log documents older than `retain_days` days.
+    ///
+    /// Deletes the `memory_document` row for each old daily log; chunks and
+    /// embeddings are removed automatically via the ON DELETE CASCADE foreign key.
+    /// Returns the number of documents deleted.
+    pub async fn prune_old_daily_logs(&self, retain_days: u64) -> Result<usize, WorkspaceError> {
+        let cutoff = chrono::Utc::now().date_naive() - chrono::Duration::days(retain_days as i64);
+
+        let daily_entries = self.list("daily/").await.unwrap_or_default();
+        let mut deleted = 0usize;
+
+        for entry in daily_entries {
+            if entry.is_directory {
+                continue;
+            }
+            // Path format: "daily/YYYY-MM-DD.md"
+            let name = entry.name();
+            let date_str = name.trim_end_matches(".md");
+            let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") else {
+                continue;
+            };
+            if date >= cutoff {
+                continue;
+            }
+            let path = format!("daily/{}.md", date_str);
+            match self.delete(&path).await {
+                Ok(()) => {
+                    deleted += 1;
+                    tracing::debug!("Pruned old daily log: {}", path);
+                }
+                Err(e) => tracing::warn!("Failed to prune daily log {}: {}", path, e),
+            }
+        }
+
+        if deleted > 0 {
+            tracing::info!(
+                "Daily log pruner: deleted {} entries older than {} days",
+                deleted,
+                retain_days
+            );
+        }
+        Ok(deleted)
     }
 
     /// Generate embeddings for chunks that don't have them yet.

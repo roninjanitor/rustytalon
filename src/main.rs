@@ -1281,6 +1281,30 @@ async fn main() -> anyhow::Result<()> {
                 tracing::warn!("Failed to seed workspace: {}", e);
             }
         }
+
+        // Update AGENTS.md if it predates the current instruction version.
+        // This ensures existing users pick up new behavioral rules on next boot.
+        ws.update_agents_md_if_outdated().await;
+
+        // Prune old daily logs on every boot so it runs regardless of whether
+        // the heartbeat is enabled. The heartbeat will re-prune periodically
+        // when it is enabled, but this guarantees cleanup either way.
+        let retention_days = if let Some(ref db) = db {
+            let user_id = config.heartbeat.notify_user.as_deref().unwrap_or("default");
+            match db.get_setting(user_id, "audit_retention_days").await {
+                Ok(Some(v)) => v.as_u64().unwrap_or(90),
+                _ => 90,
+            }
+        } else {
+            90
+        };
+        match ws.prune_old_daily_logs(retention_days).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(
+                "Boot pruner: removed {n} daily logs older than {retention_days} days"
+            ),
+            Err(e) => tracing::warn!("Boot daily log prune failed: {e}"),
+        }
     }
 
     // Write channels/installed.md so the agent knows what channels are available.
