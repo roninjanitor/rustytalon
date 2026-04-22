@@ -32,10 +32,13 @@ use tokio::sync::mpsc;
 use crate::channels::OutgoingResponse;
 use crate::db::Database;
 use crate::llm::{ChatMessage, CompletionRequest, FinishReason, LlmProvider};
-use crate::workspace::Workspace;
+use crate::workspace::{Workspace, paths};
 
 /// Default audit log retention in days.
 const DEFAULT_AUDIT_RETENTION_DAYS: u64 = 90;
+
+/// Default daily log retention in days (shared with audit log via `audit_retention_days` setting).
+const DEFAULT_DAILY_LOG_RETENTION_DAYS: u64 = 90;
 
 /// Configuration for the heartbeat runner.
 #[derive(Debug, Clone)]
@@ -185,7 +188,9 @@ impl HeartbeatRunner {
                 }
             }
 
+            self.consolidate_daily_logs().await;
             self.prune_audit_log().await;
+            self.prune_daily_logs().await;
         }
     }
 
@@ -282,6 +287,153 @@ impl HeartbeatRunner {
         HeartbeatResult::NeedsAttention(content.to_string())
     }
 
+    /// Extract atomic facts from past daily logs into USER.md and MEMORY.md.
+    ///
+    /// For each daily log older than today:
+    /// 1. Makes a lightweight LLM call to extract new facts not already in USER.md / MEMORY.md.
+    /// 2. Appends any new facts to the appropriate file.
+    /// 3. Deletes the daily log (facts are now in permanent storage).
+    ///
+    /// If the LLM call fails the daily log is preserved and retried next tick.
+    /// Runs silently — errors are logged but never surface to callers.
+    async fn consolidate_daily_logs(&self) {
+        let today = Utc::now().date_naive();
+
+        let entries = match self.workspace.list("daily/").await {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("Failed to list daily logs for consolidation: {e}");
+                return;
+            }
+        };
+
+        for entry in entries {
+            if entry.is_directory {
+                continue;
+            }
+
+            let name = entry.name().to_string();
+            let date_str = name.trim_end_matches(".md");
+            let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") else {
+                continue;
+            };
+            if date >= today {
+                continue;
+            }
+
+            let path = format!("daily/{}.md", date_str);
+            let log_content = match self.workspace.read(&path).await {
+                Ok(d) if !d.content.trim().is_empty() => d.content,
+                Ok(_) => {
+                    // Empty log — nothing to extract, just clean it up.
+                    let _ = self.workspace.delete(&path).await;
+                    continue;
+                }
+                Err(_) => continue,
+            };
+
+            // Read current USER.md and MEMORY.md so the LLM can skip duplicates.
+            let user_md = self
+                .workspace
+                .read(paths::USER)
+                .await
+                .map(|d| d.content)
+                .unwrap_or_default();
+            let memory_md = self
+                .workspace
+                .read(paths::MEMORY)
+                .await
+                .map(|d| d.content)
+                .unwrap_or_default();
+
+            let prompt = format!(
+                "Review this daily activity log from {} and extract facts worth keeping.\n\
+                 \n\
+                 ## Daily Log\n\
+                 {}\n\
+                 \n\
+                 ## Current USER.md\n\
+                 {}\n\
+                 \n\
+                 ## Current MEMORY.md\n\
+                 {}\n\
+                 \n\
+                 Output ONLY new facts not already captured above, one per line:\n\
+                 USER: <fact about the user — preference, context, skill, identity>\n\
+                 MEMORY: <important decision, outcome, or lesson worth remembering>\n\
+                 \n\
+                 Skip trivial exchanges. If nothing new is worth keeping, output exactly: NONE",
+                date, log_content, user_md, memory_md
+            );
+
+            let request = CompletionRequest::new(vec![ChatMessage::user(&prompt)])
+                .with_max_tokens(512)
+                .with_temperature(0.1);
+
+            let response = match self.llm.complete(request).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("Fact extraction failed for {path}: {e}");
+                    continue; // preserve the log, retry next tick
+                }
+            };
+
+            let output = response.content.trim();
+
+            if !output.is_empty() && output != "NONE" {
+                let mut user_facts: Vec<&str> = Vec::new();
+                let mut memory_facts: Vec<&str> = Vec::new();
+
+                for line in output.lines() {
+                    let line = line.trim();
+                    if let Some(fact) = line.strip_prefix("USER: ") {
+                        user_facts.push(fact);
+                    } else if let Some(fact) = line.strip_prefix("MEMORY: ") {
+                        memory_facts.push(fact);
+                    }
+                }
+
+                if !user_facts.is_empty() {
+                    let text = user_facts
+                        .iter()
+                        .map(|f| format!("- {f}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if let Err(e) = self.workspace.append(paths::USER, &text).await {
+                        tracing::warn!("Failed to write user facts from {path}: {e}");
+                    } else {
+                        tracing::info!("Extracted {} user fact(s) from {}", user_facts.len(), path);
+                    }
+                }
+
+                if !memory_facts.is_empty() {
+                    let text = memory_facts
+                        .iter()
+                        .map(|f| format!("- {f}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if let Err(e) = self.workspace.append(paths::MEMORY, &text).await {
+                        tracing::warn!("Failed to write memory facts from {path}: {e}");
+                    } else {
+                        tracing::info!(
+                            "Extracted {} memory fact(s) from {}",
+                            memory_facts.len(),
+                            path
+                        );
+                    }
+                }
+            } else {
+                tracing::debug!("No new facts to extract from {path}");
+            }
+
+            // Daily log is now consolidated — delete it.
+            // prune_daily_logs() handles any that survive past the retention window.
+            if let Err(e) = self.workspace.delete(&path).await {
+                tracing::warn!("Failed to delete consolidated daily log {path}: {e}");
+            }
+        }
+    }
+
     /// Prune audit log rows older than the configured retention window.
     ///
     /// Reads `audit_retention_days` from the user's settings (default 90).
@@ -310,6 +462,37 @@ impl HeartbeatRunner {
                 "Audit log pruner: deleted {n} rows older than {retention_days} days"
             ),
             Err(e) => tracing::warn!("Audit log pruner failed: {e}"),
+        }
+    }
+
+    /// Prune daily log documents older than the configured retention window.
+    ///
+    /// Reads `audit_retention_days` from settings (same knob as audit log pruning,
+    /// default 90). Runs silently — errors are logged but never surface to callers.
+    async fn prune_daily_logs(&self) {
+        let retention_days = if let Some(ref db) = self.db {
+            if let Some(ref user_id) = self.config.notify_user_id {
+                match db.get_setting(user_id, "audit_retention_days").await {
+                    Ok(Some(v)) => v.as_u64().unwrap_or(DEFAULT_DAILY_LOG_RETENTION_DAYS),
+                    Ok(None) => DEFAULT_DAILY_LOG_RETENTION_DAYS,
+                    Err(e) => {
+                        tracing::warn!("Failed to read audit_retention_days setting: {e}");
+                        DEFAULT_DAILY_LOG_RETENTION_DAYS
+                    }
+                }
+            } else {
+                DEFAULT_DAILY_LOG_RETENTION_DAYS
+            }
+        } else {
+            DEFAULT_DAILY_LOG_RETENTION_DAYS
+        };
+
+        match self.workspace.prune_old_daily_logs(retention_days).await {
+            Ok(0) => tracing::debug!("Daily log pruner: nothing to delete"),
+            Ok(n) => tracing::info!(
+                "Daily log pruner: deleted {n} entries older than {retention_days} days"
+            ),
+            Err(e) => tracing::warn!("Daily log pruner failed: {e}"),
         }
     }
 

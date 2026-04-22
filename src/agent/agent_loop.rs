@@ -1177,15 +1177,15 @@ impl Agent {
                     Some(&response),
                 );
 
-                // Fire-and-forget: write a brief entry to today's daily log so sessions
-                // leave a trace even when the LLM doesn't explicitly call memory_write.
+                // Fire-and-forget: record what was discussed so the daily log is
+                // useful context even when the LLM doesn't call memory_write.
+                // Log only the user's message (the topic/intent) — the agent's
+                // response is already in conversation history and adds noise here.
                 if let Some(ws) = self.workspace() {
                     let ws = ws.clone();
-                    let user_snippet = content.chars().take(120).collect::<String>();
-                    let agent_snippet = response.chars().take(120).collect::<String>();
-                    let entry = format!("user: {user_snippet}\nagent: {agent_snippet}");
+                    let topic = content.chars().take(80).collect::<String>();
                     tokio::spawn(async move {
-                        if let Err(e) = ws.append_daily_log(&entry).await {
+                        if let Err(e) = ws.append_daily_log(&topic).await {
                             tracing::warn!("Failed to write daily log entry: {}", e);
                         }
                     });

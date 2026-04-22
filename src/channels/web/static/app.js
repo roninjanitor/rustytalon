@@ -4173,7 +4173,7 @@ const SETTINGS_SECTIONS = [
   {
     id: 'audit', label: 'Audit',
     settings: [
-      { key: 'audit_retention_days', label: 'Log retention', desc: 'How many days to keep audit log entries before they are pruned', type: 'number', default: 90, unit: 'days' },
+      { key: 'audit_retention_days', label: 'Log retention', desc: 'How many days to keep audit log entries and daily memory logs before they are pruned', type: 'number', default: 90, unit: 'days' },
     ],
   },
   {
