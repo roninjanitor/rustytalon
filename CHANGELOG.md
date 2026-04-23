@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-04-23
+
+### Added
+- **Analytics cost estimate disclaimer** — a persistent notice below the summary cards clarifies that displayed costs are estimates based on standard per-token rates and may not reflect cache discounts, batch pricing, or provider adjustments; users are directed to verify spend on their provider's billing dashboard
+
+### Fixed
+- **Custom model cost rates inflated by 1,000,000×** — the Settings UI accepted prices in per-million-token format (industry standard, e.g. `$0.95`) but the backend treated stored values as per-token, multiplying costs by 1M (e.g. `$251,136` for a single call); fixed by dividing settings values by 1,000,000 in `resolve_cost_rates`; all UI labels updated to "per million tokens" to match
+- **Job health counts always zero** — `get_job_analytics` counted only `accepted` as completed and only `in_progress` as active, ignoring the full state machine; jobs in `pending`, `completed`, `submitted`, `stuck`, or `cancelled` states fell through as unaccounted; fixed in both PostgreSQL and libSQL backends
+- **Success rate diluted by in-progress jobs** — rate was `completed / total_jobs`; denominator now uses only terminal jobs (`completed + failed`) so active work no longer drags the rate down
+
 ## [0.2.8] - 2026-04-22
 
 ### Added
