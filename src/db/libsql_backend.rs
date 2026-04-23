@@ -1096,9 +1096,9 @@ impl Database for LibSqlBackend {
             r#"
             SELECT
                 COUNT(*) AS total_jobs,
-                SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) AS completed_jobs,
-                SUM(CASE WHEN status = 'failed'   THEN 1 ELSE 0 END) AS failed_jobs,
-                SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress_jobs,
+                SUM(CASE WHEN status IN ('completed', 'submitted', 'accepted') THEN 1 ELSE 0 END) AS completed_jobs,
+                SUM(CASE WHEN status IN ('failed', 'cancelled') THEN 1 ELSE 0 END) AS failed_jobs,
+                SUM(CASE WHEN status IN ('pending', 'in_progress', 'stuck') THEN 1 ELSE 0 END) AS in_progress_jobs,
                 COALESCE(AVG(
                     CASE WHEN completed_at IS NOT NULL AND started_at IS NOT NULL
                         THEN (julianday(completed_at) - julianday(started_at)) * 86400.0
@@ -1139,10 +1139,9 @@ impl Database for LibSqlBackend {
             completed_jobs: completed,
             failed_jobs: failed,
             in_progress_jobs: in_progress,
-            success_rate: if total > 0 {
-                completed as f64 / total as f64
-            } else {
-                0.0
+            success_rate: {
+                let terminal = completed + failed;
+                if terminal > 0 { completed as f64 / terminal as f64 } else { 0.0 }
             },
             avg_duration_secs: avg_duration,
             total_cost_usd: Decimal::from_f64_retain(total_cost_f64)
