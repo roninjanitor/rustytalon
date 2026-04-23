@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.8] - 2026-04-22
+## [0.2.9] - 2026-04-23
 
 ### Added
 - **Web search citation rules** — agent instructions (AGENTS.md v4) now separate searching from citing: the agent may run unlimited searches to gather grounding, but cites inline only (max 5 links, no duplicate domains, no Sources footer); existing deployments pick up the new rules automatically on next boot via the AGENTS.md versioning system
