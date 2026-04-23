@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.8] - 2026-04-22
 
 ### Added
+- **Web search citation rules** — agent instructions (AGENTS.md v4) now separate searching from citing: the agent may run unlimited searches to gather grounding, but cites inline only (max 5 links, no duplicate domains, no Sources footer); existing deployments pick up the new rules automatically on next boot via the AGENTS.md versioning system
+- **Slack markdown link rendering** — Slack channel now converts `[label](url)` to Slack mrkdwn `<url|label>` and posts with `mrkdwn: true`; previously links appeared as raw markdown literals
+- **Matrix rich-text links** — Matrix channel now sends `format: org.matrix.custom.html` with a `formatted_body` containing proper `<a href>` tags; the plain `body` fallback strips link syntax to readable text for clients that don't support HTML events
 - **Daily log consolidation** — the heartbeat now runs a lightweight LLM extraction pass on each daily log older than today, pulling atomic facts into `USER.md` and `MEMORY.md` before deleting the raw log; daily logs are a short-lived buffer, not long-term storage
 - **Boot-time maintenance** — `prune_old_daily_logs()` and `update_agents_md_if_outdated()` run on every startup so cleanup and instruction upgrades work even when the heartbeat is disabled
 - **AGENTS.md versioning** — workspace `AGENTS.md` now carries a version marker; on boot the file is automatically rewritten if it predates the current version, ensuring existing users always have up-to-date agent behavioral instructions

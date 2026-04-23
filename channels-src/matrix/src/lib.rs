@@ -137,6 +137,10 @@ struct InviteState {
 struct SendMessageRequest {
     msgtype: String,
     body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    formatted_body: Option<String>,
 }
 
 /// Response from the send-message endpoint.
@@ -899,9 +903,12 @@ fn send_message(
         txn_id,
     );
 
+    let html = md_links_to_html(body);
     let msg = SendMessageRequest {
         msgtype: "m.text".to_string(),
-        body: body.to_string(),
+        body: md_links_strip(body),
+        format: Some("org.matrix.custom.html".to_string()),
+        formatted_body: Some(html),
     };
 
     let body_bytes =
@@ -937,6 +944,84 @@ fn send_message(
 // ============================================================================
 // Utility helpers
 // ============================================================================
+
+/// HTML-escape `&`, `<`, `>`, and `"` in a string.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Convert `[label](url)` markdown links to `<a href="url">label</a>` HTML.
+///
+/// The rest of the text is HTML-escaped so it is safe to embed in a Matrix
+/// `formatted_body`. Other markdown (bold, italic, code) is left as-is because
+/// Matrix clients that support `org.matrix.custom.html` handle those via their
+/// own rendering.
+fn md_links_to_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 2);
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&html_escape(&rest[..open]));
+        rest = &rest[open + 1..];
+        if let Some(close_bracket) = rest.find("](") {
+            let label = &rest[..close_bracket];
+            if !label.contains('[') {
+                let after_paren = &rest[close_bracket + 2..];
+                if let Some(close_paren) = after_paren.find(')') {
+                    let url = &after_paren[..close_paren];
+                    if !url.contains('(') {
+                        out.push_str("<a href=\"");
+                        out.push_str(&html_escape(url));
+                        out.push_str("\">");
+                        out.push_str(&html_escape(label));
+                        out.push_str("</a>");
+                        rest = &after_paren[close_paren + 1..];
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push('[');
+    }
+    out.push_str(&html_escape(rest));
+    out
+}
+
+/// Strip `[label](url)` markdown links to just `label` for a plain-text fallback.
+fn md_links_strip(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        rest = &rest[open + 1..];
+        if let Some(close_bracket) = rest.find("](") {
+            let label = &rest[..close_bracket];
+            if !label.contains('[') {
+                let after_paren = &rest[close_bracket + 2..];
+                if let Some(close_paren) = after_paren.find(')') {
+                    let url = &after_paren[..close_paren];
+                    if !url.contains('(') {
+                        out.push_str(label);
+                        rest = &after_paren[close_paren + 1..];
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push('[');
+    }
+    out.push_str(rest);
+    out
+}
 
 /// Generate a unique transaction ID using a timestamp and a monotonic counter.
 ///
@@ -1016,6 +1101,69 @@ export!(MatrixChannel);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- md_links_to_html ---
+
+    #[test]
+    fn test_html_plain_link() {
+        assert_eq!(
+            md_links_to_html("[Le Diplomate](https://lediplomatedc.com)"),
+            "<a href=\"https://lediplomatedc.com\">Le Diplomate</a>"
+        );
+    }
+
+    #[test]
+    fn test_html_inline_link() {
+        assert_eq!(
+            md_links_to_html("Try [this](https://example.com) today"),
+            "Try <a href=\"https://example.com\">this</a> today"
+        );
+    }
+
+    #[test]
+    fn test_html_escapes_surrounding_text() {
+        assert_eq!(
+            md_links_to_html("A & B < C > D"),
+            "A &amp; B &lt; C &gt; D"
+        );
+    }
+
+    #[test]
+    fn test_html_escapes_url_and_label() {
+        assert_eq!(
+            md_links_to_html("[a&b](https://x.com/?a=1&b=2)"),
+            "<a href=\"https://x.com/?a=1&amp;b=2\">a&amp;b</a>"
+        );
+    }
+
+    #[test]
+    fn test_html_no_links_passthrough_escaped() {
+        assert_eq!(md_links_to_html("Hello world"), "Hello world");
+    }
+
+    // --- md_links_strip ---
+
+    #[test]
+    fn test_strip_removes_url() {
+        assert_eq!(
+            md_links_strip("[Le Diplomate](https://lediplomatedc.com)"),
+            "Le Diplomate"
+        );
+    }
+
+    #[test]
+    fn test_strip_inline() {
+        assert_eq!(
+            md_links_strip("Try [this](https://example.com) today"),
+            "Try this today"
+        );
+    }
+
+    #[test]
+    fn test_strip_no_links_passthrough() {
+        let input = "No links here.";
+        assert_eq!(md_links_strip(input), input);
+    }
 
     // --- chunk_message ---
 
