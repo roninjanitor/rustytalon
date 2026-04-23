@@ -87,7 +87,10 @@ impl TrackedProvider {
                 let parsed_input = input.parse::<Decimal>();
                 let parsed_output = output.parse::<Decimal>();
                 if let (Ok(i), Ok(o)) = (parsed_input, parsed_output) {
-                    return (i, o, false);
+                    // Settings store prices in per-million-token units (industry standard).
+                    // Divide by 1_000_000 to get the per-token rate used in calculations.
+                    let per_million = Decimal::from(1_000_000);
+                    return (i / per_million, o / per_million, false);
                 }
             }
             tracing::warn!(
@@ -109,7 +112,7 @@ impl TrackedProvider {
             "No cost rate configured or known for this model. \
              Cost data will be inaccurate. \
              Set `llm.model_costs.{model}` in Settings: \
-             {{\"input\": \"<per-token USD>\", \"output\": \"<per-token USD>\"}}"
+             {{\"input\": \"<per-million-token USD>\", \"output\": \"<per-million-token USD>\"}}"
         );
         let (i, o) = costs::default_cost();
         (i, o, true)
