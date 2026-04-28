@@ -327,9 +327,9 @@ impl Database for PgBackend {
             r#"
             SELECT
                 COUNT(*)::bigint AS total_jobs,
-                COUNT(*) FILTER (WHERE status = 'accepted')::bigint AS completed_jobs,
-                COUNT(*) FILTER (WHERE status = 'failed')::bigint AS failed_jobs,
-                COUNT(*) FILTER (WHERE status = 'in_progress')::bigint AS in_progress_jobs,
+                COUNT(*) FILTER (WHERE status IN ('completed', 'submitted', 'accepted'))::bigint AS completed_jobs,
+                COUNT(*) FILTER (WHERE status IN ('failed', 'cancelled'))::bigint AS failed_jobs,
+                COUNT(*) FILTER (WHERE status IN ('pending', 'in_progress', 'stuck'))::bigint AS in_progress_jobs,
                 COALESCE(
                     AVG(EXTRACT(EPOCH FROM (completed_at - started_at)))
                         FILTER (WHERE completed_at IS NOT NULL),
@@ -356,10 +356,13 @@ impl Database for PgBackend {
             completed_jobs: completed,
             failed_jobs: failed,
             in_progress_jobs: in_progress,
-            success_rate: if total > 0 {
-                completed as f64 / total as f64
-            } else {
-                0.0
+            success_rate: {
+                let terminal = completed + failed;
+                if terminal > 0 {
+                    completed as f64 / terminal as f64
+                } else {
+                    0.0
+                }
             },
             avg_duration_secs: avg_duration,
             total_cost_usd: total_cost.to_string(),

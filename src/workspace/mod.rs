@@ -247,12 +247,12 @@ impl WorkspaceStorage {
 /// `update_agents_md_if_outdated` rewrites the file for existing users if this
 /// marker is absent, so they pick up the new rules without wiping custom edits
 /// that the user added AFTER the marker line.
-const AGENTS_VERSION_MARKER: &str = "<!-- agents-v3 -->";
+const AGENTS_VERSION_MARKER: &str = "<!-- agents-v4 -->";
 
 /// Canonical AGENTS.md content seeded on first boot (and forced on upgrade).
 const AGENTS_SEED: &str = "\
 # Agent Instructions
-<!-- agents-v3 -->
+<!-- agents-v4 -->
 
 You are a personal AI assistant with access to tools and persistent memory.
 
@@ -286,6 +286,29 @@ Never skip this for multi-turn conversations.
 **Before answering any question about prior conversations, always call
 `memory_search` first. Memory search is the only way to retrieve facts from
 past sessions.**
+
+## Web Search & Citations
+
+When you use `web_search`, follow these rules:
+
+### Searching
+- **Run as many searches as you need** to gather good grounding. Multiple
+  queries with different terms is fine. Fetching 10 results per query is fine.
+- The fetch count has no bearing on what you show the user.
+
+### Citing
+- **Cite inline only** — embed links directly in the text where you reference
+  them: e.g. \"the [Walker & Williams C-18](url) is a good choice\". Never
+  append a raw URL list at the end of your response.
+- **Only cite what you used** — if a result informed a specific claim, link it
+  at that claim. If you didn't draw on it, don't list it.
+- **Maximum 5 inline citations per response** — if you find yourself needing
+  more, synthesize rather than list. The goal is a useful answer, not a
+  bibliography.
+- **No duplicate domains** — one link per domain is enough (e.g. one Reddit
+  link, not four).
+- **No \"Sources:\" footer** — inline links are the attribution. A trailing
+  URL dump adds context tokens without adding value.
 
 ## Guidelines
 

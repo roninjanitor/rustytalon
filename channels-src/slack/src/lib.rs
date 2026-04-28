@@ -286,7 +286,8 @@ impl Guest for SlackChannel {
         // Build Slack API request
         let mut payload = serde_json::json!({
             "channel": metadata.channel,
-            "text": response.content,
+            "text": md_links_to_slack(&response.content),
+            "mrkdwn": true,
         });
 
         // Add thread_ts for threaded replies
@@ -671,7 +672,11 @@ fn json_response(status: u16, value: serde_json::Value) -> OutgoingHttpResponse 
 
 /// Post a plain-text message to a Slack channel or DM.
 fn post_message(channel_id: &str, text: &str) -> Result<(), String> {
-    let payload = serde_json::json!({ "channel": channel_id, "text": text });
+    let payload = serde_json::json!({
+        "channel": channel_id,
+        "text": md_links_to_slack(text),
+        "mrkdwn": true,
+    });
     let payload_bytes =
         serde_json::to_vec(&payload).map_err(|e| format!("Serialize error: {}", e))?;
     let headers = serde_json::json!({ "Content-Type": "application/json" });
@@ -748,6 +753,40 @@ fn open_dm_with_user(user_id: &str) -> Result<String, String> {
 // Export the component
 export!(SlackChannel);
 
+/// Convert `[label](url)` markdown links to Slack mrkdwn `<url|label>`.
+///
+/// Non-link text is passed through unchanged. Nested brackets or parentheses
+/// within a potential link defeat the match and the `[` is emitted literally.
+fn md_links_to_slack(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        rest = &rest[open + 1..];
+        if let Some(close_bracket) = rest.find("](") {
+            let label = &rest[..close_bracket];
+            if !label.contains('[') {
+                let after_paren = &rest[close_bracket + 2..];
+                if let Some(close_paren) = after_paren.find(')') {
+                    let url = &after_paren[..close_paren];
+                    if !url.contains('(') {
+                        out.push('<');
+                        out.push_str(url);
+                        out.push('|');
+                        out.push_str(label);
+                        out.push('>');
+                        rest = &after_paren[close_paren + 1..];
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push('[');
+    }
+    out.push_str(rest);
+    out
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -755,6 +794,43 @@ export!(SlackChannel);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- md_links_to_slack ---
+
+    #[test]
+    fn test_md_links_plain_link() {
+        assert_eq!(
+            md_links_to_slack("[Walker & Williams](https://example.com)"),
+            "<https://example.com|Walker & Williams>"
+        );
+    }
+
+    #[test]
+    fn test_md_links_inline() {
+        assert_eq!(
+            md_links_to_slack("Check [this](https://example.com) out"),
+            "Check <https://example.com|this> out"
+        );
+    }
+
+    #[test]
+    fn test_md_links_multiple() {
+        let input = "[a](https://a.com) and [b](https://b.com)";
+        let output = md_links_to_slack(input);
+        assert_eq!(output, "<https://a.com|a> and <https://b.com|b>");
+    }
+
+    #[test]
+    fn test_md_links_no_links_passthrough() {
+        let input = "No links here, just text.";
+        assert_eq!(md_links_to_slack(input), input);
+    }
+
+    #[test]
+    fn test_md_links_malformed_not_converted() {
+        // Missing closing paren — should emit literally
+        assert_eq!(md_links_to_slack("[label](https://bad"), "[label](https://bad");
+    }
 
     // --- strip_bot_mention ---
 

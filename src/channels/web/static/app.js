@@ -4390,7 +4390,7 @@ function renderModelCostsSection(sec) {
     return `<div class="settings-row">
       <div class="settings-row-info">
         <div class="settings-row-label">${escapeHtml(modelId)}</div>
-        <div class="settings-row-desc">Input: <code>$${escapeHtml(String(inp))}</code> &nbsp; Output: <code>$${escapeHtml(String(out))}</code> per token</div>
+        <div class="settings-row-desc">Input: <code>$${escapeHtml(String(inp))}</code> &nbsp; Output: <code>$${escapeHtml(String(out))}</code> per million tokens</div>
       </div>
       <div class="settings-row-control">
         <button class="btn-icon settings-edit-btn" title="Edit" onclick="editModelCost(${JSON.stringify(modelId)})">&#9998;</button>
@@ -4407,7 +4407,7 @@ function renderModelCostsSection(sec) {
 
   return `<div class="settings-section">
     <div class="settings-section-header"><span class="settings-section-title">${escapeHtml(sec.label)}</span>
-      <span class="settings-section-desc">Per-token USD prices for LLM models. Overrides built-in rates.</span>
+      <span class="settings-section-desc">Per-million-token USD prices for LLM models. Overrides built-in rates.</span>
     </div>
     <div class="settings-section-body">
       ${rows}${emptyNote}
@@ -4425,10 +4425,10 @@ function renderModelCostsSection(sec) {
             <input id="mc-model-id" type="text" class="settings-inline-input mc-model-input"
                    placeholder="Model ID (e.g. claude-haiku-4-5-20251001)">
             <input id="mc-input"    type="text" class="settings-inline-input mc-cost-input"
-                   placeholder="Input $/token (e.g. 0.0000008)"
+                   placeholder="Input $/1M tokens (e.g. 0.80)"
                    onkeydown="if(event.key==='Enter')commitAddModelCost();if(event.key==='Escape')hideAddModelCostForm()">
             <input id="mc-output"   type="text" class="settings-inline-input mc-cost-input"
-                   placeholder="Output $/token (e.g. 0.000004)"
+                   placeholder="Output $/1M tokens (e.g. 4.00)"
                    onkeydown="if(event.key==='Enter')commitAddModelCost();if(event.key==='Escape')hideAddModelCostForm()">
             <button class="btn-secondary" onclick="commitAddModelCost()">Save</button>
             <button class="btn-icon" onclick="hideAddModelCostForm()" title="Cancel">&#10005;</button>
@@ -4464,8 +4464,8 @@ async function commitAddModelCost() {
   const input   = (document.getElementById('mc-input').value   || '').trim();
   const output  = (document.getElementById('mc-output').value  || '').trim();
   if (!modelId) { alert('Model ID is required.'); return; }
-  if (!input || isNaN(parseFloat(input)))  { alert('Enter a valid input cost (e.g. 0.0000008).'); return; }
-  if (!output || isNaN(parseFloat(output))) { alert('Enter a valid output cost (e.g. 0.000004).'); return; }
+  if (!input || isNaN(parseFloat(input)))  { alert('Enter a valid input cost per million tokens (e.g. 0.80).'); return; }
+  if (!output || isNaN(parseFloat(output))) { alert('Enter a valid output cost per million tokens (e.g. 4.00).'); return; }
   await saveModelCost(modelId, input, output);
 }
 
@@ -4473,9 +4473,9 @@ async function editModelCost(modelId) {
   const key    = MODEL_COSTS_PREFIX + modelId;
   const stored = _settingsValues[key];
   const val    = (stored && stored.value) ? stored.value : {};
-  const input  = prompt('Input cost per token (USD):', val.input  || '');
+  const input  = prompt('Input cost per million tokens (USD):', val.input  || '');
   if (input  === null) return;
-  const output = prompt('Output cost per token (USD):', val.output || '');
+  const output = prompt('Output cost per million tokens (USD):', val.output || '');
   if (output === null) return;
   const inp = input.trim();
   const out = output.trim();

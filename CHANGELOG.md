@@ -10,16 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.8] - 2026-04-22
+## [0.2.9] - 2026-04-23
 
 ### Added
+- **Web search citation rules** — agent instructions (AGENTS.md v4) now separate searching from citing: the agent may run unlimited searches to gather grounding, but cites inline only (max 5 links, no duplicate domains, no Sources footer); existing deployments pick up the new rules automatically on next boot via the AGENTS.md versioning system
+- **Slack markdown link rendering** — Slack channel now converts `[label](url)` to Slack mrkdwn `<url|label>` and posts with `mrkdwn: true`; previously links appeared as raw markdown literals
+- **Matrix rich-text links** — Matrix channel now sends `format: org.matrix.custom.html` with a `formatted_body` containing proper `<a href>` tags; the plain `body` fallback strips link syntax to readable text for clients that don't support HTML events
 - **Daily log consolidation** — the heartbeat now runs a lightweight LLM extraction pass on each daily log older than today, pulling atomic facts into `USER.md` and `MEMORY.md` before deleting the raw log; daily logs are a short-lived buffer, not long-term storage
 - **Boot-time maintenance** — `prune_old_daily_logs()` and `update_agents_md_if_outdated()` run on every startup so cleanup and instruction upgrades work even when the heartbeat is disabled
 - **AGENTS.md versioning** — workspace `AGENTS.md` now carries a version marker; on boot the file is automatically rewritten if it predates the current version, ensuring existing users always have up-to-date agent behavioral instructions
+- **Analytics cost estimate disclaimer** — a persistent notice below the summary cards clarifies that displayed costs are estimates based on standard per-token rates and may not reflect cache discounts, batch pricing, or provider adjustments; users are directed to verify spend on their provider's billing dashboard
 
 ### Changed
 - **Daily log auto-write format** — per-turn auto-log now records only the user's message (80 chars) instead of both sides of the exchange; the daily log is a topic list for the agent, not a conversation transcript
 - **`audit_retention_days` setting** now controls both audit log and daily log retention (previously daily logs had no pruning at all); configurable in Settings → Audit → Log retention
+- **LLM model cost settings now use per-million-token units** — the Settings UI previously labeled cost fields as "per token" but accepted values in per-million-token format (industry standard); labels, placeholders, and prompts are now consistent with this; existing stored values are interpreted correctly without re-entry
+
+### Fixed
+- **Custom model cost rates inflated by 1,000,000×** — stored per-million-token values were treated as per-token, multiplying costs by 1M (e.g. `$251,136` for a single call); fixed by dividing settings values by 1,000,000 in `resolve_cost_rates`
+- **Job health counts always zero** — `get_job_analytics` counted only `accepted` as completed and only `in_progress` as active, ignoring the full state machine; jobs in `pending`, `completed`, `submitted`, `stuck`, or `cancelled` states fell through as unaccounted; fixed in both PostgreSQL and libSQL backends
+- **Success rate diluted by in-progress jobs** — rate was `completed / total_jobs`; denominator now uses only terminal jobs (`completed + failed`) so active work no longer drags the rate down
 
 ## [0.2.7] - 2026-04-21
 
