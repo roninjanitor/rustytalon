@@ -358,7 +358,11 @@ impl Database for PgBackend {
             in_progress_jobs: in_progress,
             success_rate: {
                 let terminal = completed + failed;
-                if terminal > 0 { completed as f64 / terminal as f64 } else { 0.0 }
+                if terminal > 0 {
+                    completed as f64 / terminal as f64
+                } else {
+                    0.0
+                }
             },
             avg_duration_secs: avg_duration,
             total_cost_usd: total_cost.to_string(),
