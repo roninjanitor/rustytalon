@@ -26,8 +26,9 @@ pub(crate) mod test_utils;
 pub use costs::{default_cost, model_cost};
 pub use failover::FailoverProvider;
 pub use provider::{
-    ChatMessage, CompletionRequest, CompletionResponse, FinishReason, LlmProvider, ModelMetadata,
-    Role, ToolCall, ToolCompletionRequest, ToolCompletionResponse, ToolDefinition, ToolResult,
+    Attachment, ChatMessage, CompletionRequest, CompletionResponse, FinishReason, LlmProvider,
+    ModelMetadata, Role, ToolCall, ToolCompletionRequest, ToolCompletionResponse, ToolDefinition,
+    ToolResult,
 };
 pub use reasoning::{
     ActionPlan, Reasoning, ReasoningContext, RespondOutput, RespondResult, TokenUsage,

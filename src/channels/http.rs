@@ -16,7 +16,7 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-use crate::channels::{Channel, IncomingMessage, MessageStream, OutgoingResponse};
+use crate::channels::{Attachment, Channel, IncomingMessage, MessageStream, OutgoingResponse};
 use crate::config::HttpConfig;
 use crate::error::ChannelError;
 
@@ -114,6 +114,9 @@ struct WebhookRequest {
     /// Whether to wait for a synchronous response.
     #[serde(default)]
     wait_for_response: bool,
+    /// Optional media attachments (images) to include with this message.
+    #[serde(default)]
+    attachments: Vec<Attachment>,
 }
 
 #[derive(Debug, Serialize)]
@@ -210,11 +213,15 @@ async fn webhook_handler(
         );
     }
 
-    let msg = IncomingMessage::new("http", &state.user_id, &req.content).with_metadata(
+    let mut msg = IncomingMessage::new("http", &state.user_id, &req.content).with_metadata(
         serde_json::json!({
             "wait_for_response": req.wait_for_response,
         }),
     );
+
+    if !req.attachments.is_empty() {
+        msg = msg.with_attachments(req.attachments);
+    }
 
     if let Some(thread_id) = &req.thread_id {
         let msg = msg.with_thread(thread_id);

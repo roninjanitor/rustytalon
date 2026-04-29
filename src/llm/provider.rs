@@ -6,6 +6,28 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::LlmError;
 
+/// A media attachment that can accompany a message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Attachment {
+    /// An image referenced by URL (fetched by the model at inference time).
+    ImageUrl { url: String },
+    /// An image supplied as raw base64 data.
+    ImageBase64 {
+        /// MIME media type: "image/jpeg", "image/png", "image/gif", or "image/webp".
+        media_type: String,
+        /// Base64-encoded image bytes.
+        data: String,
+    },
+}
+
+impl Attachment {
+    /// Create an `ImageUrl` attachment.
+    pub fn image_url(url: impl Into<String>) -> Self {
+        Self::ImageUrl { url: url.into() }
+    }
+}
+
 /// Role in a conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -21,6 +43,9 @@ pub enum Role {
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
+    /// Media attachments (images) that accompany this message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
     /// Tool call ID if this is a tool result message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
@@ -39,6 +64,7 @@ impl ChatMessage {
         Self {
             role: Role::System,
             content: content.into(),
+            attachments: Vec::new(),
             tool_call_id: None,
             name: None,
             tool_calls: None,
@@ -50,6 +76,19 @@ impl ChatMessage {
         Self {
             role: Role::User,
             content: content.into(),
+            attachments: Vec::new(),
+            tool_call_id: None,
+            name: None,
+            tool_calls: None,
+        }
+    }
+
+    /// Create a user message with media attachments.
+    pub fn user_with_attachments(content: impl Into<String>, attachments: Vec<Attachment>) -> Self {
+        Self {
+            role: Role::User,
+            content: content.into(),
+            attachments,
             tool_call_id: None,
             name: None,
             tool_calls: None,
@@ -61,6 +100,7 @@ impl ChatMessage {
         Self {
             role: Role::Assistant,
             content: content.into(),
+            attachments: Vec::new(),
             tool_call_id: None,
             name: None,
             tool_calls: None,
@@ -75,6 +115,7 @@ impl ChatMessage {
         Self {
             role: Role::Assistant,
             content: content.unwrap_or_default(),
+            attachments: Vec::new(),
             tool_call_id: None,
             name: None,
             tool_calls: if tool_calls.is_empty() {
@@ -94,6 +135,7 @@ impl ChatMessage {
         Self {
             role: Role::Tool,
             content: content.into(),
+            attachments: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             name: Some(name.into()),
             tool_calls: None,

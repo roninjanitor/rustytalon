@@ -532,6 +532,10 @@ async fn chat_send_handler(
         msg = msg.with_metadata(serde_json::json!({"thread_id": thread_id}));
     }
 
+    if !req.attachments.is_empty() {
+        msg = msg.with_attachments(req.attachments);
+    }
+
     let msg_id = msg.id;
 
     let tx_guard = state.msg_tx.read().await;

@@ -26,6 +26,7 @@ wit_bindgen::generate!({
     path: "../../wit/channel.wit",
 });
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 // Re-export generated types
@@ -76,6 +77,32 @@ struct TelegramCallbackQuery {
     data: Option<String>,
 }
 
+/// A single photo size variant returned by Telegram.
+/// https://core.telegram.org/bots/api#photosize
+#[derive(Debug, Clone, Deserialize)]
+struct PhotoSize {
+    /// Telegram file identifier (opaque string).
+    file_id: String,
+    /// Photo width in pixels.
+    width: i64,
+    /// Photo height in pixels.
+    height: i64,
+    /// File size in bytes (optional).
+    #[serde(default)]
+    file_size: Option<i64>,
+}
+
+/// A document (generic file) sent in a message.
+/// https://core.telegram.org/bots/api#document
+#[derive(Debug, Clone, Deserialize)]
+struct TelegramDocument {
+    /// Telegram file identifier.
+    file_id: String,
+    /// MIME type of the file (optional).
+    #[serde(default)]
+    mime_type: Option<String>,
+}
+
 /// Telegram Message object.
 /// https://core.telegram.org/bots/api#message
 #[derive(Debug, Deserialize)]
@@ -95,6 +122,14 @@ struct TelegramMessage {
     /// Caption for media (photo, video, document, etc.).
     #[serde(default)]
     caption: Option<String>,
+
+    /// Array of photo sizes (present when a photo is attached).
+    #[serde(default)]
+    photo: Vec<PhotoSize>,
+
+    /// Document attachment (may be an image file).
+    #[serde(default)]
+    document: Option<TelegramDocument>,
 
     /// Original message if this is a reply.
     reply_to_message: Option<Box<TelegramMessage>>,
@@ -769,6 +804,7 @@ fn handle_callback_query(cq: TelegramCallbackQuery) {
         content: data,
         thread_id: None,
         metadata_json,
+        attachments_json: None,
     });
 }
 
@@ -1108,6 +1144,10 @@ fn handle_update(update: TelegramUpdate) {
 
 /// Process a single message.
 fn handle_message(message: TelegramMessage) {
+    // Extract attachment-related fields before message is partially moved.
+    let photo = message.photo.clone();
+    let document = message.document.clone();
+
     // Use text or caption (for media messages)
     let content = message
         .text
@@ -1275,6 +1315,9 @@ fn handle_message(message: TelegramMessage) {
         cleaned_text
     };
 
+    // Collect image attachments (download and base64-encode via Telegram File API).
+    let attachments_json = build_telegram_attachments(&photo, document.as_ref());
+
     // Emit the message to the agent
     channel_host::emit_message(&EmittedMessage {
         user_id: from.id.to_string(),
@@ -1282,6 +1325,7 @@ fn handle_message(message: TelegramMessage) {
         content: content_to_emit,
         thread_id: None, // Telegram doesn't have threads in the same way
         metadata_json,
+        attachments_json,
     });
 
     channel_host::log(
@@ -1291,6 +1335,102 @@ fn handle_message(message: TelegramMessage) {
             from.id, message.chat.id
         ),
     );
+}
+
+/// Download a Telegram file by file_id and return its bytes.
+///
+/// Calls `getFile` to resolve the path, then fetches the binary content.
+/// Returns None on any error (non-blocking — attachment failure shouldn't drop the message).
+fn download_telegram_file(file_id: &str) -> Option<(Vec<u8>, String)> {
+    let headers = serde_json::json!({}).to_string();
+    let url = format!(
+        "https://api.telegram.org/bot{{TELEGRAM_BOT_TOKEN}}/getFile?file_id={}",
+        file_id
+    );
+    let resp = channel_host::http_request("GET", &url, &headers, None, Some(10_000)).ok()?;
+    if resp.status != 200 {
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_slice(&resp.body).ok()?;
+    let file_path = json
+        .get("result")?
+        .get("file_path")?
+        .as_str()?
+        .to_string();
+
+    // Guess media type from the file extension.
+    let media_type = if file_path.ends_with(".jpg") || file_path.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if file_path.ends_with(".png") {
+        "image/png"
+    } else if file_path.ends_with(".gif") {
+        "image/gif"
+    } else if file_path.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "image/jpeg" // Telegram photos are JPEG by default
+    }
+    .to_string();
+
+    let file_url = format!(
+        "https://api.telegram.org/file/bot{{TELEGRAM_BOT_TOKEN}}/{}",
+        file_path
+    );
+    let file_resp =
+        channel_host::http_request("GET", &file_url, &headers, None, Some(20_000)).ok()?;
+    if file_resp.status != 200 {
+        return None;
+    }
+    Some((file_resp.body, media_type))
+}
+
+/// Build the `attachments_json` string for a Telegram message.
+///
+/// Checks for photo arrays and image documents. Downloads and base64-encodes
+/// each image. Returns None if there are no images or all downloads fail.
+fn build_telegram_attachments(
+    photo: &[PhotoSize],
+    document: Option<&TelegramDocument>,
+) -> Option<String> {
+    let mut parts: Vec<serde_json::Value> = Vec::new();
+
+    // Prefer the largest photo size (last element in Telegram's sorted array).
+    if let Some(largest) = photo.last() {
+        if let Some((bytes, media_type)) = download_telegram_file(&largest.file_id) {
+            let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            parts.push(serde_json::json!({
+                "type": "image_base64",
+                "media_type": media_type,
+                "data": data,
+            }));
+        }
+    }
+
+    // Also handle documents that are images (e.g. PNG sent as file).
+    if let Some(doc) = document {
+        let is_image = doc
+            .mime_type
+            .as_deref()
+            .map(|mt| mt.starts_with("image/"))
+            .unwrap_or(false);
+        if is_image {
+            let media_type = doc.mime_type.as_deref().unwrap_or("image/jpeg").to_string();
+            if let Some((bytes, _)) = download_telegram_file(&doc.file_id) {
+                let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                parts.push(serde_json::json!({
+                    "type": "image_base64",
+                    "media_type": media_type,
+                    "data": data,
+                }));
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&parts).ok()
+    }
 }
 
 /// Clean message text by removing bot commands and @mentions at the start.

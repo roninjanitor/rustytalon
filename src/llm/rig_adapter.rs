@@ -5,11 +5,13 @@
 
 use async_trait::async_trait;
 use rig::OneOrMany;
+use rig::completion::message::DocumentSourceKind;
 use rig::completion::{
     AssistantContent, CompletionModel, CompletionRequest as RigRequest,
     ToolDefinition as RigToolDefinition, Usage as RigUsage,
 };
 use rig::message::{
+    Image as RigImage, ImageDetail as RigImageDetail, ImageMediaType as RigImageMediaType,
     Message as RigMessage, ToolChoice as RigToolChoice, ToolFunction, ToolResult as RigToolResult,
     ToolResultContent, UserContent,
 };
@@ -20,7 +22,7 @@ use serde::de::DeserializeOwned;
 use crate::error::LlmError;
 use crate::llm::costs;
 use crate::llm::provider::{
-    ChatMessage, CompletionRequest, CompletionResponse, FinishReason, LlmProvider,
+    Attachment, ChatMessage, CompletionRequest, CompletionResponse, FinishReason, LlmProvider,
     ToolCall as IronToolCall, ToolCompletionRequest, ToolCompletionResponse,
     ToolDefinition as IronToolDefinition,
 };
@@ -72,6 +74,36 @@ impl<M: CompletionModel> RigAdapter<M> {
 
 // -- Type conversion helpers --
 
+/// Convert an `Attachment` to a rig-core `UserContent` image part.
+fn attachment_to_user_content(att: &Attachment) -> UserContent {
+    match att {
+        Attachment::ImageUrl { url } => {
+            UserContent::image_url(url, None, Some(RigImageDetail::Auto))
+        }
+        Attachment::ImageBase64 { media_type, data } => {
+            let rig_media_type = match media_type.as_str() {
+                "image/jpeg" | "image/jpg" => Some(RigImageMediaType::JPEG),
+                "image/png" => Some(RigImageMediaType::PNG),
+                "image/gif" => Some(RigImageMediaType::GIF),
+                "image/webp" => Some(RigImageMediaType::WEBP),
+                _ => None,
+            };
+            if let Some(mt) = rig_media_type {
+                UserContent::image_base64(data, Some(mt), Some(RigImageDetail::Auto))
+            } else {
+                // Unknown media type: wrap as URL using a data URI so the model
+                // still sees the bytes rather than silently dropping the image.
+                UserContent::Image(RigImage {
+                    data: DocumentSourceKind::Base64(data.clone()),
+                    media_type: None,
+                    detail: None,
+                    additional_params: None,
+                })
+            }
+        }
+    }
+}
+
 /// Convert RustyTalon messages to rig-core format.
 ///
 /// Returns `(preamble, chat_history)` where preamble is extracted from
@@ -93,7 +125,25 @@ fn convert_messages(messages: &[ChatMessage]) -> (Option<String>, Vec<RigMessage
                 }
             }
             crate::llm::Role::User => {
-                history.push(RigMessage::user(&msg.content));
+                if msg.attachments.is_empty() {
+                    history.push(RigMessage::user(&msg.content));
+                } else {
+                    let mut parts: Vec<UserContent> = Vec::new();
+                    if !msg.content.is_empty() {
+                        parts.push(UserContent::text(&msg.content));
+                    }
+                    for att in &msg.attachments {
+                        parts.push(attachment_to_user_content(att));
+                    }
+                    // Fall back to plain text if we somehow end up with nothing
+                    if parts.is_empty() {
+                        parts.push(UserContent::text(""));
+                    }
+                    match OneOrMany::many(parts) {
+                        Ok(content) => history.push(RigMessage::User { content }),
+                        Err(_) => history.push(RigMessage::user(&msg.content)),
+                    }
+                }
             }
             crate::llm::Role::Assistant => {
                 if let Some(ref tool_calls) = msg.tool_calls {
@@ -463,5 +513,59 @@ mod tests {
         assert_eq!(saturate_u32(100), 100);
         assert_eq!(saturate_u32(u64::MAX), u32::MAX);
         assert_eq!(saturate_u32(u32::MAX as u64), u32::MAX);
+    }
+
+    #[test]
+    fn test_convert_messages_with_image_url_attachment() {
+        let msg = ChatMessage::user_with_attachments(
+            "What is in this image?",
+            vec![Attachment::ImageUrl {
+                url: "https://example.com/photo.jpg".into(),
+            }],
+        );
+        let (preamble, history) = convert_messages(&[msg]);
+        assert!(preamble.is_none());
+        assert_eq!(history.len(), 1);
+        // Should be a multi-part User message (text + image)
+        match &history[0] {
+            RigMessage::User { content } => {
+                assert!(content.iter().count() >= 2);
+            }
+            other => panic!("Expected User message, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_with_base64_attachment() {
+        let msg = ChatMessage::user_with_attachments(
+            "Describe this",
+            vec![Attachment::ImageBase64 {
+                media_type: "image/png".into(),
+                data: "abc123".into(),
+            }],
+        );
+        let (preamble, history) = convert_messages(&[msg]);
+        assert!(preamble.is_none());
+        assert_eq!(history.len(), 1);
+        match &history[0] {
+            RigMessage::User { content } => {
+                assert!(content.iter().count() >= 2);
+            }
+            other => panic!("Expected User message, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_no_attachments_stays_simple() {
+        let msg = ChatMessage::user("Hello");
+        let (_, history) = convert_messages(&[msg]);
+        assert_eq!(history.len(), 1);
+        // Plain message with no attachments should be a simple User message
+        match &history[0] {
+            RigMessage::User { content } => {
+                assert_eq!(content.iter().count(), 1);
+            }
+            other => panic!("Expected User message, got: {:?}", other),
+        }
     }
 }

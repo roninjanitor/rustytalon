@@ -125,6 +125,12 @@ interface channel-host {
         thread-id: option<string>,
         /// Channel-specific metadata as JSON string.
         metadata-json: string,
+        /// Optional JSON array of media attachments.
+        ///
+        /// Each element is an object with a `type` field:
+        ///   {"type":"image_url","url":"https://..."}
+        ///   {"type":"image_base64","media_type":"image/png","data":"<base64>"}
+        attachments-json: option<string>,
     }
 
     /// Emit a message to the agent.

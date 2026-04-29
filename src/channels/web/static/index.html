@@ -70,8 +70,15 @@
         <div class="chat-token-stats" id="chat-token-stats" style="display:none"></div>
         <div class="chat-status" id="chat-status"></div>
         <div class="chat-input">
-          <textarea id="chat-input" placeholder="Type a message..." rows="1"></textarea>
-          <button id="send-btn" onclick="sendMessage()">Send</button>
+          <div id="chat-attachments-preview" class="chat-attachments-preview" style="display:none"></div>
+          <div class="chat-input-row">
+            <label id="attach-btn" class="attach-btn" title="Attach image">
+              <input type="file" id="chat-image-input" accept="image/*" multiple style="display:none" onchange="handleImageAttach(event)">
+              📎
+            </label>
+            <textarea id="chat-input" placeholder="Type a message..." rows="1"></textarea>
+            <button id="send-btn" onclick="sendMessage()">Send</button>
+          </div>
         </div>
       </div>
     </div>

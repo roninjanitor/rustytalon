@@ -21,6 +21,9 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 
+# Base64 encoding for image attachments
+base64 = "0.22"
+
 [profile.release]
 # Optimize for size
 opt-level = "s"

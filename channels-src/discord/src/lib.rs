@@ -66,6 +66,18 @@ struct DiscordUser {
     bot: bool,
 }
 
+/// Partial Discord Attachment object.
+/// https://discord.com/developers/docs/resources/message#attachment-object
+#[derive(Debug, Deserialize)]
+struct DiscordAttachment {
+    /// CDN URL of the attachment (publicly accessible, no auth required).
+    url: String,
+
+    /// MIME type of the attachment (e.g. "image/png").
+    #[serde(default)]
+    content_type: Option<String>,
+}
+
 /// Partial Discord Message object.
 /// https://discord.com/developers/docs/resources/message#message-object
 #[derive(Debug, Deserialize)]
@@ -81,6 +93,10 @@ struct DiscordMessage {
 
     /// Plain-text message content.
     content: String,
+
+    /// Attached files/images.
+    #[serde(default)]
+    attachments: Vec<DiscordAttachment>,
 }
 
 /// Partial Discord DM Channel object (type 1 = DM).
@@ -642,6 +658,28 @@ fn handle_message(msg: &DiscordMessage, channel_id: &str) {
 
     let metadata_json = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
 
+    // Collect image attachments (Discord CDN URLs are publicly accessible).
+    let attachments_json = if msg.attachments.is_empty() {
+        None
+    } else {
+        let parts: Vec<serde_json::Value> = msg
+            .attachments
+            .iter()
+            .filter(|a| {
+                a.content_type
+                    .as_deref()
+                    .map(|ct| ct.starts_with("image/"))
+                    .unwrap_or(false)
+            })
+            .map(|a| serde_json::json!({ "type": "image_url", "url": a.url }))
+            .collect();
+        if parts.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&parts).ok()
+        }
+    };
+
     // Each Discord user gets their own conversation thread, rotatable via `/new`.
     channel_host::emit_message(&EmittedMessage {
         user_id: msg.author.id.clone(),
@@ -649,6 +687,7 @@ fn handle_message(msg: &DiscordMessage, channel_id: &str) {
         content: msg.content.clone(),
         thread_id: Some(thread_id),
         metadata_json,
+        attachments_json,
     });
 
     channel_host::log(

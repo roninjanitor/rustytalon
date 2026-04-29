@@ -1093,6 +1093,9 @@ impl Agent {
                 .get_mut(&thread_id)
                 .ok_or_else(|| Error::from(crate::error::JobError::NotFound { id: thread_id }))?;
             thread.start_turn(content);
+            if !message.attachments.is_empty() {
+                thread.set_current_turn_attachments(message.attachments.clone());
+            }
             thread.messages()
         };
 

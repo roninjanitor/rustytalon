@@ -22,6 +22,7 @@ wit_bindgen::generate!({
     path: "../../wit/channel.wit",
 });
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 // Re-export generated types
@@ -51,6 +52,20 @@ struct SlackEventWrapper {
     event_id: Option<String>,
 }
 
+/// A Slack file attachment.
+#[derive(Debug, Deserialize)]
+struct SlackFile {
+    /// Unique file ID.
+    #[allow(dead_code)]
+    id: String,
+    /// MIME type of the file.
+    #[serde(default)]
+    mimetype: Option<String>,
+    /// Private URL for downloading (requires auth).
+    #[serde(default)]
+    url_private: Option<String>,
+}
+
 /// Slack event payload.
 #[derive(Debug, Deserialize)]
 struct SlackEvent {
@@ -78,6 +93,10 @@ struct SlackEvent {
 
     /// Subtype (bot_message, etc.)
     subtype: Option<String>,
+
+    /// File attachments (images, documents, etc.).
+    #[serde(default)]
+    files: Vec<SlackFile>,
 }
 
 /// Metadata stored with emitted messages for response routing.
@@ -550,6 +569,7 @@ fn handle_interactive_payload(json: &str) -> OutgoingHttpResponse {
         channel_id,
         None,
         team_id,
+        Vec::new(),
     );
 
     json_response(200, serde_json::json!({"ok": true}))
@@ -582,7 +602,7 @@ fn handle_slack_event(event: SlackEvent, team_id: Option<String>, _event_id: Opt
                 event.text,
                 event.ts.clone(),
             ) {
-                emit_message(user, text, channel, event.thread_ts.or(Some(ts)), team_id);
+                emit_message(user, text, channel, event.thread_ts.or(Some(ts)), team_id, event.files);
             }
         }
 
@@ -601,7 +621,7 @@ fn handle_slack_event(event: SlackEvent, team_id: Option<String>, _event_id: Opt
             ) {
                 // Only process DMs (channel IDs starting with D)
                 if channel.starts_with('D') {
-                    emit_message(user, text, channel, event.thread_ts.or(Some(ts)), team_id);
+                    emit_message(user, text, channel, event.thread_ts.or(Some(ts)), team_id, event.files);
                 }
             }
         }
@@ -615,6 +635,51 @@ fn handle_slack_event(event: SlackEvent, team_id: Option<String>, _event_id: Opt
     }
 }
 
+/// Download a Slack private file and return (bytes, mime_type).
+///
+/// Slack private URLs require a Bearer token which the host injects automatically.
+fn download_slack_file(url: &str, mime_type: &str) -> Option<(Vec<u8>, String)> {
+    let headers = serde_json::json!({}).to_string();
+    let resp = channel_host::http_request("GET", url, &headers, None, Some(20_000)).ok()?;
+    if resp.status != 200 {
+        return None;
+    }
+    Some((resp.body, mime_type.to_string()))
+}
+
+/// Build the `attachments_json` string for a Slack message.
+fn build_slack_attachments(files: &[SlackFile]) -> Option<String> {
+    let mut parts: Vec<serde_json::Value> = Vec::new();
+
+    for file in files {
+        let is_image = file
+            .mimetype
+            .as_deref()
+            .map(|mt| mt.starts_with("image/"))
+            .unwrap_or(false);
+        if !is_image {
+            continue;
+        }
+        let mime = file.mimetype.as_deref().unwrap_or("image/jpeg");
+        if let Some(url) = &file.url_private {
+            if let Some((bytes, media_type)) = download_slack_file(url, mime) {
+                let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                parts.push(serde_json::json!({
+                    "type": "image_base64",
+                    "media_type": media_type,
+                    "data": data,
+                }));
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&parts).ok()
+    }
+}
+
 /// Emit a message to the agent.
 fn emit_message(
     user_id: String,
@@ -622,6 +687,7 @@ fn emit_message(
     channel: String,
     thread_ts: Option<String>,
     team_id: Option<String>,
+    files: Vec<SlackFile>,
 ) {
     let message_ts = thread_ts.clone().unwrap_or_default();
 
@@ -637,12 +703,16 @@ fn emit_message(
     // Strip @ mentions of the bot from the text for cleaner messages
     let cleaned_text = strip_bot_mention(&text);
 
+    // Collect image attachments from Slack files.
+    let attachments_json = build_slack_attachments(&files);
+
     channel_host::emit_message(&EmittedMessage {
         user_id,
         user_name: None, // Could fetch from Slack API if needed
         content: cleaned_text,
         thread_id: thread_ts,
         metadata_json,
+        attachments_json,
     });
 }
 
