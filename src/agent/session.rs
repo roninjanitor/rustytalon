@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::llm::ChatMessage;
+use crate::llm::{Attachment, ChatMessage};
 
 /// A session containing one or more threads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -309,12 +309,26 @@ impl Thread {
     pub fn messages(&self) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
         for turn in &self.turns {
-            messages.push(ChatMessage::user(&turn.user_input));
+            if turn.attachments.is_empty() {
+                messages.push(ChatMessage::user(&turn.user_input));
+            } else {
+                messages.push(ChatMessage::user_with_attachments(
+                    &turn.user_input,
+                    turn.attachments.clone(),
+                ));
+            }
             if let Some(ref response) = turn.response {
                 messages.push(ChatMessage::assistant(response));
             }
         }
         messages
+    }
+
+    /// Attach media to the most recently started turn.
+    pub fn set_current_turn_attachments(&mut self, attachments: Vec<Attachment>) {
+        if let Some(turn) = self.turns.last_mut() {
+            turn.attachments = attachments;
+        }
     }
 
     /// Truncate turns to a specific count (keeping most recent).
@@ -382,6 +396,9 @@ pub struct Turn {
     pub turn_number: usize,
     /// User input that started this turn.
     pub user_input: String,
+    /// Media attachments supplied with this turn's user message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
     /// Agent response (if completed).
     pub response: Option<String>,
     /// Tool calls made during this turn.
@@ -402,6 +419,7 @@ impl Turn {
         Self {
             turn_number,
             user_input: user_input.into(),
+            attachments: Vec::new(),
             response: None,
             tool_calls: Vec::new(),
             state: TurnState::Processing,

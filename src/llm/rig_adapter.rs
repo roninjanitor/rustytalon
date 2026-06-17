@@ -5,11 +5,13 @@
 
 use async_trait::async_trait;
 use rig::OneOrMany;
+use rig::completion::message::DocumentSourceKind;
 use rig::completion::{
     AssistantContent, CompletionModel, CompletionRequest as RigRequest,
     ToolDefinition as RigToolDefinition, Usage as RigUsage,
 };
 use rig::message::{
+    Image as RigImage, ImageDetail as RigImageDetail, ImageMediaType as RigImageMediaType,
     Message as RigMessage, ToolChoice as RigToolChoice, ToolFunction, ToolResult as RigToolResult,
     ToolResultContent, UserContent,
 };
@@ -20,16 +22,37 @@ use serde::de::DeserializeOwned;
 use crate::error::LlmError;
 use crate::llm::costs;
 use crate::llm::provider::{
-    ChatMessage, CompletionRequest, CompletionResponse, FinishReason, LlmProvider,
+    Attachment, ChatMessage, CompletionRequest, CompletionResponse, FinishReason, LlmProvider,
     ToolCall as IronToolCall, ToolCompletionRequest, ToolCompletionResponse,
     ToolDefinition as IronToolDefinition,
 };
+
+/// Parse a `Retry-After` value (integer seconds) from an error message string.
+///
+/// Handles both `Retry-After: 30` and `retry-after: 30` (case-insensitive).
+/// Returns `None` if the header is absent or cannot be parsed.
+fn parse_retry_after(msg: &str) -> Option<std::time::Duration> {
+    let lower = msg.to_lowercase();
+    let pos = lower.find("retry-after:")?;
+    let after = msg[pos + "retry-after:".len()..].trim_start();
+    let end = after
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(after.len());
+    after[..end]
+        .parse::<u64>()
+        .ok()
+        .map(std::time::Duration::from_secs)
+}
 
 /// Map a rig completion error to the appropriate `LlmError` variant.
 ///
 /// HTTP 400 responses are mapped to `ModelNotAvailable` so that:
 /// - `TrackedProvider` does **not** retry them (400s won't succeed on retry)
 /// - `FailoverProvider` **does** fail over to the next provider immediately
+///
+/// HTTP 429 responses are mapped to `RateLimited` so that:
+/// - `TrackedProvider` does **not** retry them on the same provider (already capped)
+/// - `FailoverProvider` **does** fail over to the next provider after a backoff delay
 ///
 /// All other errors map to `RequestFailed` and follow the normal retry path.
 fn map_rig_error(model_name: &str, err: impl std::fmt::Display) -> LlmError {
@@ -38,6 +61,11 @@ fn map_rig_error(model_name: &str, err: impl std::fmt::Display) -> LlmError {
         LlmError::ModelNotAvailable {
             provider: model_name.to_string(),
             model: model_name.to_string(),
+        }
+    } else if msg.contains("status code 429") || msg.contains("429 Too Many Requests") {
+        LlmError::RateLimited {
+            provider: model_name.to_string(),
+            retry_after: parse_retry_after(&msg),
         }
     } else {
         LlmError::RequestFailed {
@@ -72,6 +100,36 @@ impl<M: CompletionModel> RigAdapter<M> {
 
 // -- Type conversion helpers --
 
+/// Convert an `Attachment` to a rig-core `UserContent` image part.
+fn attachment_to_user_content(att: &Attachment) -> UserContent {
+    match att {
+        Attachment::ImageUrl { url } => {
+            UserContent::image_url(url, None, Some(RigImageDetail::Auto))
+        }
+        Attachment::ImageBase64 { media_type, data } => {
+            let rig_media_type = match media_type.as_str() {
+                "image/jpeg" | "image/jpg" => Some(RigImageMediaType::JPEG),
+                "image/png" => Some(RigImageMediaType::PNG),
+                "image/gif" => Some(RigImageMediaType::GIF),
+                "image/webp" => Some(RigImageMediaType::WEBP),
+                _ => None,
+            };
+            if let Some(mt) = rig_media_type {
+                UserContent::image_base64(data, Some(mt), Some(RigImageDetail::Auto))
+            } else {
+                // Unknown media type: wrap as URL using a data URI so the model
+                // still sees the bytes rather than silently dropping the image.
+                UserContent::Image(RigImage {
+                    data: DocumentSourceKind::Base64(data.clone()),
+                    media_type: None,
+                    detail: None,
+                    additional_params: None,
+                })
+            }
+        }
+    }
+}
+
 /// Convert RustyTalon messages to rig-core format.
 ///
 /// Returns `(preamble, chat_history)` where preamble is extracted from
@@ -93,7 +151,25 @@ fn convert_messages(messages: &[ChatMessage]) -> (Option<String>, Vec<RigMessage
                 }
             }
             crate::llm::Role::User => {
-                history.push(RigMessage::user(&msg.content));
+                if msg.attachments.is_empty() {
+                    history.push(RigMessage::user(&msg.content));
+                } else {
+                    let mut parts: Vec<UserContent> = Vec::new();
+                    if !msg.content.is_empty() {
+                        parts.push(UserContent::text(&msg.content));
+                    }
+                    for att in &msg.attachments {
+                        parts.push(attachment_to_user_content(att));
+                    }
+                    // Fall back to plain text if we somehow end up with nothing
+                    if parts.is_empty() {
+                        parts.push(UserContent::text(""));
+                    }
+                    match OneOrMany::many(parts) {
+                        Ok(content) => history.push(RigMessage::User { content }),
+                        Err(_) => history.push(RigMessage::user(&msg.content)),
+                    }
+                }
             }
             crate::llm::Role::Assistant => {
                 if let Some(ref tool_calls) = msg.tool_calls {
@@ -337,6 +413,81 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_map_rig_error_400_is_model_not_available() {
+        let err = map_rig_error("model", "HttpError: Invalid status code 400 Bad Request");
+        assert!(matches!(err, LlmError::ModelNotAvailable { .. }));
+    }
+
+    #[test]
+    fn test_map_rig_error_429_is_rate_limited() {
+        let err = map_rig_error(
+            "model",
+            "HttpError: Invalid status code 429 Too Many Requests with message: ...",
+        );
+        assert!(matches!(err, LlmError::RateLimited { .. }));
+    }
+
+    #[test]
+    fn test_map_rig_error_429_no_retry_after_is_none() {
+        let err = map_rig_error("model", "status code 429 Too Many Requests");
+        match err {
+            LlmError::RateLimited { retry_after, .. } => assert!(retry_after.is_none()),
+            other => panic!("expected RateLimited, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_map_rig_error_429_with_retry_after_header() {
+        let msg = "HttpError: Invalid status code 429 Too Many Requests\nRetry-After: 60";
+        match map_rig_error("model", msg) {
+            LlmError::RateLimited { retry_after, .. } => {
+                assert_eq!(retry_after, Some(std::time::Duration::from_secs(60)));
+            }
+            other => panic!("expected RateLimited, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_map_rig_error_500_is_request_failed() {
+        let err = map_rig_error(
+            "model",
+            "HttpError: Invalid status code 500 Internal Server Error",
+        );
+        assert!(matches!(err, LlmError::RequestFailed { .. }));
+    }
+
+    #[test]
+    fn test_parse_retry_after_present() {
+        let msg = "429 Too Many Requests\nRetry-After: 30\nbody here";
+        assert_eq!(
+            parse_retry_after(msg),
+            Some(std::time::Duration::from_secs(30))
+        );
+    }
+
+    #[test]
+    fn test_parse_retry_after_case_insensitive() {
+        assert_eq!(
+            parse_retry_after("retry-after: 5"),
+            Some(std::time::Duration::from_secs(5))
+        );
+        assert_eq!(
+            parse_retry_after("RETRY-AFTER: 10"),
+            Some(std::time::Duration::from_secs(10))
+        );
+    }
+
+    #[test]
+    fn test_parse_retry_after_absent() {
+        assert!(parse_retry_after("429 Too Many Requests, no header").is_none());
+    }
+
+    #[test]
+    fn test_parse_retry_after_non_numeric() {
+        assert!(parse_retry_after("retry-after: tomorrow").is_none());
+    }
+
+    #[test]
     fn test_convert_messages_system_to_preamble() {
         let messages = vec![
             ChatMessage::system("You are a helpful assistant."),
@@ -463,5 +614,59 @@ mod tests {
         assert_eq!(saturate_u32(100), 100);
         assert_eq!(saturate_u32(u64::MAX), u32::MAX);
         assert_eq!(saturate_u32(u32::MAX as u64), u32::MAX);
+    }
+
+    #[test]
+    fn test_convert_messages_with_image_url_attachment() {
+        let msg = ChatMessage::user_with_attachments(
+            "What is in this image?",
+            vec![Attachment::ImageUrl {
+                url: "https://example.com/photo.jpg".into(),
+            }],
+        );
+        let (preamble, history) = convert_messages(&[msg]);
+        assert!(preamble.is_none());
+        assert_eq!(history.len(), 1);
+        // Should be a multi-part User message (text + image)
+        match &history[0] {
+            RigMessage::User { content } => {
+                assert!(content.iter().count() >= 2);
+            }
+            other => panic!("Expected User message, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_with_base64_attachment() {
+        let msg = ChatMessage::user_with_attachments(
+            "Describe this",
+            vec![Attachment::ImageBase64 {
+                media_type: "image/png".into(),
+                data: "abc123".into(),
+            }],
+        );
+        let (preamble, history) = convert_messages(&[msg]);
+        assert!(preamble.is_none());
+        assert_eq!(history.len(), 1);
+        match &history[0] {
+            RigMessage::User { content } => {
+                assert!(content.iter().count() >= 2);
+            }
+            other => panic!("Expected User message, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_convert_messages_no_attachments_stays_simple() {
+        let msg = ChatMessage::user("Hello");
+        let (_, history) = convert_messages(&[msg]);
+        assert_eq!(history.len(), 1);
+        // Plain message with no attachments should be a simple User message
+        match &history[0] {
+            RigMessage::User { content } => {
+                assert_eq!(content.iter().count(), 1);
+            }
+            other => panic!("Expected User message, got: {:?}", other),
+        }
     }
 }

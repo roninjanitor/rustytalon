@@ -3,12 +3,17 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::llm::Attachment;
+
 // --- Chat ---
 
 #[derive(Debug, Deserialize)]
 pub struct SendMessageRequest {
     pub content: String,
     pub thread_id: Option<String>,
+    /// Optional media attachments (images) to include with this message.
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
 }
 
 #[derive(Debug, Serialize)]

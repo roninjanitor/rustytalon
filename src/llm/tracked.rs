@@ -18,12 +18,15 @@ use crate::llm::retry::retry_backoff_delay;
 use async_trait::async_trait;
 use rust_decimal::Decimal;
 
-/// Returns `true` if the LLM error is transient and worth retrying.
+/// Returns `true` if the LLM error is transient and worth retrying on the **same** provider.
+///
+/// `RateLimited` is intentionally excluded: retrying the same provider that just returned 429
+/// wastes time and burns quota. `FailoverProvider` treats it as retryable so the next provider
+/// in the chain is tried immediately instead.
 pub fn is_retryable_error(err: &LlmError) -> bool {
     matches!(
         err,
         LlmError::RequestFailed { .. }
-            | LlmError::RateLimited { .. }
             | LlmError::InvalidResponse { .. }
             | LlmError::SessionRenewalFailed { .. }
             | LlmError::Http(_)
@@ -344,18 +347,20 @@ mod tests {
 
     #[test]
     fn test_is_retryable_error() {
-        // Retryable errors
+        // Retryable errors (same provider retry)
         assert!(is_retryable_error(&LlmError::RequestFailed {
             provider: "p".into(),
             reason: "err".into(),
         }));
-        assert!(is_retryable_error(&LlmError::RateLimited {
-            provider: "p".into(),
-            retry_after: None,
-        }));
         assert!(is_retryable_error(&LlmError::InvalidResponse {
             provider: "p".into(),
             reason: "bad".into(),
+        }));
+
+        // RateLimited: NOT retried on the same provider — FailoverProvider handles it
+        assert!(!is_retryable_error(&LlmError::RateLimited {
+            provider: "p".into(),
+            retry_after: None,
         }));
 
         // Non-retryable errors

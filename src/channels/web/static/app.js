@@ -274,13 +274,66 @@ function isCurrentThread(threadId) {
 
 // --- Chat ---
 
+// Pending image attachments: Array of {dataUrl, mediaType, base64Data}
+let pendingAttachments = [];
+
+function handleImageAttach(event) {
+  const files = Array.from(event.target.files);
+  event.target.value = ''; // Allow re-selecting the same file
+
+  files.forEach((file) => {
+    if (!file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const dataUrl = e.target.result;
+      // dataUrl: "data:image/jpeg;base64,<data>"
+      const commaIdx = dataUrl.indexOf(',');
+      const base64Data = dataUrl.slice(commaIdx + 1);
+      pendingAttachments.push({ dataUrl, mediaType: file.type, base64Data });
+      renderAttachmentPreviews();
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderAttachmentPreviews() {
+  const preview = document.getElementById('chat-attachments-preview');
+  preview.innerHTML = '';
+  if (pendingAttachments.length === 0) {
+    preview.style.display = 'none';
+    return;
+  }
+  preview.style.display = 'flex';
+  pendingAttachments.forEach((att, idx) => {
+    const thumb = document.createElement('div');
+    thumb.className = 'chat-attachment-thumb';
+    const img = document.createElement('img');
+    img.src = att.dataUrl;
+    img.alt = 'attachment';
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'remove-attachment';
+    removeBtn.textContent = '×';
+    removeBtn.onclick = () => {
+      pendingAttachments.splice(idx, 1);
+      renderAttachmentPreviews();
+    };
+    thumb.appendChild(img);
+    thumb.appendChild(removeBtn);
+    preview.appendChild(thumb);
+  });
+}
+
 function sendMessage() {
   const input = document.getElementById('chat-input');
   const sendBtn = document.getElementById('send-btn');
   const content = input.value.trim();
-  if (!content) return;
+  if (!content && pendingAttachments.length === 0) return;
 
-  addMessage('user', content);
+  // Capture and clear pending attachments before async send
+  const attachmentsToSend = pendingAttachments.splice(0);
+  renderAttachmentPreviews();
+
+  addMessage('user', content || '[image]');
   input.value = '';
   autoResizeTextarea(input);
   setStatus('Sending...', true);
@@ -288,9 +341,18 @@ function sendMessage() {
   sendBtn.disabled = true;
   input.disabled = true;
 
+  const body = { content: content || '', thread_id: currentThreadId || undefined };
+  if (attachmentsToSend.length > 0) {
+    body.attachments = attachmentsToSend.map((att) => ({
+      type: 'image_base64',
+      media_type: att.mediaType,
+      data: att.base64Data,
+    }));
+  }
+
   apiFetch('/api/chat/send', {
     method: 'POST',
-    body: { content, thread_id: currentThreadId || undefined },
+    body,
   }).catch((err) => {
     addMessage('system', 'Failed to send: ' + err.message);
     setStatus('');

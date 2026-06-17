@@ -6,6 +6,7 @@
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rust_decimal::Decimal;
@@ -92,12 +93,29 @@ impl FailoverProvider {
                         return Err(err);
                     }
                     if i + 1 < self.providers.len() {
-                        tracing::warn!(
-                            provider = %provider.model_name(),
-                            error = %err,
-                            next_provider = %self.providers[i + 1].model_name(),
-                            "Provider failed with retryable error, trying next provider"
-                        );
+                        // On rate limiting, wait before hitting the next provider to avoid
+                        // cascading the same request volume across the whole chain at once.
+                        // Use the server-supplied Retry-After value if present; otherwise a
+                        // short fixed delay (1 s) is enough to shed the burst.
+                        if let LlmError::RateLimited { retry_after, .. } = &err {
+                            let delay = retry_after
+                                .unwrap_or(Duration::from_secs(1))
+                                .min(Duration::from_secs(30));
+                            tracing::warn!(
+                                provider = %provider.model_name(),
+                                next_provider = %self.providers[i + 1].model_name(),
+                                delay_ms = delay.as_millis() as u64,
+                                "Rate limited, waiting before trying next provider"
+                            );
+                            tokio::time::sleep(delay).await;
+                        } else {
+                            tracing::warn!(
+                                provider = %provider.model_name(),
+                                error = %err,
+                                next_provider = %self.providers[i + 1].model_name(),
+                                "Provider failed with retryable error, trying next provider"
+                            );
+                        }
                     }
                     last_error = Some(err);
                 }
@@ -226,7 +244,8 @@ mod tests {
     }
 
     // Test 5: Three providers, first two fail (retryable), third succeeds.
-    #[tokio::test]
+    // start_paused = true so the rate-limit backoff sleep completes instantly.
+    #[tokio::test(start_paused = true)]
     async fn three_providers_first_two_fail_third_succeeds() {
         let p1 = Arc::new(MockProvider::failing_retryable("provider-1"));
         let p2 = Arc::new(MockProvider::failing_rate_limited("provider-2"));
@@ -236,6 +255,67 @@ mod tests {
 
         let response = failover.complete(make_request()).await.unwrap();
         assert_eq!(response.content, "third time lucky");
+    }
+
+    // Test: rate-limited primary triggers a backoff delay before failover.
+    // Verifies that tokio time advances by at least the retry_after duration.
+    // start_paused = true freezes the clock; the sleep resolves instantly but
+    // we can observe that time was advanced by the expected amount.
+    #[tokio::test(start_paused = true)]
+    async fn rate_limited_primary_delays_before_failover() {
+        let primary = Arc::new(MockProvider::failing_rate_limited("primary")); // retry_after = 30s
+        let fallback = Arc::new(MockProvider::succeeding("fallback", "ok"));
+
+        let failover = FailoverProvider::new(vec![primary, fallback]).unwrap();
+
+        let before = tokio::time::Instant::now();
+        let response = failover.complete(make_request()).await.unwrap();
+        let elapsed = before.elapsed();
+
+        assert_eq!(response.content, "ok");
+        // retry_after is 30s, capped at 30s — clock must have advanced at least that much.
+        assert!(
+            elapsed >= Duration::from_secs(30),
+            "expected at least 30s delay, got {elapsed:?}"
+        );
+    }
+
+    // Test: rate-limited with no retry_after uses the 1 s default delay.
+    #[tokio::test(start_paused = true)]
+    async fn rate_limited_no_retry_after_uses_default_delay() {
+        let primary = Arc::new(MockProvider {
+            name: "primary".to_string(),
+            input_cost: rust_decimal::Decimal::ZERO,
+            output_cost: rust_decimal::Decimal::ZERO,
+            complete_result: std::sync::Mutex::new(Some(Err(LlmError::RateLimited {
+                provider: "primary".to_string(),
+                retry_after: None,
+            }))),
+            tool_complete_result: std::sync::Mutex::new(Some(Ok(
+                crate::llm::provider::ToolCompletionResponse {
+                    content: None,
+                    tool_calls: vec![],
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    finish_reason: crate::llm::provider::FinishReason::Stop,
+                    response_id: None,
+                },
+            ))),
+        });
+        let fallback = Arc::new(MockProvider::succeeding("fallback", "ok"));
+
+        let failover = FailoverProvider::new(vec![primary, fallback]).unwrap();
+
+        let before = tokio::time::Instant::now();
+        let response = failover.complete(make_request()).await.unwrap();
+        let elapsed = before.elapsed();
+
+        assert_eq!(response.content, "ok");
+        // Default delay is 1 s.
+        assert!(
+            elapsed >= Duration::from_secs(1),
+            "expected at least 1s default delay, got {elapsed:?}"
+        );
     }
 
     // Test: complete_with_tools follows same failover logic.

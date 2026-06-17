@@ -35,6 +35,9 @@ pub struct EmittedMessage {
     /// Channel-specific metadata as JSON string.
     pub metadata_json: String,
 
+    /// Optional JSON array of media attachments (serialized `Vec<Attachment>`).
+    pub attachments_json: Option<String>,
+
     /// Timestamp when the message was emitted.
     pub emitted_at_millis: u64,
 }
@@ -48,6 +51,7 @@ impl EmittedMessage {
             content: content.into(),
             thread_id: None,
             metadata_json: "{}".to_string(),
+            attachments_json: None,
             emitted_at_millis: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
@@ -70,6 +74,12 @@ impl EmittedMessage {
     /// Set metadata JSON.
     pub fn with_metadata(mut self, metadata_json: impl Into<String>) -> Self {
         self.metadata_json = metadata_json.into();
+        self
+    }
+
+    /// Set attachments JSON.
+    pub fn with_attachments_json(mut self, attachments_json: impl Into<String>) -> Self {
+        self.attachments_json = Some(attachments_json.into());
         self
     }
 }

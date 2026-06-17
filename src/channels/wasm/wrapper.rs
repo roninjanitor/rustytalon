@@ -47,7 +47,9 @@ use crate::channels::wasm::host::{ChannelEmitRateLimiter, ChannelHostState, Emit
 use crate::channels::wasm::router::RegisteredEndpoint;
 use crate::channels::wasm::runtime::{PreparedChannelModule, WasmChannelRuntime};
 use crate::channels::wasm::schema::ChannelConfig;
-use crate::channels::{Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate};
+use crate::channels::{
+    Attachment, Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate,
+};
 use crate::error::ChannelError;
 use crate::pairing::PairingStore;
 use crate::safety::LeakDetector;
@@ -681,6 +683,9 @@ impl near::agent::channel_host::Host for ChannelStoreData {
             emitted = emitted.with_thread_id(tid);
         }
         emitted = emitted.with_metadata(msg.metadata_json);
+        if let Some(aj) = msg.attachments_json {
+            emitted = emitted.with_attachments_json(aj);
+        }
 
         match self.host_state.emit_message(emitted) {
             Ok(()) => {
@@ -1885,6 +1890,14 @@ impl WasmChannel {
                 msg = msg.with_metadata(metadata);
             }
 
+            // Parse attachments JSON
+            if let Some(ref aj) = emitted.attachments_json
+                && let Ok(attachments) = serde_json::from_str::<Vec<Attachment>>(aj)
+                && !attachments.is_empty()
+            {
+                msg = msg.with_attachments(attachments);
+            }
+
             // Send to stream
             tracing::info!(
                 channel = %self.name,
@@ -2216,6 +2229,14 @@ impl WasmChannel {
             // Parse metadata JSON
             if let Ok(metadata) = serde_json::from_str(&emitted.metadata_json) {
                 msg = msg.with_metadata(metadata);
+            }
+
+            // Parse attachments JSON
+            if let Some(ref aj) = emitted.attachments_json
+                && let Ok(attachments) = serde_json::from_str::<Vec<Attachment>>(aj)
+                && !attachments.is_empty()
+            {
+                msg = msg.with_attachments(attachments);
             }
 
             // Send to stream
