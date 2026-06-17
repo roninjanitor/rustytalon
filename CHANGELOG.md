@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-06-17
+
+### Fixed
+- **LLM 429 rate limit failover** — HTTP 429 responses are now mapped to `RateLimited` instead of `RequestFailed`; the rate-limited provider is no longer retried in place, and the failover chain moves to the next provider immediately with a backoff delay (server-supplied `Retry-After` value, or 1 s default, capped at 30 s) to prevent cascading rate limits across all providers simultaneously
+
 ## [0.2.9] - 2026-04-23
 
 ### Added
