@@ -27,11 +27,32 @@ use crate::llm::provider::{
     ToolDefinition as IronToolDefinition,
 };
 
+/// Parse a `Retry-After` value (integer seconds) from an error message string.
+///
+/// Handles both `Retry-After: 30` and `retry-after: 30` (case-insensitive).
+/// Returns `None` if the header is absent or cannot be parsed.
+fn parse_retry_after(msg: &str) -> Option<std::time::Duration> {
+    let lower = msg.to_lowercase();
+    let pos = lower.find("retry-after:")?;
+    let after = msg[pos + "retry-after:".len()..].trim_start();
+    let end = after
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(after.len());
+    after[..end]
+        .parse::<u64>()
+        .ok()
+        .map(std::time::Duration::from_secs)
+}
+
 /// Map a rig completion error to the appropriate `LlmError` variant.
 ///
 /// HTTP 400 responses are mapped to `ModelNotAvailable` so that:
 /// - `TrackedProvider` does **not** retry them (400s won't succeed on retry)
 /// - `FailoverProvider` **does** fail over to the next provider immediately
+///
+/// HTTP 429 responses are mapped to `RateLimited` so that:
+/// - `TrackedProvider` does **not** retry them on the same provider (already capped)
+/// - `FailoverProvider` **does** fail over to the next provider after a backoff delay
 ///
 /// All other errors map to `RequestFailed` and follow the normal retry path.
 fn map_rig_error(model_name: &str, err: impl std::fmt::Display) -> LlmError {
@@ -40,6 +61,11 @@ fn map_rig_error(model_name: &str, err: impl std::fmt::Display) -> LlmError {
         LlmError::ModelNotAvailable {
             provider: model_name.to_string(),
             model: model_name.to_string(),
+        }
+    } else if msg.contains("status code 429") || msg.contains("429 Too Many Requests") {
+        LlmError::RateLimited {
+            provider: model_name.to_string(),
+            retry_after: parse_retry_after(&msg),
         }
     } else {
         LlmError::RequestFailed {
@@ -385,6 +411,81 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_map_rig_error_400_is_model_not_available() {
+        let err = map_rig_error("model", "HttpError: Invalid status code 400 Bad Request");
+        assert!(matches!(err, LlmError::ModelNotAvailable { .. }));
+    }
+
+    #[test]
+    fn test_map_rig_error_429_is_rate_limited() {
+        let err = map_rig_error(
+            "model",
+            "HttpError: Invalid status code 429 Too Many Requests with message: ...",
+        );
+        assert!(matches!(err, LlmError::RateLimited { .. }));
+    }
+
+    #[test]
+    fn test_map_rig_error_429_no_retry_after_is_none() {
+        let err = map_rig_error("model", "status code 429 Too Many Requests");
+        match err {
+            LlmError::RateLimited { retry_after, .. } => assert!(retry_after.is_none()),
+            other => panic!("expected RateLimited, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_map_rig_error_429_with_retry_after_header() {
+        let msg = "HttpError: Invalid status code 429 Too Many Requests\nRetry-After: 60";
+        match map_rig_error("model", msg) {
+            LlmError::RateLimited { retry_after, .. } => {
+                assert_eq!(retry_after, Some(std::time::Duration::from_secs(60)));
+            }
+            other => panic!("expected RateLimited, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_map_rig_error_500_is_request_failed() {
+        let err = map_rig_error(
+            "model",
+            "HttpError: Invalid status code 500 Internal Server Error",
+        );
+        assert!(matches!(err, LlmError::RequestFailed { .. }));
+    }
+
+    #[test]
+    fn test_parse_retry_after_present() {
+        let msg = "429 Too Many Requests\nRetry-After: 30\nbody here";
+        assert_eq!(
+            parse_retry_after(msg),
+            Some(std::time::Duration::from_secs(30))
+        );
+    }
+
+    #[test]
+    fn test_parse_retry_after_case_insensitive() {
+        assert_eq!(
+            parse_retry_after("retry-after: 5"),
+            Some(std::time::Duration::from_secs(5))
+        );
+        assert_eq!(
+            parse_retry_after("RETRY-AFTER: 10"),
+            Some(std::time::Duration::from_secs(10))
+        );
+    }
+
+    #[test]
+    fn test_parse_retry_after_absent() {
+        assert!(parse_retry_after("429 Too Many Requests, no header").is_none());
+    }
+
+    #[test]
+    fn test_parse_retry_after_non_numeric() {
+        assert!(parse_retry_after("retry-after: tomorrow").is_none());
+    }
 
     #[test]
     fn test_convert_messages_system_to_preamble() {
