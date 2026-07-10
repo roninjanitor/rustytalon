@@ -61,6 +61,11 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "routine_delete",
     "routine_history",
     "web_search",
+    "create_entity",
+    "update_entity",
+    "create_relationship",
+    "search_entities",
+    "get_entity_context",
 ];
 
 /// Registry of available tools.
@@ -235,6 +240,26 @@ impl ToolRegistry {
         self.register_sync(Arc::new(MemoryTreeTool::new(workspace)));
 
         tracing::info!("Registered 4 memory tools");
+    }
+
+    /// Register knowledge graph tools with a connected Neo4j client.
+    ///
+    /// Call this after `register_builtin_tools()` when `config.graph.enabled`
+    /// and a `GraphClient` was successfully connected. Requires the `neo4j`
+    /// Cargo feature.
+    #[cfg(feature = "neo4j")]
+    pub fn register_graph_tools(&self, client: Arc<crate::graph::GraphClient>) {
+        use crate::tools::builtin::{
+            CreateEntityTool, CreateRelationshipTool, GetEntityContextTool, SearchEntitiesTool,
+            UpdateEntityTool,
+        };
+        self.register_sync(Arc::new(CreateEntityTool::new(Arc::clone(&client))));
+        self.register_sync(Arc::new(UpdateEntityTool::new(Arc::clone(&client))));
+        self.register_sync(Arc::new(CreateRelationshipTool::new(Arc::clone(&client))));
+        self.register_sync(Arc::new(SearchEntitiesTool::new(Arc::clone(&client))));
+        self.register_sync(Arc::new(GetEntityContextTool::new(client)));
+
+        tracing::info!("Registered 5 knowledge graph tools");
     }
 
     /// Register the web search tool with the given backend.

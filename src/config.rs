@@ -32,6 +32,7 @@ pub struct Config {
     pub sandbox: SandboxModeConfig,
     pub claude_code: ClaudeCodeConfig,
     pub search: SearchConfig,
+    pub graph: Neo4jConfig,
 }
 
 impl Config {
@@ -92,6 +93,7 @@ impl Config {
             sandbox: SandboxModeConfig::resolve()?,
             claude_code: ClaudeCodeConfig::resolve()?,
             search: SearchConfig::resolve()?,
+            graph: Neo4jConfig::resolve()?,
         })
     }
 }
@@ -1571,6 +1573,51 @@ impl SearchConfig {
     /// Whether web search is available.
     pub fn is_enabled(&self) -> bool {
         self.searxng_url.is_some() || self.brave_api_key.is_some() || self.tavily_api_key.is_some()
+    }
+}
+
+/// Knowledge graph (Neo4j) configuration. Optional -- graph tools are only
+/// registered when `enabled` is true, which is only possible when built
+/// with the `neo4j` Cargo feature.
+///
+/// - `NEO4J_ENABLED` -- explicit on/off switch (default: true if `NEO4J_URI` is set)
+/// - `NEO4J_URI` -- Bolt URI, e.g. `bolt://localhost:7687`
+/// - `NEO4J_USER` -- database user (default: `neo4j`)
+/// - `NEO4J_PASSWORD` -- database password
+#[derive(Debug, Clone, Default)]
+pub struct Neo4jConfig {
+    pub enabled: bool,
+    pub uri: Option<String>,
+    pub user: Option<String>,
+    pub password: Option<SecretString>,
+}
+
+impl Neo4jConfig {
+    fn resolve() -> Result<Self, ConfigError> {
+        let uri = optional_env("NEO4J_URI")?;
+        let user = optional_env("NEO4J_USER")?;
+        let password = optional_env("NEO4J_PASSWORD")?.map(SecretString::from);
+
+        let enabled = optional_env("NEO4J_ENABLED")?
+            .map(|s| s.parse())
+            .transpose()
+            .map_err(|e| ConfigError::InvalidValue {
+                key: "NEO4J_ENABLED".to_string(),
+                message: format!("must be 'true' or 'false': {e}"),
+            })?
+            .unwrap_or_else(|| uri.is_some());
+
+        Ok(Self {
+            enabled,
+            uri,
+            user,
+            password,
+        })
+    }
+
+    /// Get the password if configured.
+    pub fn password(&self) -> Option<&str> {
+        self.password.as_ref().map(|s| s.expose_secret())
     }
 }
 

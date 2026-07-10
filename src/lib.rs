@@ -49,6 +49,8 @@ pub mod error;
 pub mod estimation;
 pub mod evaluation;
 pub mod extensions;
+#[cfg(feature = "neo4j")]
+pub mod graph;
 pub mod history;
 pub mod llm;
 pub mod orchestrator;

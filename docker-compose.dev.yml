@@ -23,6 +23,11 @@
 # Start with postgres backend:
 #   docker compose -f docker-compose.dev.yml --profile postgres up --build
 #
+# Start with the knowledge graph (Neo4j, requires building with the `neo4j`
+# Cargo feature -- see Dockerfile/README for enabling it):
+#   docker compose -f docker-compose.dev.yml --profile neo4j up --build
+#   Then set NEO4J_ENABLED=true and NEO4J_URI=bolt://neo4j:7687 in .env.
+#
 # Stop everything:
 #   docker compose -f docker-compose.dev.yml down
 
@@ -47,6 +52,26 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Neo4j (knowledge graph) — only started when --profile neo4j is used
+  # ---------------------------------------------------------------------------
+  neo4j:
+    profiles: ["neo4j"]
+    image: neo4j:5-community
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474" # Neo4j Browser
+      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687" # Bolt protocol
+    environment:
+      NEO4J_AUTH: "${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-devpassword}"
+    volumes:
+      - neo4j-data-dev:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   # ---------------------------------------------------------------------------
   # RustyTalon agent — built from local source
@@ -74,3 +99,4 @@ services:
 
 volumes:
   pgdata-dev:
+  neo4j-data-dev:

@@ -196,6 +196,12 @@ src/
 │   ├── store.rs        # Secret storage
 │   └── types.rs        # Credential types
 │
+├── graph/              # Native knowledge graph (Neo4j, optional, `neo4j` feature)
+│   ├── mod.rs          # Module root
+│   ├── client.rs       # GraphClient wrapping neo4rs::Graph
+│   ├── validate.rs     # Cypher label/rel-type injection-safety validation
+│   └── error.rs        # GraphError
+│
 └── history/            # Persistence
     ├── store.rs        # PostgreSQL repositories
     └── analytics.rs    # Aggregation queries (JobStats, ToolStats)
@@ -319,6 +325,12 @@ SEARXNG_URL=http://localhost:8888        # Self-hosted SearXNG (HTTP and private
 OPENAI_API_KEY=sk-...                   # For OpenAI embeddings
 EMBEDDING_ENABLED=true
 EMBEDDING_MODEL=text-embedding-3-small  # or text-embedding-3-large
+
+# Knowledge graph (optional, requires `cargo build --features neo4j`)
+NEO4J_ENABLED=true
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=...
 
 # Heartbeat (proactive periodic execution)
 HEARTBEAT_ENABLED=true
@@ -938,3 +950,43 @@ Documents are chunked for search indexing:
 - Default: 800 words per chunk (roughly 800 tokens for English)
 - 15% overlap between chunks for context preservation
 - Minimum chunk size: 50 words (tiny trailing chunks merge with previous)
+
+## Knowledge Graph (Neo4j, optional)
+
+A native, structured graph of entities (people, projects, organizations, meetings, documents, topics) and typed relationships between them, distinct from the unstructured workspace memory above. See `rusty-talon-prd.md` for the full design.
+
+**Fully optional** — gated behind the `neo4j` Cargo feature (not in `default`) and `NEO4J_ENABLED`/`NEO4J_URI` config. When not built with the feature, or not configured, the graph tools simply aren't registered; nothing else in RustyTalon depends on it.
+
+```bash
+cargo build --features neo4j
+```
+
+```bash
+# .env
+NEO4J_ENABLED=true
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=...
+```
+
+Local dev instance: `docker compose -f docker-compose.dev.yml --profile neo4j up`.
+
+### Tools
+
+Five tools registered via `ToolRegistry::register_graph_tools()` when `config.graph.enabled` and a `GraphClient` connects successfully (`src/tools/builtin/graph.rs`):
+
+- **`create_entity`** — create or upsert an entity (dedup on type+name via `MERGE`)
+- **`update_entity`** — update properties on an existing entity without duplicating it
+- **`create_relationship`** — typed, directional edge between two existing entities
+- **`search_entities`** — fuzzy name search (full-text index, falls back to `CONTAINS`)
+- **`get_entity_context`** — N-hop traversal (clamped 1-3) returning the entity plus its surrounding subgraph
+
+There's no separate "inject graph context into every turn" mechanism — `get_entity_context`'s description instructs the model to call it whenever a question touches people/projects/relationships, the same pattern `memory_search` uses for workspace memory.
+
+### Cypher injection safety
+
+Neo4j node labels and relationship types cannot be bound as query parameters (only property values can), so any `type` string that gets interpolated into a Cypher query is validated first via `src/graph/validate.rs`'s `validate_label`/`validate_rel_type` against `^[A-Za-z][A-Za-z0-9_]{0,63}$`. The six PRD-suggested entity types (Person, Project, Organization, Meeting, Document, Topic) are not a hard-coded enum — the schema is meant to evolve — but every label/type must still pass this pattern before it's interpolated.
+
+### Not yet implemented
+
+Scheduled extraction (a routine that proposes candidate entities/relationships from recent conversation history) and the staged review workflow (`stage_candidate`/`list_candidates`/`approve_candidate`/`reject_candidate`) from the PRD's Phase B are not built yet — v1 only covers manual tool calls during normal conversation (PRD Phase A). Also not built: a `delete`/`merge` entity tool for correcting bad extractions.

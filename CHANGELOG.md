@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Native knowledge graph (Neo4j, optional)** — new `neo4j` Cargo feature adds `create_entity`, `update_entity`, `create_relationship`, `search_entities`, and `get_entity_context` tools backed by a self-hosted Neo4j instance, so the agent can build and query a persistent graph of people/projects/organizations/relationships instead of re-deriving context every conversation; fully optional (disabled unless built with `--features neo4j` and `NEO4J_URI` is set), with an optional local Neo4j service in `docker-compose.dev.yml --profile neo4j`
+
 ## [0.2.9] - 2026-04-23
 
 ### Added
