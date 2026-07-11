@@ -3,7 +3,7 @@
 //! Lets the agent build and query a persistent graph of entities (people,
 //! projects, organizations, meetings, documents, topics) and typed
 //! relationships between them, so it doesn't have to be re-briefed every
-//! conversation. See `rusty-talon-prd.md` for the design.
+//! conversation. See `docs/KNOWLEDGE_GRAPH_PRD.md` for the design.
 //!
 //! `get_entity_context`'s description tells the model to call it whenever a
 //! question touches people/projects/relationships -- there's no separate

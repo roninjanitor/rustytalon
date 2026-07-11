@@ -39,6 +39,24 @@ These tools are always available without any installation:
 
 Type `/tools` in chat to see the current list of all available tools, including any installed extensions.
 
+### Knowledge Graph Tools (optional)
+
+Registered only when RustyTalon is built with the `neo4j` Cargo feature and `NEO4J_URI` is configured — see [docs/CONFIGURATION.md](CONFIGURATION.md#knowledge-graph-neo4j-optional).
+
+| Tool | What it does |
+|------|-------------|
+| `create_entity` | Create or update a graph entity (person, project, org, etc.) |
+| `update_entity` | Update an existing entity's properties |
+| `create_relationship` | Create a typed relationship between two entities |
+| `search_entities` | Fuzzy search entities by name |
+| `get_entity_context` | Get an entity plus everything connected to it within a few hops |
+| `delete_entity` | Delete an entity and its relationships (requires approval) |
+| `merge_entities` | Merge a duplicate entity into a canonical one (requires approval, requires the Neo4j APOC plugin) |
+| `stage_candidate` | Propose entities/relationships for review without committing them |
+| `list_candidates` | List staged proposals awaiting review |
+| `approve_candidate` | Commit a staged proposal into the graph (requires approval) |
+| `reject_candidate` | Reject a staged proposal |
+
 ---
 
 ## Tool Approval

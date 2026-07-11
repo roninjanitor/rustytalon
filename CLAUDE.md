@@ -510,6 +510,9 @@ Key test patterns:
 9. **Connection broker long-poll adapter** - Matrix `/sync` long-poll not yet implemented (config parsed but adapter stubbed)
 10. **Connection broker SSE adapter** - SSE adapter not yet implemented (config parsed but adapter stubbed)
 11. **Connection broker resume support** - Discord RESUME with session_id + sequence — config parsed (`resumable: true`) but not implemented
+12. **Knowledge graph Phase C auto-commit** - High-confidence staged candidates still require manual `approve_candidate`; no confidence-threshold auto-commit yet (deferred until extraction quality is validated over real Phase B usage, per the PRD)
+13. **Knowledge graph review UX** - Review happens via `list_candidates`/`approve_candidate`/`reject_candidate` tool calls from any channel; no Discord react-to-approve or dedicated web UI review list built yet
+14. **Knowledge graph extraction routine** - No built-in scheduled routine; must be created manually via `routine_create` (a `FullJob` whose description tells the agent to review conversation history and call `stage_candidate`)
 
 ### Completed
 
@@ -535,6 +538,7 @@ Key test patterns:
 - ✅ **Extension management** - Install, auth, activate MCP/WASM extensions via CLI and web UI
 - ✅ **libSQL/Turso backend** - Database trait abstraction (`src/db/`), feature-gated dual backend support (postgres/libsql), embedded SQLite for zero-dependency local mode
 - ✅ **Connection broker (WebSocket adapter)** - Host-side persistent connections for WASM channels, with `on-event` WIT callback, event filtering, heartbeat, and reconnect
+- ✅ **Native knowledge graph (Neo4j, optional)** - `neo4j` Cargo feature with `create_entity`/`update_entity`/`create_relationship`/`search_entities`/`get_entity_context`/`delete_entity`/`merge_entities` tools plus a staged extraction review workflow (`stage_candidate`/`list_candidates`/`approve_candidate`/`reject_candidate`), covering PRD Phase A + B
 
 ## Adding a New Tool
 
@@ -953,7 +957,7 @@ Documents are chunked for search indexing:
 
 ## Knowledge Graph (Neo4j, optional)
 
-A native, structured graph of entities (people, projects, organizations, meetings, documents, topics) and typed relationships between them, distinct from the unstructured workspace memory above. See `rusty-talon-prd.md` for the full design.
+A native, structured graph of entities (people, projects, organizations, meetings, documents, topics) and typed relationships between them, distinct from the unstructured workspace memory above. See `docs/KNOWLEDGE_GRAPH_PRD.md` for the full design.
 
 **Fully optional** — gated behind the `neo4j` Cargo feature (not in `default`) and `NEO4J_ENABLED`/`NEO4J_URI` config. When not built with the feature, or not configured, the graph tools simply aren't registered; nothing else in RustyTalon depends on it.
 

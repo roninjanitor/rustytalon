@@ -1,5 +1,5 @@
 //! Native knowledge graph (Neo4j-backed), gated behind the `neo4j` Cargo
-//! feature. See `rusty-talon-prd.md` for the design rationale.
+//! feature. See `docs/KNOWLEDGE_GRAPH_PRD.md` for the design rationale.
 //!
 //! Entities and relationships are exposed to the agent's LLM tool-calling
 //! via `src/tools/builtin/graph.rs`. This module only handles the Neo4j
