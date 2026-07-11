@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Native knowledge graph (Neo4j, optional)** — new `neo4j` Cargo feature adds `create_entity`, `update_entity`, `create_relationship`, `search_entities`, and `get_entity_context` tools backed by a self-hosted Neo4j instance, so the agent can build and query a persistent graph of people/projects/organizations/relationships instead of re-deriving context every conversation; fully optional (disabled unless built with `--features neo4j` and `NEO4J_URI` is set), with an optional local Neo4j service in `docker-compose.dev.yml --profile neo4j`
+- **Knowledge graph: delete/merge and staged extraction review** — adds `delete_entity` and `merge_entities` (the latter requires the Neo4j APOC plugin) for correcting bad graph data, plus `stage_candidate`/`list_candidates`/`approve_candidate`/`reject_candidate` implementing the PRD's Phase B review workflow: extraction-style proposals are staged and require explicit approval before anything commits to the live graph; review happens through tool calls from any channel, no dedicated UI
 
 ## [0.2.9] - 2026-04-23
 

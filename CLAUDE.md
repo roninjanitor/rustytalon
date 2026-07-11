@@ -973,20 +973,36 @@ Local dev instance: `docker compose -f docker-compose.dev.yml --profile neo4j up
 
 ### Tools
 
-Five tools registered via `ToolRegistry::register_graph_tools()` when `config.graph.enabled` and a `GraphClient` connects successfully (`src/tools/builtin/graph.rs`):
+Eleven tools registered via `ToolRegistry::register_graph_tools()` when `config.graph.enabled` and a `GraphClient` connects successfully (`src/tools/builtin/graph.rs`):
 
 - **`create_entity`** — create or upsert an entity (dedup on type+name via `MERGE`)
 - **`update_entity`** — update properties on an existing entity without duplicating it
 - **`create_relationship`** — typed, directional edge between two existing entities
 - **`search_entities`** — fuzzy name search (full-text index, falls back to `CONTAINS`)
 - **`get_entity_context`** — N-hop traversal (clamped 1-3) returning the entity plus its surrounding subgraph
+- **`delete_entity`** — permanently remove an entity and its relationships (requires approval)
+- **`merge_entities`** — merge a duplicate entity into a canonical one, combining properties and re-pointing relationships (requires approval, requires the APOC plugin — see below)
+- **`stage_candidate`** — propose entities/relationships without committing them (Phase B extraction)
+- **`list_candidates`** — list staged candidates, default filter `status: pending`
+- **`approve_candidate`** — commit a pending candidate into the live graph (requires approval)
+- **`reject_candidate`** — mark a pending candidate rejected (kept for audit, not deleted)
 
 There's no separate "inject graph context into every turn" mechanism — `get_entity_context`'s description instructs the model to call it whenever a question touches people/projects/relationships, the same pattern `memory_search` uses for workspace memory.
 
 ### Cypher injection safety
 
-Neo4j node labels and relationship types cannot be bound as query parameters (only property values can), so any `type` string that gets interpolated into a Cypher query is validated first via `src/graph/validate.rs`'s `validate_label`/`validate_rel_type` against `^[A-Za-z][A-Za-z0-9_]{0,63}$`. The six PRD-suggested entity types (Person, Project, Organization, Meeting, Document, Topic) are not a hard-coded enum — the schema is meant to evolve — but every label/type must still pass this pattern before it's interpolated.
+Neo4j node labels and relationship types cannot be bound as query parameters (only property values can), so any `type` string that gets interpolated into a Cypher query is validated first via `src/graph/validate.rs`'s `validate_label`/`validate_rel_type` against `^[A-Za-z][A-Za-z0-9_]{0,63}$`. The six PRD-suggested entity types (Person, Project, Organization, Meeting, Document, Topic) are not a hard-coded enum — the schema is meant to evolve — but every label/type must still pass this pattern before it's interpolated. Candidate entities/relationships are validated the same way at `stage_candidate` time (fail fast) and again implicitly at `approve_candidate` time (which calls `create_entity`/`create_relationship`).
 
-### Not yet implemented
+### Staged extraction & review (PRD Phase B)
 
-Scheduled extraction (a routine that proposes candidate entities/relationships from recent conversation history) and the staged review workflow (`stage_candidate`/`list_candidates`/`approve_candidate`/`reject_candidate`) from the PRD's Phase B are not built yet — v1 only covers manual tool calls during normal conversation (PRD Phase A). Also not built: a `delete`/`merge` entity tool for correcting bad extractions.
+Extraction-quality is unproven (PRD §11), so nothing from an automated extraction pass commits directly to the graph. The flow:
+
+1. `stage_candidate` writes a `:GraphCandidate` node holding the proposed entities/relationships as JSON string properties (`entities_json`/`relationships_json` — Neo4j properties can't hold nested maps/lists of maps) with `status: "pending"`.
+2. `list_candidates` / `approve_candidate` / `reject_candidate` are how a human reviews them — through any channel (Discord, web chat, TUI), by asking the agent to show pending candidates and approve or reject by id. There's no Discord-react-to-approve or web UI review list built; the tool-calling agent itself is the review interface, which works everywhere without channel-specific code. A dedicated review UI is a possible future enhancement, not built.
+3. `approve_candidate` replays the staged entities/relationships through the existing `create_entity`/`create_relationship` (already idempotent via `MERGE`) and marks the candidate `approved`. Per-item failures are collected rather than aborting the whole batch.
+
+**There's no built-in scheduled routine for F8** ("a scheduled routine periodically reviews recent conversation history"). Create one yourself via the existing `routine_create` tool — a `FullJob` action (`src/agent/routine.rs:160`) whose `description` tells the agent to review recent conversation and call `stage_candidate` for anything notable. This intentionally reuses the general-purpose routine engine instead of adding graph-specific scheduling code.
+
+### `merge_entities` requires the APOC plugin
+
+Re-pointing relationships with a dynamic type isn't expressible in plain Cypher, so `merge_entities` calls `apoc.refactor.mergeNodes`. `docker-compose.dev.yml`'s `neo4j` service sets `NEO4J_PLUGINS: '["apoc"]'` to install it automatically; a self-managed Neo4j instance needs the APOC plugin installed manually. If it's missing, the tool returns a `GraphError` naming APOC explicitly rather than a raw "procedure not found" error.

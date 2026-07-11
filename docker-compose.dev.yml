@@ -65,6 +65,8 @@ services:
       - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687" # Bolt protocol
     environment:
       NEO4J_AUTH: "${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-devpassword}"
+      # APOC is required by the merge_entities tool (apoc.refactor.mergeNodes).
+      NEO4J_PLUGINS: '["apoc"]'
     volumes:
       - neo4j-data-dev:/data
     healthcheck:

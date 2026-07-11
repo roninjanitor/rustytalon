@@ -26,8 +26,9 @@ pub use extension_tools::{
 pub use file::{ApplyPatchTool, ListDirTool, ReadFileTool, WriteFileTool};
 #[cfg(feature = "neo4j")]
 pub use graph::{
-    CreateEntityTool, CreateRelationshipTool, GetEntityContextTool, SearchEntitiesTool,
-    UpdateEntityTool,
+    ApproveCandidateTool, CreateEntityTool, CreateRelationshipTool, DeleteEntityTool,
+    GetEntityContextTool, ListCandidatesTool, MergeEntitiesTool, RejectCandidateTool,
+    SearchEntitiesTool, StageCandidateTool, UpdateEntityTool,
 };
 pub use http::HttpTool;
 pub use job::{CancelJobTool, CreateJobTool, JobStatusTool, ListJobsTool};

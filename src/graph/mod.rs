@@ -9,5 +9,5 @@ mod client;
 mod error;
 mod validate;
 
-pub use client::GraphClient;
+pub use client::{CandidateEntity, CandidateRelationship, GraphClient};
 pub use error::GraphError;

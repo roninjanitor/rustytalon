@@ -7,6 +7,7 @@
 //! Neo4j does not support parameter binding for labels/relationship types.
 
 use neo4rs::{Graph, Node, query};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::config::Neo4jConfig;
@@ -15,6 +16,29 @@ use crate::graph::validate::{clamp_hops, validate_label, validate_rel_type};
 
 /// Name of the full-text index used by `search_entities`. Created on connect.
 const ENTITY_SEARCH_INDEX: &str = "entity_search";
+
+/// A proposed entity inside a staged candidate (F8/F9). Mirrors `create_entity`'s
+/// params so `approve_candidate` can replay it unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateEntity {
+    #[serde(rename = "type")]
+    pub label: String,
+    pub name: String,
+    #[serde(default)]
+    pub properties: Option<Value>,
+}
+
+/// A proposed relationship inside a staged candidate (F8/F9). Mirrors
+/// `create_relationship`'s params so `approve_candidate` can replay it unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateRelationship {
+    pub from_entity: String,
+    pub to_entity: String,
+    #[serde(rename = "type")]
+    pub rel_type: String,
+    #[serde(default)]
+    pub properties: Option<Value>,
+}
 
 pub struct GraphClient {
     graph: Graph,
@@ -45,6 +69,14 @@ impl GraphClient {
         );
         self.graph
             .run(query(&cypher))
+            .await
+            .map_err(|e| GraphError::Query(e.to_string()))?;
+
+        self.graph
+            .run(query(
+                "CREATE CONSTRAINT graph_candidate_id IF NOT EXISTS \
+                 FOR (c:GraphCandidate) REQUIRE c.id IS UNIQUE",
+            ))
             .await
             .map_err(|e| GraphError::Query(e.to_string()))
     }
@@ -262,6 +294,233 @@ impl GraphClient {
         }))
     }
 
+    /// Delete an entity and all its relationships (F6).
+    pub async fn delete_entity(&self, label: &str, name: &str) -> Result<(), GraphError> {
+        validate_label(label)?;
+
+        // `count(n)` counts the matched rows before deletion, which is how
+        // Neo4j distinguishes "no match" (0) from "deleted" (>0) in one query.
+        let cypher =
+            format!("MATCH (n:{label} {{name: $name}}) DETACH DELETE n RETURN count(n) AS n");
+        let q = query(&cypher).param("name", name);
+        let row = self
+            .execute_optional(q)
+            .await?
+            .ok_or_else(|| GraphError::NotFound(name.to_string()))?;
+        let matched: i64 = row.get("n").unwrap_or(0);
+        if matched == 0 {
+            return Err(GraphError::NotFound(name.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Merge a duplicate entity into a canonical one, combining properties and
+    /// re-pointing all relationships (F6). Requires the APOC plugin
+    /// (`apoc.refactor.mergeNodes`) -- plain Cypher can't create relationships
+    /// with a dynamic type, which is required to preserve the source node's
+    /// edges on the target.
+    pub async fn merge_entities(
+        &self,
+        label: &str,
+        source_name: &str,
+        target_name: &str,
+    ) -> Result<Value, GraphError> {
+        validate_label(label)?;
+
+        let cypher = format!(
+            "MATCH (source:{label} {{name: $source}}), (target:{label} {{name: $target}}) \
+             CALL apoc.refactor.mergeNodes([source, target], \
+                 {{properties: 'combine', mergeRels: true}}) \
+             YIELD node RETURN node"
+        );
+        let q = query(&cypher)
+            .param("source", source_name)
+            .param("target", target_name);
+
+        let row = self.execute_optional(q).await.map_err(|e| {
+            if e.to_string().to_lowercase().contains("apoc") {
+                GraphError::Query(format!(
+                    "merge_entities requires the APOC plugin (apoc.refactor.mergeNodes) \
+                     to be installed on the Neo4j server: {e}"
+                ))
+            } else {
+                e
+            }
+        })?;
+        let row = row.ok_or_else(|| {
+            GraphError::NotFound(format!("'{source_name}' or '{target_name}' not found"))
+        })?;
+
+        let node: Node = row
+            .get("node")
+            .map_err(|e| GraphError::Query(e.to_string()))?;
+        node_to_json(&node)
+    }
+
+    /// Stage a candidate batch of entities/relationships for review (F8/F9).
+    /// Nothing is written to the live graph until `approve_candidate` is called.
+    pub async fn stage_candidate(
+        &self,
+        entities: &[CandidateEntity],
+        relationships: &[CandidateRelationship],
+        source: &str,
+        confidence: f64,
+    ) -> Result<Value, GraphError> {
+        for entity in entities {
+            validate_label(&entity.label)?;
+        }
+        for rel in relationships {
+            validate_rel_type(&rel.rel_type)?;
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        let entities_json = serde_json::to_string(entities)
+            .map_err(|e| GraphError::Query(format!("failed to serialize entities: {e}")))?;
+        let relationships_json = serde_json::to_string(relationships)
+            .map_err(|e| GraphError::Query(format!("failed to serialize relationships: {e}")))?;
+
+        let cypher = "CREATE (c:GraphCandidate { \
+                id: $id, source: $source, confidence: $confidence, status: 'pending', \
+                entities_json: $entities_json, relationships_json: $relationships_json, \
+                created_at: $now \
+            }) RETURN c";
+        let q = query(cypher)
+            .param("id", id)
+            .param("source", source)
+            .param("confidence", confidence.clamp(0.0, 1.0))
+            .param("entities_json", entities_json)
+            .param("relationships_json", relationships_json)
+            .param("now", now);
+
+        let row = self.execute_single(q).await?;
+        candidate_node_to_json(&row)
+    }
+
+    /// List staged candidates, optionally filtered by status (F9).
+    pub async fn list_candidates(
+        &self,
+        status: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Value>, GraphError> {
+        let limit = i64::from(limit.clamp(1, 100));
+        let cypher = "MATCH (c:GraphCandidate) \
+             WHERE $status IS NULL OR c.status = $status \
+             RETURN c ORDER BY c.created_at DESC LIMIT $limit";
+        let q = query(cypher).param("status", status).param("limit", limit);
+
+        let mut stream = self
+            .graph
+            .execute(q)
+            .await
+            .map_err(|e| GraphError::Query(e.to_string()))?;
+
+        let mut results = Vec::new();
+        while let Some(row) = stream
+            .next()
+            .await
+            .map_err(|e| GraphError::Query(e.to_string()))?
+        {
+            results.push(candidate_node_to_json(&row)?);
+        }
+        Ok(results)
+    }
+
+    /// Commit a pending candidate: replay its entities/relationships through
+    /// `create_entity`/`create_relationship` (idempotent via `MERGE`), then
+    /// mark it approved (F9). Per-item failures are collected rather than
+    /// aborting the whole batch, since a bad relationship (e.g. a typo'd
+    /// entity name) shouldn't discard otherwise-valid entities.
+    pub async fn approve_candidate(&self, id: &str) -> Result<Value, GraphError> {
+        let candidate = self.get_pending_candidate(id).await?;
+        let entities: Vec<CandidateEntity> =
+            serde_json::from_str(candidate["entities_json"].as_str().unwrap_or("[]"))
+                .map_err(|e| GraphError::Query(format!("corrupt candidate entities: {e}")))?;
+        let relationships: Vec<CandidateRelationship> =
+            serde_json::from_str(candidate["relationships_json"].as_str().unwrap_or("[]"))
+                .map_err(|e| GraphError::Query(format!("corrupt candidate relationships: {e}")))?;
+
+        let mut committed_entities = Vec::new();
+        let mut committed_relationships = Vec::new();
+        let mut errors = Vec::new();
+
+        for entity in &entities {
+            match self
+                .create_entity(&entity.label, &entity.name, entity.properties.clone())
+                .await
+            {
+                Ok(v) => committed_entities.push(v),
+                Err(e) => errors.push(json!({ "entity": entity.name, "error": e.to_string() })),
+            }
+        }
+        for rel in &relationships {
+            match self
+                .create_relationship(
+                    &rel.from_entity,
+                    &rel.to_entity,
+                    &rel.rel_type,
+                    rel.properties.clone(),
+                )
+                .await
+            {
+                Ok(v) => committed_relationships.push(v),
+                Err(e) => errors.push(json!({
+                    "relationship": format!("{} -[{}]-> {}", rel.from_entity, rel.rel_type, rel.to_entity),
+                    "error": e.to_string(),
+                })),
+            }
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let q = query(
+            "MATCH (c:GraphCandidate {id: $id, status: 'pending'}) \
+             SET c.status = 'approved', c.reviewed_at = $now RETURN c",
+        )
+        .param("id", id)
+        .param("now", now);
+        self.execute_single(q).await?;
+
+        Ok(json!({
+            "id": id,
+            "committed_entities": committed_entities,
+            "committed_relationships": committed_relationships,
+            "errors": errors,
+        }))
+    }
+
+    /// Reject a pending candidate without committing anything (F9). Kept
+    /// (status set to `rejected`) rather than deleted, for audit purposes.
+    pub async fn reject_candidate(&self, id: &str) -> Result<Value, GraphError> {
+        self.get_pending_candidate(id).await?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let q = query(
+            "MATCH (c:GraphCandidate {id: $id, status: 'pending'}) \
+             SET c.status = 'rejected', c.reviewed_at = $now RETURN c",
+        )
+        .param("id", id)
+        .param("now", now);
+
+        let row = self.execute_single(q).await?;
+        candidate_node_to_json(&row)
+    }
+
+    async fn get_pending_candidate(&self, id: &str) -> Result<Value, GraphError> {
+        let q = query("MATCH (c:GraphCandidate {id: $id}) RETURN c").param("id", id);
+        let row = self
+            .execute_optional(q)
+            .await?
+            .ok_or_else(|| GraphError::NotFound(id.to_string()))?;
+        let candidate = candidate_node_to_json(&row)?;
+        if candidate["status"] != "pending" {
+            return Err(GraphError::Query(format!(
+                "candidate '{id}' is not pending (status: {})",
+                candidate["status"]
+            )));
+        }
+        Ok(candidate)
+    }
+
     /// Run a query expected to return exactly one row.
     async fn execute_single(&self, q: neo4rs::Query) -> Result<neo4rs::Row, GraphError> {
         self.execute_optional(q)
@@ -294,4 +553,12 @@ fn node_to_json(node: &Node) -> Result<Value, GraphError> {
         "labels": node.labels(),
         "properties": properties,
     }))
+}
+
+/// Extract a `:GraphCandidate` row's properties as JSON (id, source,
+/// confidence, status, entities_json, relationships_json, timestamps).
+fn candidate_node_to_json(row: &neo4rs::Row) -> Result<Value, GraphError> {
+    let node: Node = row.get("c").map_err(|e| GraphError::Query(e.to_string()))?;
+    node.to::<Value>()
+        .map_err(|e| GraphError::Query(format!("failed to decode candidate: {e}")))
 }
