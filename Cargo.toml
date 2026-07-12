@@ -1,6 +1,6 @@
 [package]
 name = "rustytalon"
-version = "0.2.10"
+version = "0.2.11"
 edition = "2024"
 rust-version = "1.94"
 description = "Secure multi-provider AI assistant with smart routing and no vendor lock-in"
@@ -36,6 +36,9 @@ refinery = { version = "0.9", features = ["tokio-postgres"], optional = true }
 
 # Database - libSQL/Turso (optional embedded database)
 libsql = { version = "0.9", optional = true, default-features = false, features = ["core", "replication"] }
+
+# Knowledge graph - Neo4j (optional)
+neo4rs = { version = "0.8", optional = true, features = ["json"] }
 
 # Error handling
 thiserror = "2"
@@ -153,6 +156,7 @@ postgres = [
     "rust_decimal/db-tokio-postgres",
 ]
 libsql = ["dep:libsql"]
+neo4j = ["dep:neo4rs"]
 integration = []
 
 [[bin]]

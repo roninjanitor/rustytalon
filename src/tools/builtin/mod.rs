@@ -4,6 +4,8 @@ mod echo;
 mod ecommerce;
 pub mod extension_tools;
 mod file;
+#[cfg(feature = "neo4j")]
+mod graph;
 mod http;
 mod job;
 mod json;
@@ -22,6 +24,12 @@ pub use extension_tools::{
     ToolActivateTool, ToolAuthTool, ToolInstallTool, ToolListTool, ToolRemoveTool, ToolSearchTool,
 };
 pub use file::{ApplyPatchTool, ListDirTool, ReadFileTool, WriteFileTool};
+#[cfg(feature = "neo4j")]
+pub use graph::{
+    ApproveCandidateTool, CreateEntityTool, CreateRelationshipTool, DeleteEntityTool,
+    GetEntityContextTool, ListCandidatesTool, MergeEntitiesTool, RejectCandidateTool,
+    SearchEntitiesTool, StageCandidateTool, UpdateEntityTool,
+};
 pub use http::HttpTool;
 pub use job::{CancelJobTool, CreateJobTool, JobStatusTool, ListJobsTool};
 pub use json::JsonTool;

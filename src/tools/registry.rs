@@ -61,6 +61,17 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "routine_delete",
     "routine_history",
     "web_search",
+    "create_entity",
+    "update_entity",
+    "create_relationship",
+    "search_entities",
+    "get_entity_context",
+    "delete_entity",
+    "merge_entities",
+    "stage_candidate",
+    "list_candidates",
+    "approve_candidate",
+    "reject_candidate",
 ];
 
 /// Registry of available tools.
@@ -235,6 +246,33 @@ impl ToolRegistry {
         self.register_sync(Arc::new(MemoryTreeTool::new(workspace)));
 
         tracing::info!("Registered 4 memory tools");
+    }
+
+    /// Register knowledge graph tools with a connected Neo4j client.
+    ///
+    /// Call this after `register_builtin_tools()` when `config.graph.enabled`
+    /// and a `GraphClient` was successfully connected. Requires the `neo4j`
+    /// Cargo feature.
+    #[cfg(feature = "neo4j")]
+    pub fn register_graph_tools(&self, client: Arc<crate::graph::GraphClient>) {
+        use crate::tools::builtin::{
+            ApproveCandidateTool, CreateEntityTool, CreateRelationshipTool, DeleteEntityTool,
+            GetEntityContextTool, ListCandidatesTool, MergeEntitiesTool, RejectCandidateTool,
+            SearchEntitiesTool, StageCandidateTool, UpdateEntityTool,
+        };
+        self.register_sync(Arc::new(CreateEntityTool::new(Arc::clone(&client))));
+        self.register_sync(Arc::new(UpdateEntityTool::new(Arc::clone(&client))));
+        self.register_sync(Arc::new(CreateRelationshipTool::new(Arc::clone(&client))));
+        self.register_sync(Arc::new(SearchEntitiesTool::new(Arc::clone(&client))));
+        self.register_sync(Arc::new(GetEntityContextTool::new(Arc::clone(&client))));
+        self.register_sync(Arc::new(DeleteEntityTool::new(Arc::clone(&client))));
+        self.register_sync(Arc::new(MergeEntitiesTool::new(Arc::clone(&client))));
+        self.register_sync(Arc::new(StageCandidateTool::new(Arc::clone(&client))));
+        self.register_sync(Arc::new(ListCandidatesTool::new(Arc::clone(&client))));
+        self.register_sync(Arc::new(ApproveCandidateTool::new(Arc::clone(&client))));
+        self.register_sync(Arc::new(RejectCandidateTool::new(client)));
+
+        tracing::info!("Registered 11 knowledge graph tools");
     }
 
     /// Register the web search tool with the given backend.

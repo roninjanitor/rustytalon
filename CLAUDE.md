@@ -196,6 +196,12 @@ src/
 │   ├── store.rs        # Secret storage
 │   └── types.rs        # Credential types
 │
+├── graph/              # Native knowledge graph (Neo4j, optional, `neo4j` feature)
+│   ├── mod.rs          # Module root
+│   ├── client.rs       # GraphClient wrapping neo4rs::Graph
+│   ├── validate.rs     # Cypher label/rel-type injection-safety validation
+│   └── error.rs        # GraphError
+│
 └── history/            # Persistence
     ├── store.rs        # PostgreSQL repositories
     └── analytics.rs    # Aggregation queries (JobStats, ToolStats)
@@ -319,6 +325,12 @@ SEARXNG_URL=http://localhost:8888        # Self-hosted SearXNG (HTTP and private
 OPENAI_API_KEY=sk-...                   # For OpenAI embeddings
 EMBEDDING_ENABLED=true
 EMBEDDING_MODEL=text-embedding-3-small  # or text-embedding-3-large
+
+# Knowledge graph (optional, requires `cargo build --features neo4j`)
+NEO4J_ENABLED=true
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=...
 
 # Heartbeat (proactive periodic execution)
 HEARTBEAT_ENABLED=true
@@ -498,6 +510,9 @@ Key test patterns:
 9. **Connection broker long-poll adapter** - Matrix `/sync` long-poll not yet implemented (config parsed but adapter stubbed)
 10. **Connection broker SSE adapter** - SSE adapter not yet implemented (config parsed but adapter stubbed)
 11. **Connection broker resume support** - Discord RESUME with session_id + sequence — config parsed (`resumable: true`) but not implemented
+12. **Knowledge graph Phase C auto-commit** - High-confidence staged candidates still require manual `approve_candidate`; no confidence-threshold auto-commit yet (deferred until extraction quality is validated over real Phase B usage, per the PRD)
+13. **Knowledge graph review UX** - Review happens via `list_candidates`/`approve_candidate`/`reject_candidate` tool calls from any channel; no Discord react-to-approve or dedicated web UI review list built yet
+14. **Knowledge graph extraction routine** - No built-in scheduled routine; must be created manually via `routine_create` (a `FullJob` whose description tells the agent to review conversation history and call `stage_candidate`)
 
 ### Completed
 
@@ -523,6 +538,7 @@ Key test patterns:
 - ✅ **Extension management** - Install, auth, activate MCP/WASM extensions via CLI and web UI
 - ✅ **libSQL/Turso backend** - Database trait abstraction (`src/db/`), feature-gated dual backend support (postgres/libsql), embedded SQLite for zero-dependency local mode
 - ✅ **Connection broker (WebSocket adapter)** - Host-side persistent connections for WASM channels, with `on-event` WIT callback, event filtering, heartbeat, and reconnect
+- ✅ **Native knowledge graph (Neo4j, optional)** - `neo4j` Cargo feature with `create_entity`/`update_entity`/`create_relationship`/`search_entities`/`get_entity_context`/`delete_entity`/`merge_entities` tools plus a staged extraction review workflow (`stage_candidate`/`list_candidates`/`approve_candidate`/`reject_candidate`), covering PRD Phase A + B
 
 ## Adding a New Tool
 
@@ -938,3 +954,59 @@ Documents are chunked for search indexing:
 - Default: 800 words per chunk (roughly 800 tokens for English)
 - 15% overlap between chunks for context preservation
 - Minimum chunk size: 50 words (tiny trailing chunks merge with previous)
+
+## Knowledge Graph (Neo4j, optional)
+
+A native, structured graph of entities (people, projects, organizations, meetings, documents, topics) and typed relationships between them, distinct from the unstructured workspace memory above. See `docs/KNOWLEDGE_GRAPH_PRD.md` for the full design.
+
+**Fully optional** — gated behind the `neo4j` Cargo feature (not in `default`) and `NEO4J_ENABLED`/`NEO4J_URI` config. When not built with the feature, or not configured, the graph tools simply aren't registered; nothing else in RustyTalon depends on it.
+
+```bash
+cargo build --features neo4j
+```
+
+```bash
+# .env
+NEO4J_ENABLED=true
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=...
+```
+
+Local dev instance: `docker compose -f docker-compose.dev.yml --profile neo4j up`.
+
+### Tools
+
+Eleven tools registered via `ToolRegistry::register_graph_tools()` when `config.graph.enabled` and a `GraphClient` connects successfully (`src/tools/builtin/graph.rs`):
+
+- **`create_entity`** — create or upsert an entity (dedup on type+name via `MERGE`)
+- **`update_entity`** — update properties on an existing entity without duplicating it
+- **`create_relationship`** — typed, directional edge between two existing entities
+- **`search_entities`** — fuzzy name search (full-text index, falls back to `CONTAINS`)
+- **`get_entity_context`** — N-hop traversal (clamped 1-3) returning the entity plus its surrounding subgraph
+- **`delete_entity`** — permanently remove an entity and its relationships (requires approval)
+- **`merge_entities`** — merge a duplicate entity into a canonical one, combining properties and re-pointing relationships (requires approval, requires the APOC plugin — see below)
+- **`stage_candidate`** — propose entities/relationships without committing them (Phase B extraction)
+- **`list_candidates`** — list staged candidates, default filter `status: pending`
+- **`approve_candidate`** — commit a pending candidate into the live graph (requires approval)
+- **`reject_candidate`** — mark a pending candidate rejected (kept for audit, not deleted)
+
+There's no separate "inject graph context into every turn" mechanism — `get_entity_context`'s description instructs the model to call it whenever a question touches people/projects/relationships, the same pattern `memory_search` uses for workspace memory.
+
+### Cypher injection safety
+
+Neo4j node labels and relationship types cannot be bound as query parameters (only property values can), so any `type` string that gets interpolated into a Cypher query is validated first via `src/graph/validate.rs`'s `validate_label`/`validate_rel_type` against `^[A-Za-z][A-Za-z0-9_]{0,63}$`. The six PRD-suggested entity types (Person, Project, Organization, Meeting, Document, Topic) are not a hard-coded enum — the schema is meant to evolve — but every label/type must still pass this pattern before it's interpolated. Candidate entities/relationships are validated the same way at `stage_candidate` time (fail fast) and again implicitly at `approve_candidate` time (which calls `create_entity`/`create_relationship`).
+
+### Staged extraction & review (PRD Phase B)
+
+Extraction-quality is unproven (PRD §11), so nothing from an automated extraction pass commits directly to the graph. The flow:
+
+1. `stage_candidate` writes a `:GraphCandidate` node holding the proposed entities/relationships as JSON string properties (`entities_json`/`relationships_json` — Neo4j properties can't hold nested maps/lists of maps) with `status: "pending"`.
+2. `list_candidates` / `approve_candidate` / `reject_candidate` are how a human reviews them — through any channel (Discord, web chat, TUI), by asking the agent to show pending candidates and approve or reject by id. There's no Discord-react-to-approve or web UI review list built; the tool-calling agent itself is the review interface, which works everywhere without channel-specific code. A dedicated review UI is a possible future enhancement, not built.
+3. `approve_candidate` replays the staged entities/relationships through the existing `create_entity`/`create_relationship` (already idempotent via `MERGE`) and marks the candidate `approved`. Per-item failures are collected rather than aborting the whole batch.
+
+**There's no built-in scheduled routine for F8** ("a scheduled routine periodically reviews recent conversation history"). Create one yourself via the existing `routine_create` tool — a `FullJob` action (`src/agent/routine.rs:160`) whose `description` tells the agent to review recent conversation and call `stage_candidate` for anything notable. This intentionally reuses the general-purpose routine engine instead of adding graph-specific scheduling code.
+
+### `merge_entities` requires the APOC plugin
+
+Re-pointing relationships with a dynamic type isn't expressible in plain Cypher, so `merge_entities` calls `apoc.refactor.mergeNodes`. `docker-compose.dev.yml`'s `neo4j` service sets `NEO4J_PLUGINS: '["apoc"]'` to install it automatically; a self-managed Neo4j instance needs the APOC plugin installed manually. If it's missing, the tool returns a `GraphError` naming APOC explicitly rather than a raw "procedure not found" error.

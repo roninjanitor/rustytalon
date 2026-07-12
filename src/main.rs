@@ -588,6 +588,19 @@ async fn main() -> anyhow::Result<()> {
         tools.register_memory_tools(workspace);
     }
 
+    // Register knowledge graph tools if Neo4j is configured (optional, requires
+    // the `neo4j` Cargo feature). Connection failure is non-fatal -- RustyTalon
+    // starts fine without the graph, same as when embeddings aren't configured.
+    #[cfg(feature = "neo4j")]
+    if config.graph.enabled {
+        match rustytalon::graph::GraphClient::connect(&config.graph).await {
+            Ok(client) => tools.register_graph_tools(Arc::new(client)),
+            Err(e) => {
+                tracing::warn!("Neo4j configured but unreachable, graph tools disabled: {e}")
+            }
+        }
+    }
+
     // Register builder tool if enabled.
     // When sandbox is enabled and allow_local_tools is false, skip builder registration
     // because register_builder_tool also registers dev tools (shell, file ops) that would

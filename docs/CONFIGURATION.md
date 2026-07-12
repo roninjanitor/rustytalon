@@ -174,6 +174,23 @@ Without embeddings, memory search uses keyword (full-text) matching only. Semant
 
 ---
 
+## Knowledge Graph (Neo4j, optional)
+
+Adds tools for the agent to build and query a structured graph of entities (people, projects, organizations, meetings, documents, topics) and relationships between them, so it doesn't have to be re-briefed every conversation. Requires building with the `neo4j` Cargo feature (`cargo build --features neo4j`) — the published Docker image already includes it via `--all-features`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NEO4J_ENABLED` | `true` if `NEO4J_URI` is set | Explicit on/off switch |
+| `NEO4J_URI` | — | Bolt URI, e.g. `bolt://localhost:7687` |
+| `NEO4J_USER` | `neo4j` | Database user |
+| `NEO4J_PASSWORD` | — | Database password |
+
+Local dev instance: `docker compose -f docker-compose.dev.yml --profile neo4j up`. The `merge_entities` tool additionally requires the Neo4j APOC plugin (the dev compose service installs it automatically).
+
+See [docs/KNOWLEDGE_GRAPH_PRD.md](KNOWLEDGE_GRAPH_PRD.md) for the full design and `CLAUDE.md`'s "Knowledge Graph" section for the tool reference.
+
+---
+
 ## Channels
 
 ### HTTP Webhook
