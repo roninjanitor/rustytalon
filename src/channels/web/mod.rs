@@ -87,6 +87,8 @@ impl GatewayChannel {
             chat_rate_limiter: server::RateLimiter::new(30, 60),
             wasm_channels: vec![],
             channel_env_config: std::collections::HashMap::new(),
+            #[cfg(feature = "neo4j")]
+            graph_client: None,
         });
 
         Self {
@@ -117,6 +119,8 @@ impl GatewayChannel {
             chat_rate_limiter: server::RateLimiter::new(30, 60),
             wasm_channels: self.state.wasm_channels.clone(),
             channel_env_config: self.state.channel_env_config.clone(),
+            #[cfg(feature = "neo4j")]
+            graph_client: self.state.graph_client.clone(),
         };
         mutate(&mut new_state);
         self.state = Arc::new(new_state);
@@ -155,6 +159,13 @@ impl GatewayChannel {
     /// Inject the database store for sandbox job persistence.
     pub fn with_store(mut self, store: Arc<dyn Database>) -> Self {
         self.rebuild_state(|s| s.store = Some(store));
+        self
+    }
+
+    /// Inject the knowledge graph client for the graph browser API.
+    #[cfg(feature = "neo4j")]
+    pub fn with_graph_client(mut self, gc: Arc<crate::graph::GraphClient>) -> Self {
+        self.rebuild_state(|s| s.graph_client = Some(gc));
         self
     }
 

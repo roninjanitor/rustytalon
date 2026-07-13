@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Knowledge graph web browser (optional, requires `neo4j` feature)** — new "Graph" tab in the web gateway renders an interactive force-directed visualization of the knowledge graph: category-colored, degree-sized nodes, zoom/pan/drag, a browse-by-category sidebar with edge counts, entity search, and a click-through detail panel. Backed by five new `GET /api/graph/*` endpoints (stats/entities/sample/search/entity) and three new read-only `GraphClient` methods; gracefully returns 503 rather than erroring when Neo4j isn't connected, and the routes aren't registered at all when built without the `neo4j` feature.
+
+### Fixed
+- **Routine `FullJob` actions now actually call tools** — `RoutineAction::FullJob` previously fell back silently to a single tool-less LLM completion (same as `Lightweight`), so any routine written to use tools (e.g. a scheduled knowledge-graph extraction routine calling `stage_candidate`) would run on schedule and do nothing, with no error surfaced. `execute_full_job()` now runs a real bounded multi-turn tool-calling loop against the full `ToolRegistry`, mirroring `Worker`'s reasoning/tool-execution pattern; approval-gated tools remain blocked since routines run unattended with no human to approve them.
+
 ## [0.2.11] - 2026-07-10
 
 ### Added

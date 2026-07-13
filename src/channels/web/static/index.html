@@ -34,6 +34,7 @@
       <button data-tab="jobs">Jobs</button>
       <button data-tab="logs">Logs</button>
       <button data-tab="routines">Routines</button>
+      <button data-tab="graph">Graph</button>
       <button data-tab="skills">Skills</button>
       <button data-tab="channels">Channels</button>
       <button data-tab="extensions">Extensions</button>
@@ -175,6 +176,36 @@
           No routines configured. Ask the assistant to create one.
         </div>
         <div class="routine-detail" id="routine-detail" style="display:none"></div>
+      </div>
+    </div>
+
+    <!-- Knowledge Graph Tab -->
+    <div class="tab-panel" id="tab-graph">
+      <div class="graph-container">
+        <div class="graph-sidebar">
+          <div class="search-box">
+            <input type="text" id="graph-search" placeholder="Search entities...">
+          </div>
+          <div class="graph-stats" id="graph-stats"></div>
+          <div class="graph-legend" id="graph-legend"></div>
+          <div class="graph-browse" id="graph-browse"></div>
+        </div>
+        <div class="graph-main">
+          <div class="graph-toolbar">
+            <button onclick="refreshGraphSample()">Refresh</button>
+            <label>Nodes shown: <input type="number" id="graph-node-limit" value="150" min="10" max="1000"></label>
+          </div>
+          <div class="graph-canvas-wrap">
+            <canvas id="graph-canvas"></canvas>
+            <div class="empty-state" id="graph-empty" style="display:none">
+              No entities in the graph yet. Ask the assistant to create one, or set up a knowledge-graph extraction routine.
+            </div>
+            <div class="graph-unavailable" id="graph-unavailable" style="display:none">
+              Knowledge graph is not available. RustyTalon must be built with the <code>neo4j</code> feature and connected to Neo4j.
+            </div>
+          </div>
+          <div class="graph-detail" id="graph-detail" style="display:none"></div>
+        </div>
       </div>
     </div>
 

@@ -548,6 +548,8 @@ impl Agent {
                         Arc::clone(store),
                         self.llm().clone(),
                         Arc::clone(workspace),
+                        Arc::clone(&self.deps.tools),
+                        Arc::clone(&self.deps.safety),
                         notify_tx,
                     ));
 

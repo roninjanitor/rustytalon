@@ -1399,3 +1399,45 @@ pub struct AuditSummaryResponse {
     pub counts: Vec<AuditEventCountEntry>,
     pub total: i64,
 }
+
+// --- Knowledge graph browser (F12/F13) ---
+//
+// Entity/relationship payloads are passed through as raw `serde_json::Value`
+// rather than typed structs: the graph schema is deliberately open-ended (see
+// docs/KNOWLEDGE_GRAPH_PRD.md section 7 -- "expected to evolve, not a fixed
+// contract"), so a fixed Rust struct here would fight that design instead of
+// supporting it. Node/edge shape is `{id, labels, properties}` /
+// `{from, to, type}`, matching `GraphClient`'s `node_to_json` output.
+
+/// Response for GET /api/graph/stats.
+#[derive(Debug, Serialize)]
+pub struct GraphStatsResponse {
+    pub entities: i64,
+    pub edges: i64,
+    pub pending_candidates: i64,
+}
+
+/// Response for GET /api/graph/entities.
+#[derive(Debug, Serialize)]
+pub struct GraphEntitiesResponse {
+    pub entities: Vec<serde_json::Value>,
+}
+
+/// Response for GET /api/graph/sample.
+#[derive(Debug, Serialize)]
+pub struct GraphSampleResponse {
+    pub nodes: Vec<serde_json::Value>,
+    pub edges: Vec<serde_json::Value>,
+}
+
+/// Response for GET /api/graph/search.
+#[derive(Debug, Serialize)]
+pub struct GraphSearchResponse {
+    pub results: Vec<serde_json::Value>,
+}
+
+/// Response for GET /api/graph/entity/{name}.
+#[derive(Debug, Serialize)]
+pub struct GraphEntityContextResponse {
+    pub context: serde_json::Value,
+}

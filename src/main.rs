@@ -591,10 +591,18 @@ async fn main() -> anyhow::Result<()> {
     // Register knowledge graph tools if Neo4j is configured (optional, requires
     // the `neo4j` Cargo feature). Connection failure is non-fatal -- RustyTalon
     // starts fine without the graph, same as when embeddings aren't configured.
+    // The client is kept (not just handed to the tool registry) so the web
+    // gateway's graph browser panel can query it directly.
+    #[cfg(feature = "neo4j")]
+    let mut graph_client: Option<Arc<rustytalon::graph::GraphClient>> = None;
     #[cfg(feature = "neo4j")]
     if config.graph.enabled {
         match rustytalon::graph::GraphClient::connect(&config.graph).await {
-            Ok(client) => tools.register_graph_tools(Arc::new(client)),
+            Ok(client) => {
+                let client = Arc::new(client);
+                tools.register_graph_tools(Arc::clone(&client));
+                graph_client = Some(client);
+            }
             Err(e) => {
                 tracing::warn!("Neo4j configured but unreachable, graph tools disabled: {e}")
             }
@@ -1413,6 +1421,10 @@ async fn main() -> anyhow::Result<()> {
         }
         if let Some(ref jm) = container_job_manager {
             gw = gw.with_job_manager(Arc::clone(jm));
+        }
+        #[cfg(feature = "neo4j")]
+        if let Some(ref gc) = graph_client {
+            gw = gw.with_graph_client(Arc::clone(gc));
         }
         gw = gw.with_llm_provider(Arc::clone(&llm));
         if let Some(ref router) = smart_router {

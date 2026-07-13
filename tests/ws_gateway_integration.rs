@@ -56,6 +56,8 @@ async fn start_test_server() -> (
         chat_rate_limiter: rustytalon::channels::web::server::RateLimiter::new(30, 60),
         wasm_channels: vec![],
         channel_env_config: std::collections::HashMap::new(),
+        #[cfg(feature = "neo4j")]
+        graph_client: None,
     });
 
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();

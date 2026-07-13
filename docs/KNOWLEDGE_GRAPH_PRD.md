@@ -1,7 +1,7 @@
 # PRD: Native Knowledge Graph for RustyTalon
 
-**Status:** Draft
-**Owner:** Nick
+**Status:** v1 implemented (Phase A + B); revised post-v1 based on real-world comparison to Amazon Quick — see §12
+**Owner:** RustyTalon maintainers
 **Component:** RustyTalon (self-hosted)
 **Related infra:** Neo4j, Kimi K2 / Claude Sonnet routing (existing)
 
@@ -29,12 +29,13 @@ Routing this through Claude's cloud-hosted MCP connectors was evaluated and reje
 - Not building a general-purpose graph database product — this is scoped to RustyTalon's own use.
 - Not replicating Quick's OS-level file monitoring or its Slack/email auto-ingest out of the box. Source ingestion is added incrementally, starting with whatever RustyTalon already has access to.
 - Not exposing the graph to Claude's cloud connectors or any other external MCP client in v1.
-- Not building a general knowledge-graph UI. Neo4j Browser is sufficient for inspection; no custom frontend in scope.
-- Not solving multi-user access control — this is a single-user (Nick) personal graph.
+- Not solving multi-user access control — this is a single-user personal graph.
+
+> **Revision note (post-v1):** The original v1 draft included a non-goal of "not building a general knowledge-graph UI," reasoning that Neo4j Browser was sufficient for inspection. That was written without direct experience of what makes a personal knowledge graph feel useful day-to-day. Having since used Amazon Quick's desktop knowledge graph viewer, the interactive, categorized, browsable visualization turned out to be a meaningfully valuable part of the feature on its own — not just a debugging aid — because it supports rediscovering forgotten connections by browsing, not just querying. That non-goal is retracted; a browsable graph visualization in RustyTalon's own web gateway is now in scope (see §12).
 
 ## 4. Users
 
-Single user: Nick, via RustyTalon's existing interfaces (Discord, web UI). No other consumers in v1.
+Single user, via RustyTalon's existing interfaces (Discord, web UI). No other consumers in v1.
 
 ## 5. Requirements
 
@@ -57,7 +58,7 @@ Single user: Nick, via RustyTalon's existing interfaces (Discord, web UI). No ot
 
 | ID | Requirement |
 |----|-------------|
-| N1 | Neo4j and RustyTalon communicate over the internal Docker network only (`kg-net` or equivalent) — no ports exposed beyond what's needed for Neo4j Browser access from Nick's own devices. |
+| N1 | Neo4j and RustyTalon communicate over the internal Docker network only (`kg-net` or equivalent) — no ports exposed beyond what's needed for Neo4j Browser access from the user's own devices. |
 | N2 | Neo4j Browser (`:7474`) reachable only via WARP/Cloudflare Access private hostname, consistent with how other sensitive services are handled — never a public hostname. |
 | N3 | Graph data persisted to disk, included in the existing backup routine. |
 | N4 | Entity/relationship writes are idempotent enough that re-running extraction on the same content doesn't produce duplicate nodes. |
@@ -68,8 +69,8 @@ Single user: Nick, via RustyTalon's existing interfaces (Discord, web UI). No ot
 
 Automatic extraction is the highest-risk part of this — bad extractions compound over time and pollute the graph. Rollout in two phases:
 
-- **Phase A (manual only):** No scheduled extraction. Nick explicitly tells RustyTalon "log this" after something notable (a meeting, a decision, a new contact). This validates the entity/relationship schema and tool behavior with zero risk of silent graph pollution.
-- **Phase B (scheduled, reviewed):** A scheduled routine proposes extractions from recent conversation history but writes them to a staging area (a separate label, e.g. `:Candidate`, or a simple pending list) rather than committing directly. Nick reviews and approves/rejects in a batch (e.g. a Discord message summarizing candidates with react-to-approve, or a short list in the web UI).
+- **Phase A (manual only):** No scheduled extraction. The user explicitly tells RustyTalon "log this" after something notable (a meeting, a decision, a new contact). This validates the entity/relationship schema and tool behavior with zero risk of silent graph pollution.
+- **Phase B (scheduled, reviewed):** A scheduled routine proposes extractions from recent conversation history but writes them to a staging area (a separate label, e.g. `:Candidate`, or a simple pending list) rather than committing directly. The user reviews and approves/rejects in a batch (e.g. a Discord message summarizing candidates with react-to-approve, or a short list in the web UI).
 - **Phase C (scheduled, auto-commit) — stretch, not required for v1:** Once the extraction prompt has proven reliable over Phase B, allow high-confidence extractions to commit automatically, with low-confidence ones still staged.
 
 v1 ships Phase A + B. Phase C is explicitly out of scope until extraction quality is validated.
@@ -133,7 +134,7 @@ Relationships may carry properties where "how" matters (e.g. `[:LEADS {since: "2
 ## 10. Success metrics
 
 - Qualitative, primarily: does RustyTalon meaningfully reduce "let me re-explain who X is" moments in normal use.
-- Graph grows without manual pruning becoming a chore (a proxy for extraction quality — if Nick is rejecting most candidates in Phase B review, the extraction prompt needs work before Phase C is even considered).
+- Graph grows without manual pruning becoming a chore (a proxy for extraction quality — if the user is rejecting most candidates in Phase B review, the extraction prompt needs work before Phase C is even considered).
 - No graph-related latency complaints in normal conversation.
 
 ## 11. Risks / open questions
@@ -150,11 +151,30 @@ Relationships may carry properties where "how" matters (e.g. `[:LEADS {since: "2
 
 v1 (Phase A + B) is implemented, gated behind the optional `neo4j` Cargo feature:
 
-- **M2/M3 done:** `create_entity`, `update_entity`, `create_relationship`, `search_entities`, `get_entity_context` tools.
+- **M2 done:** `create_entity`, `update_entity`, `create_relationship`, `search_entities` tools implemented and callable.
+- **M3 partially done:** `get_entity_context` (traversal) is implemented and callable, satisfying the traversal half of M3. However, **F10's "automatic" requirement is not actually met** — there is no proactive/ambient injection of graph context into conversation turns. The tool exists but is only ever invoked if the LLM's own tool-selection logic happens to decide to call it for a given message; nothing guarantees graph context surfaces "automatically" the way F10 and M3 originally specified. Earlier revisions of this document marked M3 as fully "done" based on tool availability alone, without verifying the automatic-use behavior — that was a self-graded status error, corrected here. True ambient retrieval (detecting entity mentions pre-turn and injecting relevant graph context without an explicit tool call) remains unbuilt and is now tracked as its own milestone (see §12).
 - **F6 done:** `delete_entity`, `merge_entities` (requires the Neo4j APOC plugin).
 - **M4 done:** `stage_candidate`, `list_candidates`, `approve_candidate`, `reject_candidate` — candidates are stored as `:GraphCandidate` nodes in Neo4j itself (not a new `Database`-trait table), and review happens through tool calls from any channel rather than a dedicated Discord-react or web UI (open question left unresolved above; MVP took the channel-agnostic tool-call route instead).
-- **F8's "scheduled routine"** has no dedicated built-in scheduler — create one via the existing `routine_create` tool (a `FullJob` whose description tells the agent to review conversation history and call `stage_candidate`), reusing the general-purpose routine engine instead of adding graph-specific scheduling code.
+- **F8's "scheduled routine"** has no dedicated built-in scheduler — create one via the existing `routine_create` tool (a `FullJob` whose description tells the agent to review conversation history and call `stage_candidate`), reusing the general-purpose routine engine instead of adding graph-specific scheduling code. As of this writing no such routine has actually been created, so the graph has no ingestion path yet and will remain empty until one is.
+  - **Correction:** an earlier revision of this document claimed this was already usable, but `RoutineAction::FullJob` execution (`src/agent/routine_engine.rs`) previously had no tool-calling loop at all — it silently fell back to a single bare LLM completion with zero tools available, meaning a `stage_candidate`-calling routine would have run on schedule and done nothing, with no error surfaced. This has since been fixed: `execute_full_job()` now runs a real multi-turn tool-calling loop (`Reasoning` + `ToolRegistry`, mirroring `Worker`'s pattern minus job-state-machine/audit bookkeeping that doesn't apply to unattended routine runs). Approval-gated tools are still blocked in this context (no human present to approve), consistent with how `Worker` handles autonomous jobs. Creating the F8 routine via `routine_create` now actually works as described above.
 - **M1 (infra)** and **M5 (schema refinement post-usage)** are deployment-time/operational, outside this repo's code.
 - **Phase C (auto-commit)** is not built, per the PRD's explicit deferral.
+- **No visualization UI exists** (see retracted non-goal above and §12).
 
 See `CLAUDE.md`'s "Knowledge Graph" section for the current developer-facing reference (tool list, config, injection-safety notes, APOC requirement).
+
+## 12. Post-v1 additions (informed by real Amazon Quick usage)
+
+These were not part of the original v1 scope. They're added here because direct experience using a comparable shipped product (Amazon Quick's personal knowledge graph) surfaced value that the original agent-authored draft didn't anticipate or actively scoped out.
+
+| ID | Requirement | Status |
+|----|-------------|--------|
+| F11 | A scheduled extraction routine actually exists and runs (F8 is implemented in principle but no routine has been created) — needed before any of the below can be evaluated with real data. | Blocked on the user creating the routine via `routine_create`; `RoutineAction::FullJob` can now actually execute it (see the "Correction" note under Implementation status above) |
+| F12 | RustyTalon's web gateway includes a graph visualization panel: force-directed layout, node color by entity category, node size by connectivity (e.g. degree or PageRank-equivalent), zoom/pan, entity search, focus-on-node, and a "browse all entities by category with edge counts" sidebar — modeled on Quick's knowledge graph viewer. | Done |
+| F13 | A `graph_stats` capability (node/edge/entity/candidate counts) backs both the visualization panel's header and can be surfaced in chat. | Done (backend only — see note below) |
+| F14 | Ambient graph context injection: before an LLM turn, detect likely entity mentions in the incoming message and pull relevant `get_entity_context` results into the prompt automatically, rather than relying solely on the model's own tool-selection judgement. Must be introduced only after F11 has run long enough to validate extraction quality — ambient injection of untrustworthy graph data is worse than no graph context at all. | Not started, blocked on F11 data |
+| F15 (stretch) | Confidence-scored auto-commit for high-confidence candidates (the PRD's original Phase C), informed by real approve/reject ratios collected from F11's review process. | Not started, blocked on F11 data |
+
+Recommended build order: F11 → F12 → F13 → F14 → F15. F12 (visualization) is deliberately sequenced before F14 (ambient retrieval) because a browsable UI is safe to ship against a small/imperfect graph, while ambient injection actively degrades the assistant if the underlying data is still noisy.
+
+**F12/F13 implementation notes:** `src/graph/client.rs` gained three new read methods (`graph_stats`, `list_entities`, `graph_sample`) alongside the existing entity/relationship/candidate operations. The web gateway (`src/channels/web/`) gained a `graph_client: Option<Arc<GraphClient>>` field on `GatewayState` (feature-gated on `neo4j`, populated in `main.rs` alongside `register_graph_tools`) and five REST endpoints under `/api/graph/*` (stats, entities, sample, search, entity/{name}). The "Graph" tab in the web UI (`static/index.html`/`app.js`/`style.css`) renders a hand-rolled canvas force-directed layout — no charting/graph library added, consistent with the rest of the SPA being vanilla JS — with category color-coding, a browse-by-category sidebar with edge counts, entity search/focus, and a click-through detail panel backed by `entity_context`. `graph_stats`' F13 "surfaced in chat" half is satisfied implicitly (the existing graph tools already let the agent describe the graph in conversation); no new chat-facing tool was added since nothing in F13 required one beyond what F3/F4 already provide. Verified end-to-end: builds clean on `default`, `libsql`, and `neo4j` feature combinations; `/api/graph/*` 404s cleanly without the `neo4j` feature and returns a `503` with a clear message when Neo4j is configured but unreachable, rather than crashing or hanging the gateway.
