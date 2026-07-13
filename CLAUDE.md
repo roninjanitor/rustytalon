@@ -535,6 +535,7 @@ Key test patterns:
 - ✅ **Docker sandbox** - Orchestrator/worker containers with per-job auth
 - ✅ **Claude Code mode** - Delegate jobs to Claude CLI inside containers
 - ✅ **Routines system** - Cron, event, webhook, and manual triggers with guardrails
+- ✅ **Routine `FullJob` tool execution** - `RoutineAction::FullJob` runs a real multi-turn tool-calling loop (`execute_full_job()` in `src/agent/routine_engine.rs`, using `Reasoning` + `ToolRegistry`, mirroring `Worker`'s pattern minus the job-state-machine/audit bookkeeping that only applies to interactive jobs). Previously `FullJob` silently fell back to a single tool-less LLM completion — any routine written to call tools (e.g. the knowledge graph's F8 extraction routine) would run on schedule and do nothing, with no error. Approval-gated tools (`requires_approval() == true`) are still blocked in this unattended context, same as `Worker`.
 - ✅ **Extension management** - Install, auth, activate MCP/WASM extensions via CLI and web UI
 - ✅ **libSQL/Turso backend** - Database trait abstraction (`src/db/`), feature-gated dual backend support (postgres/libsql), embedded SQLite for zero-dependency local mode
 - ✅ **Connection broker (WebSocket adapter)** - Host-side persistent connections for WASM channels, with `on-event` WIT callback, event filtering, heartbeat, and reconnect

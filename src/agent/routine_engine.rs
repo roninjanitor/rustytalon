@@ -7,8 +7,10 @@
 //! - A **cron ticker** that polls the DB every N seconds for due cron routines
 //! - An **event matcher** called synchronously from the agent main loop
 //!
-//! Lightweight routines execute inline (single LLM call, no scheduler slot).
-//! Full-job routines are delegated to the existing `Scheduler`.
+//! Lightweight routines execute inline (single LLM call, no tools).
+//! Full-job routines run their own bounded multi-turn tool-calling loop
+//! (`execute_full_job`), independent of the user-facing `Scheduler`/`Worker`
+//! job-state machine.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,8 +26,14 @@ use crate::agent::routine::{
 };
 use crate::channels::{IncomingMessage, OutgoingResponse};
 use crate::config::RoutineConfig;
+use crate::context::JobContext;
 use crate::db::Database;
-use crate::llm::{ChatMessage, CompletionRequest, FinishReason, LlmProvider};
+use crate::llm::{
+    ChatMessage, CompletionRequest, FinishReason, LlmProvider, Reasoning, ReasoningContext,
+    RespondResult,
+};
+use crate::safety::SafetyLayer;
+use crate::tools::ToolRegistry;
 use crate::workspace::Workspace;
 
 /// The routine execution engine.
@@ -34,6 +42,8 @@ pub struct RoutineEngine {
     store: Arc<dyn Database>,
     llm: Arc<dyn LlmProvider>,
     workspace: Arc<Workspace>,
+    tools: Arc<ToolRegistry>,
+    safety: Arc<SafetyLayer>,
     /// Sender for notifications (routed to channel manager).
     notify_tx: mpsc::Sender<OutgoingResponse>,
     /// Currently running routine count (across all routines).
@@ -43,11 +53,14 @@ pub struct RoutineEngine {
 }
 
 impl RoutineEngine {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: RoutineConfig,
         store: Arc<dyn Database>,
         llm: Arc<dyn LlmProvider>,
         workspace: Arc<Workspace>,
+        tools: Arc<ToolRegistry>,
+        safety: Arc<SafetyLayer>,
         notify_tx: mpsc::Sender<OutgoingResponse>,
     ) -> Self {
         Self {
@@ -55,6 +68,8 @@ impl RoutineEngine {
             store,
             llm,
             workspace,
+            tools,
+            safety,
             notify_tx,
             running_count: Arc::new(AtomicUsize::new(0)),
             event_cache: Arc::new(RwLock::new(Vec::new())),
@@ -217,9 +232,10 @@ impl RoutineEngine {
             store: self.store.clone(),
             llm: self.llm.clone(),
             workspace: self.workspace.clone(),
+            tools: self.tools.clone(),
+            safety: self.safety.clone(),
             notify_tx: self.notify_tx.clone(),
             running_count: self.running_count.clone(),
-            max_lightweight_tokens: self.config.max_lightweight_tokens,
         };
 
         tokio::spawn(async move {
@@ -249,9 +265,10 @@ impl RoutineEngine {
             store: self.store.clone(),
             llm: self.llm.clone(),
             workspace: self.workspace.clone(),
+            tools: self.tools.clone(),
+            safety: self.safety.clone(),
             notify_tx: self.notify_tx.clone(),
             running_count: self.running_count.clone(),
-            max_lightweight_tokens: self.config.max_lightweight_tokens,
         };
 
         // Record the run in DB, then spawn execution
@@ -296,9 +313,10 @@ struct EngineContext {
     store: Arc<dyn Database>,
     llm: Arc<dyn LlmProvider>,
     workspace: Arc<Workspace>,
+    tools: Arc<ToolRegistry>,
+    safety: Arc<SafetyLayer>,
     notify_tx: mpsc::Sender<OutgoingResponse>,
     running_count: Arc<AtomicUsize>,
-    max_lightweight_tokens: u32,
 }
 
 /// Execute a routine run. Handles both lightweight and full_job modes.
@@ -312,15 +330,11 @@ async fn execute_routine(ctx: EngineContext, routine: Routine, run: RoutineRun) 
             context_paths,
             max_tokens,
         } => execute_lightweight(&ctx, &routine, prompt, context_paths, *max_tokens).await,
-        RoutineAction::FullJob { description, .. } => {
-            // Full job mode: for now, execute as lightweight with the description
-            // as prompt. Full scheduler integration will come as a follow-up.
-            tracing::info!(
-                routine = %routine.name,
-                "FullJob mode executing as lightweight (scheduler integration pending)"
-            );
-            execute_lightweight(&ctx, &routine, description, &[], ctx.max_lightweight_tokens).await
-        }
+        RoutineAction::FullJob {
+            title,
+            description,
+            max_iterations,
+        } => execute_full_job(&ctx, &routine, title, description, *max_iterations).await,
     };
 
     // Decrement running count
@@ -495,6 +509,173 @@ async fn execute_lightweight(
     Ok((RunStatus::Attention, Some(content.to_string()), tokens_used))
 }
 
+/// Execute a `RoutineAction::FullJob` — a bounded multi-turn tool-calling run.
+///
+/// This gives routines the same `Reasoning`/`ToolRegistry`/`SafetyLayer` primitives
+/// `Worker` uses for user-facing jobs, but deliberately skips the parts of
+/// `Worker` that only make sense for an interactive, ContextManager-tracked job:
+/// no `JobState` transitions, no per-action DB persistence, no audit events. The
+/// run terminates as soon as the model responds with plain text (no further tool
+/// calls) rather than looping indefinitely waiting for a completion phrase —
+/// routine runs are bounded background tasks, not open-ended agent sessions.
+async fn execute_full_job(
+    ctx: &EngineContext,
+    routine: &Routine,
+    title: &str,
+    description: &str,
+    max_iterations: u32,
+) -> Result<(RunStatus, Option<String>, Option<i32>), String> {
+    let job_ctx = JobContext::with_user(routine.user_id.clone(), title, description);
+
+    let system_prompt = match ctx.workspace.system_prompt().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(routine = %routine.name, "Failed to get system prompt: {}", e);
+            String::new()
+        }
+    };
+
+    let reasoning =
+        Reasoning::new(ctx.llm.clone(), ctx.safety.clone()).with_system_prompt(system_prompt);
+
+    let initial_prompt = format!(
+        "{description}\n\n---\n\nUse the available tools as needed to complete this task. \
+         Once finished, if nothing needs the user's attention, reply EXACTLY with: ROUTINE_OK\n\
+         If something needs attention, reply with a concise summary instead of calling more tools."
+    );
+
+    let mut reason_ctx = ReasoningContext::new().with_message(ChatMessage::user(initial_prompt));
+
+    let mut total_tokens: i64 = 0;
+    let mut iteration: u32 = 0;
+
+    loop {
+        iteration += 1;
+        if iteration > max_iterations {
+            return Ok((
+                RunStatus::Failed,
+                Some(format!(
+                    "Exceeded max_iterations ({max_iterations}) without finishing"
+                )),
+                Some(total_tokens as i32),
+            ));
+        }
+
+        reason_ctx.available_tools = ctx.tools.tool_definitions().await;
+
+        let respond_output = reasoning
+            .respond_with_tools(&reason_ctx)
+            .await
+            .map_err(|e| format!("LLM call failed: {e}"))?;
+        total_tokens += respond_output.usage.total() as i64;
+
+        match respond_output.result {
+            RespondResult::Text(response) => {
+                let content = response.trim();
+                if content.is_empty() {
+                    return Err("LLM returned empty content.".to_string());
+                }
+                if content == "ROUTINE_OK" || content.contains("ROUTINE_OK") {
+                    return Ok((RunStatus::Ok, None, Some(total_tokens as i32)));
+                }
+                return Ok((
+                    RunStatus::Attention,
+                    Some(content.to_string()),
+                    Some(total_tokens as i32),
+                ));
+            }
+            RespondResult::ToolCalls {
+                tool_calls,
+                content,
+            } => {
+                reason_ctx
+                    .messages
+                    .push(ChatMessage::assistant_with_tool_calls(
+                        content,
+                        tool_calls.clone(),
+                    ));
+
+                for tc in tool_calls {
+                    let message = match execute_tool_for_routine(
+                        ctx,
+                        &job_ctx,
+                        &tc.name,
+                        &tc.arguments,
+                    )
+                    .await
+                    {
+                        Ok(wrapped) => wrapped,
+                        Err(e) => format!("Error: {e}"),
+                    };
+                    reason_ctx
+                        .messages
+                        .push(ChatMessage::tool_result(&tc.id, &tc.name, message));
+                }
+            }
+        }
+    }
+}
+
+/// Execute a single tool call on behalf of a `FullJob` routine.
+///
+/// Mirrors the safety-relevant checks in `Worker::execute_tool_inner` (approval
+/// gating, parameter validation, per-tool timeout, output sanitization) but
+/// omits the job-state-machine and DB action/audit bookkeeping that only apply
+/// to `ContextManager`-tracked user jobs — routine runs aren't jobs, and their
+/// outcome is already recorded via `RoutineRun`.
+async fn execute_tool_for_routine(
+    ctx: &EngineContext,
+    job_ctx: &JobContext,
+    tool_name: &str,
+    params: &serde_json::Value,
+) -> Result<String, String> {
+    let tool = ctx
+        .tools
+        .get(tool_name)
+        .await
+        .ok_or_else(|| format!("Tool '{tool_name}' not found"))?;
+
+    // Tools requiring approval are blocked: there's no human in the loop to
+    // approve them during an unattended routine run, same rule Worker applies
+    // to autonomous jobs.
+    if tool.requires_approval() {
+        return Err(format!(
+            "Tool '{tool_name}' requires approval and cannot be used in an unattended routine"
+        ));
+    }
+
+    let validation = ctx.safety.validator().validate_tool_params(params);
+    if !validation.is_valid {
+        let details = validation
+            .errors
+            .iter()
+            .map(|e| format!("{}: {}", e.field, e.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!(
+            "Invalid parameters for tool '{tool_name}': {details}"
+        ));
+    }
+
+    let tool_timeout = tool.execution_timeout();
+    let result = tokio::time::timeout(tool_timeout, tool.execute(params.clone(), job_ctx)).await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let result_str = serde_json::to_string_pretty(&output.result)
+                .unwrap_or_else(|_| "<serialize error>".to_string());
+            let sanitized = ctx.safety.sanitize_tool_output(tool_name, &result_str);
+            Ok(ctx
+                .safety
+                .wrap_for_llm(tool_name, &sanitized.content, sanitized.was_modified))
+        }
+        Ok(Err(e)) => Err(format!("Tool '{tool_name}' failed: {e}")),
+        Err(_) => Err(format!(
+            "Tool '{tool_name}' timed out after {tool_timeout:?}"
+        )),
+    }
+}
+
 /// Send a notification based on the routine's notify config and run status.
 async fn send_notification(
     tx: &mpsc::Sender<OutgoingResponse>,
@@ -571,11 +752,21 @@ fn truncate(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+
     use tokio::sync::mpsc;
 
-    use super::send_notification;
+    use super::{EngineContext, execute_tool_for_routine, send_notification};
     use crate::agent::routine::{NotifyConfig, RunStatus};
     use crate::channels::OutgoingResponse;
+    use crate::config::SafetyConfig;
+    use crate::context::JobContext;
+    use crate::db::Database;
+    use crate::safety::SafetyLayer;
+    use crate::tools::ToolRegistry;
+    use crate::tools::{Tool, ToolError, ToolOutput};
 
     #[test]
     fn test_notification_gating() {
@@ -728,5 +919,128 @@ mod tests {
         let response = rx.recv().await.expect("should receive notification");
         assert!(response.content.contains("❌"));
         assert!(response.content.contains("connection refused"));
+    }
+
+    // --- execute_tool_for_routine ---
+
+    struct AlwaysApproveTool;
+
+    #[async_trait::async_trait]
+    impl Tool for AlwaysApproveTool {
+        fn name(&self) -> &str {
+            "echo_ok"
+        }
+        fn description(&self) -> &str {
+            "test tool that echoes its input"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        async fn execute(
+            &self,
+            params: serde_json::Value,
+            _ctx: &JobContext,
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput::text(
+                format!("got: {params}"),
+                Duration::from_millis(1),
+            ))
+        }
+    }
+
+    struct RequiresApprovalTool;
+
+    #[async_trait::async_trait]
+    impl Tool for RequiresApprovalTool {
+        fn name(&self) -> &str {
+            "dangerous_tool"
+        }
+        fn description(&self) -> &str {
+            "test tool that requires human approval"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn requires_approval(&self) -> bool {
+            true
+        }
+        async fn execute(
+            &self,
+            _params: serde_json::Value,
+            _ctx: &JobContext,
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput::text(
+                "should never run",
+                Duration::from_millis(1),
+            ))
+        }
+    }
+
+    fn test_engine_ctx(tools: Arc<ToolRegistry>) -> EngineContext {
+        let (notify_tx, _rx) = mpsc::channel::<OutgoingResponse>(4);
+        let store: Arc<dyn Database> = crate::db::test_utils::MockDatabase::new();
+        let workspace = Arc::new(crate::workspace::Workspace::new_with_db(
+            "routine-test-user",
+            store.clone(),
+        ));
+        EngineContext {
+            store,
+            llm: Arc::new(crate::llm::test_utils::MockProvider::succeeding(
+                "mock", "unused",
+            )),
+            workspace,
+            tools,
+            safety: Arc::new(SafetyLayer::new(&SafetyConfig {
+                max_output_length: 100_000,
+                injection_check_enabled: true,
+            })),
+            notify_tx,
+            running_count: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_for_routine_runs_normal_tool() {
+        let tools = Arc::new(ToolRegistry::new());
+        tools.register(Arc::new(AlwaysApproveTool)).await;
+        let ctx = test_engine_ctx(tools);
+        let job_ctx = JobContext::with_user("routine-user", "test", "test");
+
+        let result =
+            execute_tool_for_routine(&ctx, &job_ctx, "echo_ok", &serde_json::json!({"a": 1}))
+                .await
+                .expect("tool call should succeed");
+
+        assert!(result.contains("got:"));
+        assert!(result.contains("name=\"echo_ok\""));
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_for_routine_blocks_approval_gated_tool() {
+        let tools = Arc::new(ToolRegistry::new());
+        tools.register(Arc::new(RequiresApprovalTool)).await;
+        let ctx = test_engine_ctx(tools);
+        let job_ctx = JobContext::with_user("routine-user", "test", "test");
+
+        let err =
+            execute_tool_for_routine(&ctx, &job_ctx, "dangerous_tool", &serde_json::json!({}))
+                .await
+                .expect_err("approval-gated tool must be rejected in an unattended routine");
+
+        assert!(err.contains("requires approval"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_for_routine_unknown_tool() {
+        let tools = Arc::new(ToolRegistry::new());
+        let ctx = test_engine_ctx(tools);
+        let job_ctx = JobContext::with_user("routine-user", "test", "test");
+
+        let err =
+            execute_tool_for_routine(&ctx, &job_ctx, "does_not_exist", &serde_json::json!({}))
+                .await
+                .expect_err("unknown tool must error");
+
+        assert!(err.contains("not found"));
     }
 }
