@@ -540,6 +540,7 @@ Key test patterns:
 - ✅ **libSQL/Turso backend** - Database trait abstraction (`src/db/`), feature-gated dual backend support (postgres/libsql), embedded SQLite for zero-dependency local mode
 - ✅ **Connection broker (WebSocket adapter)** - Host-side persistent connections for WASM channels, with `on-event` WIT callback, event filtering, heartbeat, and reconnect
 - ✅ **Native knowledge graph (Neo4j, optional)** - `neo4j` Cargo feature with `create_entity`/`update_entity`/`create_relationship`/`search_entities`/`get_entity_context`/`delete_entity`/`merge_entities` tools plus a staged extraction review workflow (`stage_candidate`/`list_candidates`/`approve_candidate`/`reject_candidate`), covering PRD Phase A + B
+- ✅ **Knowledge graph web browser (PRD §12, F12/F13)** - "Graph" tab in the web gateway: force-directed visualization (category colors, degree-sized nodes, zoom/pan/drag), browse-by-category sidebar with edge counts, entity search, and a click-through detail panel, backed by new `/api/graph/*` REST endpoints
 
 ## Adding a New Tool
 
@@ -1011,3 +1012,11 @@ Extraction-quality is unproven (PRD §11), so nothing from an automated extracti
 ### `merge_entities` requires the APOC plugin
 
 Re-pointing relationships with a dynamic type isn't expressible in plain Cypher, so `merge_entities` calls `apoc.refactor.mergeNodes`. `docker-compose.dev.yml`'s `neo4j` service sets `NEO4J_PLUGINS: '["apoc"]'` to install it automatically; a self-managed Neo4j instance needs the APOC plugin installed manually. If it's missing, the tool returns a `GraphError` naming APOC explicitly rather than a raw "procedure not found" error.
+
+### Web UI graph browser (PRD §12, F12/F13)
+
+The web gateway's "Graph" tab (`src/channels/web/static/`) renders an interactive force-directed visualization of the live graph — separate from, and in addition to, the tool-call-driven candidate review flow above. It's read-only (browsing/searching), not a review UI for staged candidates.
+
+- **Backend:** `GraphClient` gained three read-only methods for this — `graph_stats()` (entity/edge/pending-candidate counts), `list_entities(limit)` (entities with degree, for the browse sidebar), and `graph_sample(limit)` (top-N entities by degree plus edges among them, for the canvas). `GatewayState.graph_client: Option<Arc<GraphClient>>` (feature-gated on `neo4j`) is populated in `main.rs` from the same `GraphClient` instance handed to `register_graph_tools`, not a second connection.
+- **Endpoints:** `GET /api/graph/stats`, `/entities`, `/sample`, `/search`, `/entity/{name}` — all return `503 Graph not available` if built without the `neo4j` feature or Neo4j isn't connected, matching the `store`-guard pattern used elsewhere in `server.rs`. The routes themselves are only registered in the `neo4j` build (`#[cfg(feature = "neo4j")]` around the route-chain and every handler).
+- **Frontend:** hand-rolled canvas physics simulation (repulsion + spring edges + centering, drag/zoom/pan) in `app.js` — no charting/graph library added, matching the rest of the SPA (vanilla JS, `marked.js` via CDN is the only existing external dependency, used solely for chat markdown). Category colors are a deterministic hash of the entity's first label into a fixed palette, since the entity schema is intentionally open-ended (§7) rather than a fixed enum with a hardcoded color map.

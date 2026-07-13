@@ -294,6 +294,108 @@ impl GraphClient {
         }))
     }
 
+    /// Aggregate counts for the graph browser panel (F13): live entities and
+    /// edges, plus pending staged candidates. `:GraphCandidate` nodes are
+    /// staging-only and excluded from the entity count.
+    pub async fn graph_stats(&self) -> Result<Value, GraphError> {
+        let entities: i64 = self
+            .execute_single(query(
+                "MATCH (n) WHERE NOT n:GraphCandidate RETURN count(n) AS c",
+            ))
+            .await?
+            .get("c")
+            .map_err(|e| GraphError::Query(e.to_string()))?;
+
+        let edges: i64 = self
+            .execute_single(query("MATCH ()-[r]->() RETURN count(r) AS c"))
+            .await?
+            .get("c")
+            .map_err(|e| GraphError::Query(e.to_string()))?;
+
+        let pending_candidates: i64 = self
+            .execute_single(query(
+                "MATCH (c:GraphCandidate {status: 'pending'}) RETURN count(c) AS c",
+            ))
+            .await?
+            .get("c")
+            .map_err(|e| GraphError::Query(e.to_string()))?;
+
+        Ok(json!({
+            "entities": entities,
+            "edges": edges,
+            "pending_candidates": pending_candidates,
+        }))
+    }
+
+    /// List entities (not candidates) with their degree (relationship count),
+    /// ordered by degree descending, for the graph browser sidebar (F12).
+    pub async fn list_entities(&self, limit: u32) -> Result<Vec<Value>, GraphError> {
+        let limit = i64::from(limit.clamp(1, 2000));
+        let cypher = "MATCH (n) WHERE NOT n:GraphCandidate \
+             OPTIONAL MATCH (n)-[r]-() \
+             WITH n, count(r) AS degree \
+             RETURN n, degree ORDER BY degree DESC LIMIT $limit";
+        let q = query(cypher).param("limit", limit);
+
+        let mut stream = self
+            .graph
+            .execute(q)
+            .await
+            .map_err(|e| GraphError::Query(e.to_string()))?;
+
+        let mut results = Vec::new();
+        while let Some(row) = stream
+            .next()
+            .await
+            .map_err(|e| GraphError::Query(e.to_string()))?
+        {
+            let node: Node = row.get("n").map_err(|e| GraphError::Query(e.to_string()))?;
+            let degree: i64 = row.get("degree").unwrap_or(0);
+            let mut value = node_to_json(&node)?;
+            value["degree"] = json!(degree);
+            results.push(value);
+        }
+        Ok(results)
+    }
+
+    /// A bounded sample of the graph for visualization (F12): the top-N
+    /// entities by degree, plus every relationship where both endpoints are
+    /// in that sample set. The edge lookup runs as a `CALL` subquery keyed
+    /// on node id so it stays a single indexed match rather than the O(n^2)
+    /// `UNWIND`-cross-product `entity_context` uses (fine there since it's
+    /// scoped to one entity's small neighborhood; not fine at graph-wide
+    /// scale), and so aggregation still returns a row with empty lists when
+    /// the sample or its edges are empty, rather than dropping the row.
+    pub async fn graph_sample(&self, limit: u32) -> Result<Value, GraphError> {
+        let limit = i64::from(limit.clamp(1, 500));
+        let cypher = "MATCH (n) WHERE NOT n:GraphCandidate \
+             OPTIONAL MATCH (n)-[r]-() \
+             WITH n, count(r) AS degree \
+             ORDER BY degree DESC LIMIT $limit \
+             WITH collect(id(n)) AS ids, collect(n) AS nodes \
+             CALL { \
+                 WITH ids \
+                 MATCH (a)-[rel]->(b) WHERE id(a) IN ids AND id(b) IN ids \
+                 RETURN collect({from: a.name, to: b.name, type: type(rel)}) AS edges \
+             } \
+             RETURN nodes, edges";
+        let q = query(cypher).param("limit", limit);
+
+        let Some(row) = self.execute_optional(q).await? else {
+            return Ok(json!({ "nodes": [], "edges": [] }));
+        };
+
+        let nodes: Vec<Node> = row.get("nodes").unwrap_or_default();
+        let edges: Vec<Value> = row.get("edges").unwrap_or_default();
+
+        let nodes = nodes
+            .iter()
+            .map(node_to_json)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(json!({ "nodes": nodes, "edges": edges }))
+    }
+
     /// Delete an entity and all its relationships (F6).
     pub async fn delete_entity(&self, label: &str, name: &str) -> Result<(), GraphError> {
         validate_label(label)?;

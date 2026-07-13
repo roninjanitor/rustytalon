@@ -1128,6 +1128,7 @@ function switchTab(tab) {
   if (tab === 'memory') loadMemoryTree();
   if (tab === 'jobs') loadJobs();
   if (tab === 'routines') loadRoutines();
+  if (tab === 'graph') loadGraph();
   if (tab === 'logs') applyLogFilters();
   if (tab === 'skills') loadSkills();
   if (tab === 'extensions') {
@@ -3509,6 +3510,401 @@ function formatRelativeTime(isoString) {
   }
   const days = Math.floor(absDiff / 86400000);
   return future ? 'in ' + days + 'd' : days + 'd ago';
+}
+
+// --- Knowledge Graph ---
+//
+// Force-directed graph viewer for the Neo4j-backed knowledge graph (see
+// docs/KNOWLEDGE_GRAPH_PRD.md section 12, F12). Vanilla canvas + a small
+// hand-rolled physics simulation, no charting/graph library, matching the
+// rest of this file (marked.js is the only external dependency in the app,
+// used only for chat markdown).
+
+const GRAPH_PALETTE = [
+  '#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff',
+  '#39c5cf', '#f778ba', '#ffa657', '#79c0ff', '#56d364',
+];
+
+const graphState = {
+  entities: [],
+  simNodes: [],
+  simEdges: [],
+  transform: { x: 0, y: 0, scale: 1 },
+  dragging: null,
+  rafId: null,
+  wired: false,
+};
+
+function graphColorForLabel(label) {
+  let hash = 0;
+  for (let i = 0; i < label.length; i++) hash = (hash * 31 + label.charCodeAt(i)) >>> 0;
+  return GRAPH_PALETTE[hash % GRAPH_PALETTE.length];
+}
+
+function graphEntityName(entity) {
+  return (entity.properties && entity.properties.name) || '(unnamed)';
+}
+
+function graphEntityLabel(entity) {
+  return (entity.labels && entity.labels[0]) || 'Entity';
+}
+
+async function loadGraph() {
+  document.getElementById('graph-unavailable').style.display = 'none';
+  const search = document.getElementById('graph-search');
+  if (!search._graphWired) {
+    search._graphWired = true;
+    search.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') searchGraphEntities(search.value.trim());
+    });
+  }
+
+  try {
+    const [stats, entitiesResp] = await Promise.all([
+      apiFetch('/api/graph/stats'),
+      apiFetch('/api/graph/entities?limit=1000'),
+    ]);
+    renderGraphStats(stats);
+    graphState.entities = entitiesResp.entities;
+    renderGraphLegend(graphState.entities);
+    renderGraphBrowse(graphState.entities);
+    await refreshGraphSample();
+  } catch (e) {
+    document.getElementById('graph-unavailable').style.display = 'flex';
+    document.getElementById('graph-canvas').style.display = 'none';
+    document.getElementById('graph-empty').style.display = 'none';
+  }
+}
+
+async function refreshGraphSample() {
+  const limitInput = document.getElementById('graph-node-limit');
+  const limit = limitInput ? (parseInt(limitInput.value, 10) || 150) : 150;
+  const sample = await apiFetch('/api/graph/sample?limit=' + limit);
+
+  const canvas = document.getElementById('graph-canvas');
+  const empty = document.getElementById('graph-empty');
+
+  if (!sample.nodes.length) {
+    empty.style.display = 'flex';
+    canvas.style.display = 'none';
+    return;
+  }
+  empty.style.display = 'none';
+  canvas.style.display = 'block';
+  initGraphSimulation(sample.nodes, sample.edges);
+}
+
+function renderGraphStats(stats) {
+  const el = document.getElementById('graph-stats');
+  let html =
+    '<div class="graph-stat"><span class="graph-stat-num">' + stats.entities + '</span> entities</div>' +
+    '<div class="graph-stat"><span class="graph-stat-num">' + stats.edges + '</span> relationships</div>';
+  if (stats.pending_candidates > 0) {
+    html += '<div class="graph-stat graph-stat-pending"><span class="graph-stat-num">' +
+      stats.pending_candidates + '</span> pending review</div>';
+  }
+  el.innerHTML = html;
+}
+
+function renderGraphLegend(entities) {
+  const labels = [...new Set(entities.map(graphEntityLabel))].sort();
+  const el = document.getElementById('graph-legend');
+  el.innerHTML = labels.map((l) =>
+    '<div class="graph-legend-item"><span class="graph-legend-swatch" style="background:' +
+    graphColorForLabel(l) + '"></span>' + escapeHtml(l) + '</div>'
+  ).join('');
+}
+
+function renderGraphBrowse(entities) {
+  const groups = {};
+  for (const e of entities) {
+    const label = graphEntityLabel(e);
+    (groups[label] = groups[label] || []).push(e);
+  }
+  const el = document.getElementById('graph-browse');
+  const labels = Object.keys(groups).sort();
+  if (!labels.length) {
+    el.innerHTML = '<div class="empty-state">No entities yet</div>';
+    return;
+  }
+  el.innerHTML = labels.map((label) => {
+    const items = groups[label].sort((a, b) => (b.degree || 0) - (a.degree || 0));
+    const rows = items.map((e) => {
+      const name = graphEntityName(e);
+      return '<div class="graph-browse-row" onclick="focusAndShowGraphEntity(\'' +
+        name.replace(/'/g, "\\'") + '\')"><span>' + escapeHtml(name) +
+        '</span><span class="graph-browse-degree">' + (e.degree || 0) + '</span></div>';
+    }).join('');
+    return '<details class="graph-browse-group"><summary>' + escapeHtml(label) +
+      ' (' + items.length + ')</summary>' + rows + '</details>';
+  }).join('');
+}
+
+function focusAndShowGraphEntity(name) {
+  focusGraphNode(name);
+  showGraphEntity(name);
+}
+
+async function searchGraphEntities(text) {
+  if (!text) return;
+  try {
+    const resp = await apiFetch('/api/graph/search?q=' + encodeURIComponent(text) + '&limit=5');
+    if (resp.results.length) {
+      const name = graphEntityName(resp.results[0]);
+      focusAndShowGraphEntity(name);
+    }
+  } catch (e) {
+    // Search errors are non-fatal (e.g. graph unavailable) -- leave the
+    // canvas as-is rather than surfacing a toast for every keystroke.
+  }
+}
+
+async function showGraphEntity(name) {
+  const detail = document.getElementById('graph-detail');
+  detail.style.display = 'block';
+  detail.innerHTML = '<div class="empty-state">Loading...</div>';
+  try {
+    const resp = await apiFetch('/api/graph/entity/' + encodeURIComponent(name) + '?hops=1');
+    const ctx = resp.context;
+    const props = (ctx.entity && ctx.entity.properties) || {};
+    const label = (ctx.entity && ctx.entity.labels && ctx.entity.labels[0]) || '';
+
+    let html = '<button class="graph-detail-close" onclick="closeGraphDetail()">&times;</button>';
+    html += '<h3>' + escapeHtml(props.name || name) + '</h3>';
+    html += '<div class="graph-detail-label" style="color:' + graphColorForLabel(label) + '">' +
+      escapeHtml(label) + '</div>';
+
+    const propKeys = Object.keys(props).filter((k) => k !== 'name');
+    if (propKeys.length) {
+      html += '<table class="graph-detail-props">' + propKeys.map((k) =>
+        '<tr><td>' + escapeHtml(k) + '</td><td>' + escapeHtml(String(props[k])) + '</td></tr>'
+      ).join('') + '</table>';
+    }
+
+    if (ctx.relationships && ctx.relationships.length) {
+      html += '<div class="graph-detail-rels-title">Relationships</div>';
+      html += '<ul class="graph-detail-rels">' + ctx.relationships.map((r) =>
+        '<li>' + escapeHtml(r.from) + ' <span class="graph-rel-type">' + escapeHtml(r.type) +
+        '</span> ' + escapeHtml(r.to) + '</li>'
+      ).join('') + '</ul>';
+    }
+    detail.innerHTML = html;
+  } catch (e) {
+    detail.innerHTML = '<div class="empty-state">Failed to load entity: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function closeGraphDetail() {
+  document.getElementById('graph-detail').style.display = 'none';
+}
+
+function focusGraphNode(name) {
+  const node = graphState.simNodes.find((n) => n.name === name);
+  const canvas = document.getElementById('graph-canvas');
+  if (!node || !canvas) return;
+  graphState.transform.scale = 1.5;
+  graphState.transform.x = canvas.width / 2 - node.x * graphState.transform.scale;
+  graphState.transform.y = canvas.height / 2 - node.y * graphState.transform.scale;
+}
+
+function initGraphSimulation(nodes, edges) {
+  const canvas = document.getElementById('graph-canvas');
+  const ctx = canvas.getContext('2d');
+  const wrap = canvas.parentElement;
+  canvas.width = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+
+  const simNodes = nodes.map((n, i) => {
+    const label = graphEntityLabel(n);
+    const name = graphEntityName(n);
+    const angle = (i / nodes.length) * Math.PI * 2;
+    return {
+      id: n.id, name, label,
+      color: graphColorForLabel(label),
+      degree: 0,
+      x: canvas.width / 2 + Math.cos(angle) * 120,
+      y: canvas.height / 2 + Math.sin(angle) * 120,
+      vx: 0, vy: 0, fixed: false,
+    };
+  });
+  const nameToNode = {};
+  simNodes.forEach((n) => { nameToNode[n.name] = n; });
+
+  const simEdges = edges
+    .map((e) => ({ from: nameToNode[e.from], to: nameToNode[e.to], type: e.type }))
+    .filter((e) => e.from && e.to);
+  simEdges.forEach((e) => { e.from.degree++; e.to.degree++; });
+
+  graphState.simNodes = simNodes;
+  graphState.simEdges = simEdges;
+
+  if (graphState.rafId) cancelAnimationFrame(graphState.rafId);
+  let alpha = 1;
+
+  function tick() {
+    for (let i = 0; i < simNodes.length; i++) {
+      for (let j = i + 1; j < simNodes.length; j++) {
+        const a = simNodes[i];
+        const b = simNodes[j];
+        let dx = a.x - b.x;
+        let dy = a.y - b.y;
+        const distSq = dx * dx + dy * dy || 0.01;
+        const force = 1800 / distSq;
+        const dist = Math.sqrt(distSq);
+        dx /= dist;
+        dy /= dist;
+        if (!a.fixed) { a.vx += dx * force; a.vy += dy * force; }
+        if (!b.fixed) { b.vx -= dx * force; b.vy -= dy * force; }
+      }
+    }
+    simEdges.forEach((e) => {
+      let dx = e.to.x - e.from.x;
+      let dy = e.to.y - e.from.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      const force = (dist - 90) * 0.02;
+      dx /= dist;
+      dy /= dist;
+      if (!e.from.fixed) { e.from.vx += dx * force; e.from.vy += dy * force; }
+      if (!e.to.fixed) { e.to.vx -= dx * force; e.to.vy -= dy * force; }
+    });
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    simNodes.forEach((n) => {
+      if (n.fixed) return;
+      n.vx += (cx - n.x) * 0.002;
+      n.vy += (cy - n.y) * 0.002;
+      n.vx *= 0.85;
+      n.vy *= 0.85;
+      n.x += n.vx * alpha;
+      n.y += n.vy * alpha;
+    });
+
+    render();
+
+    alpha *= 0.995;
+    if (alpha > 0.02 || graphState.dragging) {
+      graphState.rafId = requestAnimationFrame(tick);
+    } else {
+      graphState.rafId = null;
+    }
+  }
+
+  function render() {
+    ctx.save();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const t = graphState.transform;
+    ctx.translate(t.x, t.y);
+    ctx.scale(t.scale, t.scale);
+
+    ctx.strokeStyle = 'rgba(139, 148, 158, 0.35)';
+    ctx.lineWidth = 1 / t.scale;
+    simEdges.forEach((e) => {
+      ctx.beginPath();
+      ctx.moveTo(e.from.x, e.from.y);
+      ctx.lineTo(e.to.x, e.to.y);
+      ctx.stroke();
+    });
+
+    simNodes.forEach((n) => {
+      const r = 5 + Math.min(n.degree, 10) * 1.2;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = n.color;
+      ctx.fill();
+      if (t.scale > 0.6) {
+        ctx.fillStyle = '#e6edf3';
+        ctx.font = '11px sans-serif';
+        ctx.fillText(n.name, n.x + r + 3, n.y + 3);
+      }
+    });
+    ctx.restore();
+  }
+
+  render();
+  graphState.rafId = requestAnimationFrame(tick);
+  setupGraphInteraction(canvas);
+}
+
+function setupGraphInteraction(canvas) {
+  if (canvas._graphWired) return;
+  canvas._graphWired = true;
+
+  function toWorld(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    const t = graphState.transform;
+    return {
+      x: (clientX - rect.left - t.x) / t.scale,
+      y: (clientY - rect.top - t.y) / t.scale,
+    };
+  }
+
+  function nodeAt(clientX, clientY) {
+    const p = toWorld(clientX, clientY);
+    return graphState.simNodes.find((n) => {
+      const r = 5 + Math.min(n.degree, 10) * 1.2 + 3;
+      const dx = n.x - p.x;
+      const dy = n.y - p.y;
+      return dx * dx + dy * dy <= r * r;
+    });
+  }
+
+  let downNode = null;
+  let moved = false;
+  let panStart = null;
+
+  canvas.addEventListener('mousedown', (ev) => {
+    const n = nodeAt(ev.clientX, ev.clientY);
+    moved = false;
+    if (n) {
+      downNode = n;
+      graphState.dragging = n;
+      n.fixed = true;
+      if (!graphState.rafId) {
+        graphState.rafId = requestAnimationFrame(function keepAlive() {
+          if (graphState.dragging) graphState.rafId = requestAnimationFrame(keepAlive);
+        });
+      }
+    } else {
+      panStart = { x: ev.clientX, y: ev.clientY, tx: graphState.transform.x, ty: graphState.transform.y };
+    }
+  });
+
+  window.addEventListener('mousemove', (ev) => {
+    if (graphState.dragging) {
+      moved = true;
+      const p = toWorld(ev.clientX, ev.clientY);
+      graphState.dragging.x = p.x;
+      graphState.dragging.y = p.y;
+    } else if (panStart) {
+      moved = true;
+      graphState.transform.x = panStart.tx + (ev.clientX - panStart.x);
+      graphState.transform.y = panStart.ty + (ev.clientY - panStart.y);
+    }
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (downNode && !moved) showGraphEntity(downNode.name);
+    if (graphState.dragging) {
+      graphState.dragging.fixed = false;
+      graphState.dragging = null;
+    }
+    downNode = null;
+    panStart = null;
+  });
+
+  canvas.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    const t = graphState.transform;
+    const rect = canvas.getBoundingClientRect();
+    const mx = ev.clientX - rect.left;
+    const my = ev.clientY - rect.top;
+    const factor = ev.deltaY < 0 ? 1.1 : 0.9;
+    const newScale = Math.min(4, Math.max(0.2, t.scale * factor));
+    t.x = mx - (mx - t.x) * (newScale / t.scale);
+    t.y = my - (my - t.y) * (newScale / t.scale);
+    t.scale = newScale;
+  }, { passive: false });
 }
 
 // --- Gateway status widget ---

@@ -149,6 +149,10 @@ pub struct GatewayState {
     /// Used by the config GET handler to show effective values even when not
     /// yet persisted to the DB (e.g. DISCORD_OWNER_ID env var).
     pub channel_env_config: std::collections::HashMap<String, serde_json::Value>,
+    /// Knowledge graph client for the graph browser panel. Only present when
+    /// built with the `neo4j` feature and Neo4j is configured/reachable.
+    #[cfg(feature = "neo4j")]
+    pub graph_client: Option<Arc<crate::graph::GraphClient>>,
 }
 
 /// Start the gateway HTTP server.
@@ -304,11 +308,25 @@ pub async fn start_server(
             "/v1/chat/completions",
             post(super::openai_compat::chat_completions_handler),
         )
-        .route("/v1/models", get(super::openai_compat::models_handler))
-        .route_layer(middleware::from_fn_with_state(
-            auth_state.clone(),
-            auth_middleware,
-        ));
+        .route("/v1/models", get(super::openai_compat::models_handler));
+
+    // Knowledge graph browser (F12/F13) -- only registered when built with
+    // the `neo4j` feature, since the handlers/types reference `GraphClient`.
+    #[cfg(feature = "neo4j")]
+    let protected = protected
+        .route("/api/graph/stats", get(graph_stats_handler))
+        .route("/api/graph/entities", get(graph_entities_handler))
+        .route("/api/graph/sample", get(graph_sample_handler))
+        .route("/api/graph/search", get(graph_search_handler))
+        .route(
+            "/api/graph/entity/{name}",
+            get(graph_entity_context_handler),
+        );
+
+    let protected = protected.route_layer(middleware::from_fn_with_state(
+        auth_state.clone(),
+        auth_middleware,
+    ));
 
     // Static file routes (no auth, served from embedded strings)
     let statics = Router::new()
@@ -3267,6 +3285,124 @@ async fn audit_summary_handler(
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+// --- Knowledge graph browser (F12/F13) ---
+
+#[cfg(feature = "neo4j")]
+async fn graph_stats_handler(
+    State(state): State<Arc<GatewayState>>,
+) -> Result<Json<GraphStatsResponse>, (StatusCode, String)> {
+    let client = state.graph_client.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Graph not available".to_string(),
+    ))?;
+
+    let stats = client
+        .graph_stats()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(GraphStatsResponse {
+        entities: stats["entities"].as_i64().unwrap_or(0),
+        edges: stats["edges"].as_i64().unwrap_or(0),
+        pending_candidates: stats["pending_candidates"].as_i64().unwrap_or(0),
+    }))
+}
+
+#[cfg(feature = "neo4j")]
+#[derive(Deserialize)]
+struct GraphLimitQuery {
+    limit: Option<u32>,
+}
+
+#[cfg(feature = "neo4j")]
+async fn graph_entities_handler(
+    State(state): State<Arc<GatewayState>>,
+    Query(q): Query<GraphLimitQuery>,
+) -> Result<Json<GraphEntitiesResponse>, (StatusCode, String)> {
+    let client = state.graph_client.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Graph not available".to_string(),
+    ))?;
+
+    let entities = client
+        .list_entities(q.limit.unwrap_or(500))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(GraphEntitiesResponse { entities }))
+}
+
+#[cfg(feature = "neo4j")]
+async fn graph_sample_handler(
+    State(state): State<Arc<GatewayState>>,
+    Query(q): Query<GraphLimitQuery>,
+) -> Result<Json<GraphSampleResponse>, (StatusCode, String)> {
+    let client = state.graph_client.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Graph not available".to_string(),
+    ))?;
+
+    let sample = client
+        .graph_sample(q.limit.unwrap_or(300))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let nodes = sample["nodes"].as_array().cloned().unwrap_or_default();
+    let edges = sample["edges"].as_array().cloned().unwrap_or_default();
+
+    Ok(Json(GraphSampleResponse { nodes, edges }))
+}
+
+#[cfg(feature = "neo4j")]
+#[derive(Deserialize)]
+struct GraphSearchQuery {
+    q: String,
+    limit: Option<u32>,
+}
+
+#[cfg(feature = "neo4j")]
+async fn graph_search_handler(
+    State(state): State<Arc<GatewayState>>,
+    Query(q): Query<GraphSearchQuery>,
+) -> Result<Json<GraphSearchResponse>, (StatusCode, String)> {
+    let client = state.graph_client.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Graph not available".to_string(),
+    ))?;
+
+    let results = client
+        .search_entities(&q.q, q.limit.unwrap_or(20))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(GraphSearchResponse { results }))
+}
+
+#[cfg(feature = "neo4j")]
+#[derive(Deserialize)]
+struct GraphHopsQuery {
+    hops: Option<u32>,
+}
+
+#[cfg(feature = "neo4j")]
+async fn graph_entity_context_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(name): Path<String>,
+    Query(q): Query<GraphHopsQuery>,
+) -> Result<Json<GraphEntityContextResponse>, (StatusCode, String)> {
+    let client = state.graph_client.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Graph not available".to_string(),
+    ))?;
+
+    let context = client
+        .entity_context(&name, q.hops.unwrap_or(2))
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+
+    Ok(Json(GraphEntityContextResponse { context }))
 }
 
 /// Parse a `since` string that may be either an ISO-8601 timestamp or a
