@@ -927,7 +927,22 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        tracing::info!("Orchestrator API started on :50051, sandbox delegation enabled");
+        // SANDBOX_ENABLED only means the orchestrator/job manager were constructed --
+        // it says nothing about whether the Docker daemon is actually reachable (e.g.
+        // /var/run/docker.sock missing or not mounted). Probe it now and keep probing
+        // periodically so `create_job`'s tool description reflects real capability
+        // instead of unconditionally advertising container support.
+        {
+            let health_jm = Arc::clone(&jm);
+            tokio::spawn(async move {
+                loop {
+                    health_jm.refresh_docker_health().await;
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                }
+            });
+        }
+
+        tracing::info!("Orchestrator API started on :50051, sandbox delegation configured");
         if config.claude_code.enabled {
             tracing::info!(
                 "Claude Code sandbox mode available (model: {}, max_turns: {})",

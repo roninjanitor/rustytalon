@@ -51,8 +51,15 @@ impl CreateJobTool {
         self
     }
 
+    /// True only when a job manager is configured AND Docker was reachable as of
+    /// the last background health check. `SANDBOX_ENABLED=true` alone (e.g. the
+    /// container-job-manager was constructed) does not imply Docker is actually
+    /// up -- gating on `docker_available()` keeps the tool from advertising
+    /// container capability to the LLM that it can't currently deliver.
     fn sandbox_enabled(&self) -> bool {
-        self.job_manager.is_some()
+        self.job_manager
+            .as_ref()
+            .is_some_and(|jm| jm.docker_available())
     }
 
     /// Persist a sandbox job record (fire-and-forget).
@@ -185,7 +192,12 @@ impl CreateJobTool {
                     None,
                     Some(Utc::now()),
                 );
-                ToolError::ExecutionFailed(format!("failed to create container: {}", e))
+                ToolError::ExecutionFailed(format!(
+                    "failed to create container: {}. Docker may have gone down since the last \
+                     health check; verify the daemon is running and /var/run/docker.sock is \
+                     reachable (mounted into the container if RustyTalon itself runs in Docker).",
+                    e
+                ))
             })?;
 
         // Container started successfully.

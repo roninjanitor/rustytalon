@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
@@ -126,6 +127,10 @@ pub struct ContainerJobManager {
     config: ContainerJobConfig,
     token_store: TokenStore,
     containers: Arc<RwLock<HashMap<Uuid, ContainerHandle>>>,
+    /// Cached result of the last Docker reachability check, refreshed periodically
+    /// by a background task (see `refresh_docker_health`). Starts `false` so the
+    /// tool layer never advertises sandbox capability before the first check runs.
+    docker_available: Arc<AtomicBool>,
 }
 
 impl ContainerJobManager {
@@ -134,7 +139,26 @@ impl ContainerJobManager {
             config,
             token_store,
             containers: Arc::new(RwLock::new(HashMap::new())),
+            docker_available: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Whether Docker was reachable as of the last background health check.
+    ///
+    /// This is a cached flag, not a live probe -- callers that need certainty
+    /// (e.g. actually creating a container) should still handle `create_job`
+    /// failures. This exists so the `create_job` tool can decide, cheaply and
+    /// synchronously, whether to advertise sandboxed-container capability to
+    /// the LLM at all.
+    pub fn docker_available(&self) -> bool {
+        self.docker_available.load(Ordering::Relaxed)
+    }
+
+    /// Ping Docker and update the cached availability flag. Intended to be called
+    /// periodically from a background task started at startup.
+    pub async fn refresh_docker_health(&self) {
+        let available = connect_docker().await.is_ok();
+        self.docker_available.store(available, Ordering::Relaxed);
     }
 
     /// Create and start a new container for a job.
