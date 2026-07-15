@@ -450,6 +450,7 @@ async fn version_handler(Query(params): Query<VersionQuery>) -> Json<VersionResp
             release_url: None,
             docker_pull: None,
             check_error: None,
+            ahead_of_release: None,
         });
     }
 
@@ -474,6 +475,7 @@ async fn version_handler(Query(params): Query<VersionQuery>) -> Json<VersionResp
             release_url: None,
             docker_pull: None,
             check_error: Some(format!("Could not reach GitHub: {e}")),
+            ahead_of_release: None,
         }),
         Ok(resp) => {
             #[derive(serde::Deserialize)]
@@ -490,10 +492,16 @@ async fn version_handler(Query(params): Query<VersionQuery>) -> Json<VersionResp
                     release_url: None,
                     docker_pull: None,
                     check_error: Some(format!("Unexpected response from GitHub: {e}")),
+                    ahead_of_release: None,
                 }),
                 Ok(release) => {
                     let latest = release.tag_name.trim_start_matches('v').to_string();
                     let update_available = semver_gt(&latest, CURRENT_VERSION);
+                    // Distinguishes "already on the latest release" from "running an
+                    // unreleased build (:dev / :dev-<sha>) that's ahead of it" -- both
+                    // otherwise report update_available: false, which reads the same
+                    // in the UI even though they mean very different things.
+                    let ahead_of_release = semver_gt(CURRENT_VERSION, &latest);
                     let docker_pull = if update_available {
                         Some(format!("docker pull {}:{}", DOCKER_IMAGE, release.tag_name))
                     } else {
@@ -506,6 +514,7 @@ async fn version_handler(Query(params): Query<VersionQuery>) -> Json<VersionResp
                         release_url: Some(release.html_url),
                         docker_pull,
                         check_error: None,
+                        ahead_of_release: Some(ahead_of_release),
                     })
                 }
             }
@@ -3592,6 +3601,35 @@ fn sanitize_skill_name(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── semver_gt ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_semver_gt_update_available() {
+        // Latest release ahead of the running version -> update available.
+        assert!(semver_gt("0.2.13", "0.2.12"));
+        assert!(semver_gt("0.3.0", "0.2.12"));
+        assert!(semver_gt("1.0.0", "0.2.12"));
+    }
+
+    #[test]
+    fn test_semver_gt_ahead_of_release() {
+        // Running version ahead of the latest tagged release (an unreleased
+        // `develop` build) -> the reverse comparison used for ahead_of_release.
+        assert!(semver_gt("0.2.13", "0.2.12"));
+        assert!(!semver_gt("0.2.12", "0.2.13"));
+    }
+
+    #[test]
+    fn test_semver_gt_equal_is_false() {
+        assert!(!semver_gt("0.2.12", "0.2.12"));
+    }
+
+    #[test]
+    fn test_semver_gt_non_semver_falls_back_to_inequality() {
+        assert!(semver_gt("not-a-version", "0.2.12"));
+        assert!(!semver_gt("0.2.12", "0.2.12"));
+    }
 
     // ── sanitize_skill_name ──────────────────────────────────────────────
 

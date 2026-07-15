@@ -3976,6 +3976,11 @@ mark {
   color: var(--accent);
   border: 1px solid rgba(88, 166, 255, 0.2);
 }
+.version-status.dev-build {
+  background: rgba(188, 140, 255, 0.12);
+  color: #bc8cff;
+  border: 1px solid rgba(188, 140, 255, 0.3);
+}
 .version-card-actions {
   display: flex;
   align-items: center;

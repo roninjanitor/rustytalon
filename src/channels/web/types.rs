@@ -729,6 +729,13 @@ pub struct VersionResponse {
     /// Human-readable error if the update check failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub check_error: Option<String>,
+    /// True when the running version is strictly newer than the latest
+    /// GitHub release -- i.e. an unreleased build from `develop` (a `:dev`
+    /// or `:dev-<sha>` image), not a stale install. Distinguishes that case
+    /// from `update_available: false`, which otherwise reads identically
+    /// for "you're current" and "you're ahead of the last release."
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ahead_of_release: Option<bool>,
 }
 
 #[cfg(test)]

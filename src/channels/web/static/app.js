@@ -4743,6 +4743,12 @@ async function checkForUpdate() {
         dockerBlock.style.display = '';
       }
       btn.textContent = 'Check again';
+    } else if (data.ahead_of_release) {
+      if (statusEl) {
+        statusEl.className = 'version-status dev-build';
+        statusEl.textContent = '⚠ Dev build (ahead of latest release)';
+      }
+      btn.textContent = 'Check again';
     } else {
       if (statusEl) {
         statusEl.className = 'version-status up-to-date';
