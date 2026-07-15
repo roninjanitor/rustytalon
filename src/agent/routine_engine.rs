@@ -475,9 +475,7 @@ async fn execute_lightweight(
         Err(_) => max_tokens,
     };
 
-    let request = CompletionRequest::new(messages)
-        .with_max_tokens(effective_max_tokens)
-        .with_temperature(0.3);
+    let request = CompletionRequest::new(messages).with_max_tokens(effective_max_tokens);
 
     let response = ctx
         .llm

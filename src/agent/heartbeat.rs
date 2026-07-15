@@ -254,9 +254,7 @@ impl HeartbeatRunner {
             }
         };
 
-        let request = CompletionRequest::new(messages)
-            .with_max_tokens(max_tokens)
-            .with_temperature(0.3);
+        let request = CompletionRequest::new(messages).with_max_tokens(max_tokens);
 
         let response = match self.llm.complete(request).await {
             Ok(r) => r,
@@ -366,9 +364,8 @@ impl HeartbeatRunner {
                 date, log_content, user_md, memory_md
             );
 
-            let request = CompletionRequest::new(vec![ChatMessage::user(&prompt)])
-                .with_max_tokens(512)
-                .with_temperature(0.1);
+            let request =
+                CompletionRequest::new(vec![ChatMessage::user(&prompt)]).with_max_tokens(512);
 
             let response = match self.llm.complete(request).await {
                 Ok(r) => r,

@@ -264,8 +264,7 @@ Respond in JSON format:
 
         let request =
             crate::llm::CompletionRequest::new(vec![crate::llm::ChatMessage::user(prompt)])
-                .with_max_tokens(1024)
-                .with_temperature(0.1);
+                .with_max_tokens(1024);
 
         let response = self
             .llm

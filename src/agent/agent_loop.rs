@@ -2730,9 +2730,7 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
         context.extend_from_slice(&messages[start..]);
         context.push(ChatMessage::user("Summarize this conversation."));
 
-        let request = crate::llm::CompletionRequest::new(context)
-            .with_max_tokens(512)
-            .with_temperature(0.3);
+        let request = crate::llm::CompletionRequest::new(context).with_max_tokens(512);
 
         match self.llm().complete(request).await {
             Ok(response) => Ok(SubmissionResult::response(format!(
@@ -2777,9 +2775,7 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
         context.extend_from_slice(&messages[start..]);
         context.push(ChatMessage::user("What should I do next?"));
 
-        let request = crate::llm::CompletionRequest::new(context)
-            .with_max_tokens(512)
-            .with_temperature(0.5);
+        let request = crate::llm::CompletionRequest::new(context).with_max_tokens(512);
 
         match self.llm().complete(request).await {
             Ok(response) => Ok(SubmissionResult::response(format!(
