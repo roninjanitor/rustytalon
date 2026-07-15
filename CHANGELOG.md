@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-07-15
+
+### Fixed
+- **Neo4j fulltext index creation was silently breaking every graph connection** — `ensure_indexes()`'s `CREATE FULLTEXT INDEX ... FOR (n) ON EACH [n.name]` used a bare, label-less node pattern (intentional, since entity types are open-ended rather than a fixed enum), but Neo4j's fulltext index syntax requires an explicit label there, unlike a plain `MATCH`. Every real connection attempt failed with a Cypher syntax error, which `GraphClient::connect()` treated as "Neo4j unreachable" — so graph tools never registered on any real deployment, with only a misleading `WARN Neo4j configured but unreachable` log line (Neo4j was in fact perfectly reachable). Entities now get a common `Entity` label alongside their specific type label (`create_entity`'s `MERGE` pattern), and the index targets `(n:Entity)`. Verified against a live local Neo4j instance, not just compiled.
+
+## [0.2.12] - 2026-07-13
+
 ### Added
 - **Knowledge graph web browser (optional, requires `neo4j` feature)** — new "Graph" tab in the web gateway renders an interactive force-directed visualization of the knowledge graph: category-colored, degree-sized nodes, zoom/pan/drag, a browse-by-category sidebar with edge counts, entity search, and a click-through detail panel. Backed by five new `GET /api/graph/*` endpoints (stats/entities/sample/search/entity) and three new read-only `GraphClient` methods; gracefully returns 503 rather than erroring when Neo4j isn't connected, and the routes aren't registered at all when built without the `neo4j` feature.
 

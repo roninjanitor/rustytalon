@@ -64,8 +64,14 @@ impl GraphClient {
     }
 
     async fn ensure_indexes(&self) -> Result<(), GraphError> {
+        // Neo4j's fulltext index syntax requires an explicit label on the node
+        // pattern -- a bare `(n)` (needed here since entity types are open-ended,
+        // not a fixed enum) is a syntax error for CREATE FULLTEXT INDEX, unlike a
+        // plain MATCH. Every entity gets a common `Entity` label (see
+        // `create_entity`) alongside its specific type label so this index can
+        // cover all of them regardless of type.
         let cypher = format!(
-            "CREATE FULLTEXT INDEX {ENTITY_SEARCH_INDEX} IF NOT EXISTS FOR (n) ON EACH [n.name]"
+            "CREATE FULLTEXT INDEX {ENTITY_SEARCH_INDEX} IF NOT EXISTS FOR (n:Entity) ON EACH [n.name]"
         );
         self.graph
             .run(query(&cypher))
@@ -104,8 +110,11 @@ impl GraphClient {
         let props = Self::properties_to_bolt(properties)?;
         let now = chrono::Utc::now().to_rfc3339();
 
+        // Every entity also gets the common `Entity` label (in addition to its
+        // specific type label) so the fulltext search index -- which must target
+        // a concrete label -- can cover entities of any type.
         let cypher = format!(
-            "MERGE (n:{label} {{name: $name}}) \
+            "MERGE (n:{label}:Entity {{name: $name}}) \
              ON CREATE SET n += $props, n.created_at = $now \
              ON MATCH SET n += $props, n.updated_at = $now \
              RETURN n"
