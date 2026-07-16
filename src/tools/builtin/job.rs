@@ -693,11 +693,29 @@ impl Tool for JobStatusTool {
 /// Tool for canceling a job.
 pub struct CancelJobTool {
     context_manager: Arc<ContextManager>,
+    job_manager: Option<Arc<ContainerJobManager>>,
+    store: Option<Arc<dyn Database>>,
 }
 
 impl CancelJobTool {
     pub fn new(context_manager: Arc<ContextManager>) -> Self {
-        Self { context_manager }
+        Self {
+            context_manager,
+            job_manager: None,
+            store: None,
+        }
+    }
+
+    /// Inject sandbox dependencies so `cancel_job` can actually stop a running
+    /// Docker container, mirroring `CreateJobTool::with_sandbox`.
+    pub fn with_sandbox(
+        mut self,
+        job_manager: Arc<ContainerJobManager>,
+        store: Option<Arc<dyn Database>>,
+    ) -> Self {
+        self.job_manager = Some(job_manager);
+        self.store = store;
+        self
     }
 }
 
@@ -741,7 +759,45 @@ impl Tool for CancelJobTool {
             ToolError::InvalidParameters(format!("invalid job ID format: {}", job_id_str))
         })?;
 
-        // Transition to cancelled state
+        // If this is a sandboxed (Docker container) job, stop the container for
+        // real instead of only flipping DB state. Mirrors the web gateway's
+        // `jobs_cancel_handler`.
+        if let Some(store) = self.store.clone()
+            && let Ok(Some(sandbox_job)) = store.get_sandbox_job(job_id).await
+        {
+            if sandbox_job.user_id != requester_id {
+                let result = serde_json::json!({ "error": "Job not found".to_string() });
+                return Ok(ToolOutput::success(result, start.elapsed()));
+            }
+            if sandbox_job.status == "running" || sandbox_job.status == "creating" {
+                if let Some(jm) = self.job_manager.clone()
+                    && let Err(e) = jm.stop_job(job_id).await
+                {
+                    tracing::warn!(job_id = %job_id, error = %e, "Failed to stop container during cancellation");
+                }
+                store
+                    .update_sandbox_job_status(
+                        job_id,
+                        "failed",
+                        Some(false),
+                        Some("Cancelled by user"),
+                        None,
+                        Some(Utc::now()),
+                    )
+                    .await
+                    .map_err(|e| {
+                        ToolError::ExecutionFailed(format!("failed to update job status: {}", e))
+                    })?;
+            }
+            let result = serde_json::json!({
+                "job_id": job_id.to_string(),
+                "status": "cancelled",
+                "message": "Job cancelled successfully"
+            });
+            return Ok(ToolOutput::success(result, start.elapsed()));
+        }
+
+        // Otherwise, fall back to the in-memory ContextManager job.
         match self
             .context_manager
             .update_context(job_id, |ctx| {

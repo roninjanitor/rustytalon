@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Live streaming of the agent's final text response** — the web UI's "Thinking..." indicator was a static spinner for the entire multi-second LLM round-trip because `StatusUpdate::StreamChunk`/`SseEvent::StreamChunk` existed end-to-end (backend to `app.js`'s `stream_chunk` listener) but nothing ever produced one. Added an additive `complete_streaming`/`complete_with_tools_streaming` pair to the `LlmProvider` trait (default impl buffers and emits one chunk, so existing implementors — `TrackedProvider`, `FailoverProvider`, `SmartRouter`, `MockProvider` — compile and behave unchanged); `RigAdapter` overrides both with real provider-level streaming via rig-core's `CompletionModel::stream()`. Wired through a new `Agent::respond_with_tools_streaming` at the single choke point that produces the user-facing reply, forwarding text chunks live. The web client now tracks the in-progress assistant bubble explicitly (`currentStreamEl`) so streamed text can't be misappended onto a previous, already-completed turn's message.
+
+### Fixed
+- **SSE reconnect could strand the chat UI on "Sending..." forever** — the SSE broadcast channel has no per-client replay buffer, so any event (including the final `response`) sent while a browser tab's `EventSource` was momentarily disconnected (network blip, tab backgrounded, laptop sleep) was silently dropped with no way to recover short of a manual page refresh. The client now re-syncs from `/api/chat/history` on every reconnect after the first if a turn was in flight, catching the UI up if the turn actually completed while disconnected.
+- **`cancel_job` tool didn't actually stop anything** — it only transitioned the in-memory job state to `Cancelled`, unlike the web gateway's `/api/jobs/{id}/cancel` endpoint which really stops the Docker container. `CancelJobTool` now mirrors `CreateJobTool`'s sandbox wiring: for sandboxed jobs it calls `ContainerJobManager::stop_job` (real `docker stop`) before updating status, falling back to the in-memory `ContextManager` transition for non-sandboxed jobs.
+
 ## [0.2.13] - 2026-07-15
 
 ### Added

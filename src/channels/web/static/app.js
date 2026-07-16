@@ -18,6 +18,11 @@ let pendingActivityEl = null; // the .activity-panel DOM node being built for th
 let lastToolEntryEl = null;   // the last <details> tool entry, for attaching results
 let pendingTokensIn = 0;      // accumulated input tokens for current turn
 let pendingTokensOut = 0;     // accumulated output tokens for current turn
+// The assistant bubble currently being filled in by 'stream_chunk' events for
+// the in-flight turn, if any. Tracked explicitly (rather than "the last
+// .message.assistant in the DOM") so a new turn's streamed text can never be
+// appended onto a previous, already-completed turn's bubble.
+let currentStreamEl = null;
 
 // Conversation-level token tracking (persists across turns for the current thread)
 let convTokensIn = 0;   // total input tokens for current conversation (from DB + live)
@@ -99,6 +104,8 @@ function apiFetch(path, options) {
 
 // --- SSE ---
 
+let sseHasConnectedBefore = false;
+
 function connectSSE() {
   if (eventSource) eventSource.close();
 
@@ -107,6 +114,15 @@ function connectSSE() {
   eventSource.onopen = () => {
     document.getElementById('sse-dot').classList.remove('disconnected');
     document.getElementById('sse-status').textContent = 'Connected';
+    // The browser transparently reconnects EventSource after a drop, but any
+    // event broadcast server-side while we had no active connection is lost
+    // (the broadcast channel has no per-client replay buffer). If a turn was
+    // in flight, re-sync from the DB-backed history so we don't get stuck
+    // showing "Sending..." forever.
+    if (sseHasConnectedBefore) {
+      resyncAfterReconnect();
+    }
+    sseHasConnectedBefore = true;
   };
 
   eventSource.onerror = () => {
@@ -118,7 +134,16 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     if (!isCurrentThread(data.thread_id)) return;
     sealActivityPanel();
-    addMessage('assistant', data.content);
+    if (currentStreamEl) {
+      // Chunks already streamed into a live bubble -- reconcile with the
+      // authoritative final text (covers dropped/reordered chunks) instead
+      // of adding a duplicate message.
+      currentStreamEl.setAttribute('data-raw', data.content);
+      currentStreamEl.innerHTML = renderMarkdown(data.content);
+      currentStreamEl = null;
+    } else {
+      addMessage('assistant', data.content);
+    }
     setStatus('');
     enableChatInput();
     // Refresh thread list so new titles appear after first message
@@ -334,6 +359,7 @@ function sendMessage() {
   renderAttachmentPreviews();
 
   addMessage('user', content || '[image]');
+  currentStreamEl = null;
   input.value = '';
   autoResizeTextarea(input);
   setStatus('Sending...', true);
@@ -448,20 +474,19 @@ function addMessage(role, content) {
   }
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
+  return div;
 }
 
 function appendToLastAssistant(chunk) {
-  const container = document.getElementById('chat-messages');
-  const messages = container.querySelectorAll('.message.assistant');
-  if (messages.length > 0) {
-    const last = messages[messages.length - 1];
-    const raw = (last.getAttribute('data-raw') || '') + chunk;
-    last.setAttribute('data-raw', raw);
-    last.innerHTML = renderMarkdown(raw);
-    container.scrollTop = container.scrollHeight;
-  } else {
-    addMessage('assistant', chunk);
+  if (!currentStreamEl) {
+    currentStreamEl = addMessage('assistant', chunk);
+    return;
   }
+  const container = document.getElementById('chat-messages');
+  const raw = (currentStreamEl.getAttribute('data-raw') || '') + chunk;
+  currentStreamEl.setAttribute('data-raw', raw);
+  currentStreamEl.innerHTML = renderMarkdown(raw);
+  container.scrollTop = container.scrollHeight;
 }
 
 function setStatus(text, spinning) {
@@ -893,6 +918,35 @@ function showAuthCardError(extensionName, message) {
   }
 }
 
+// Called on every SSE reconnect after the first. If a turn was mid-flight
+// when the connection dropped, check whether it actually finished (the
+// final 'response' event may have been broadcast into the void) and, if so,
+// catch the UI up instead of leaving it stuck on "Sending...".
+function resyncAfterReconnect() {
+  const sendBtn = document.getElementById('send-btn');
+  if (!sendBtn || !sendBtn.disabled) return; // no turn was in flight
+
+  let historyUrl = '/api/chat/history?limit=1';
+  if (currentThreadId) {
+    historyUrl += '&thread_id=' + encodeURIComponent(currentThreadId);
+  }
+
+  apiFetch(historyUrl).then((data) => {
+    const turns = data.turns || [];
+    const lastTurn = turns[turns.length - 1];
+    if (lastTurn && lastTurn.response) {
+      // The turn completed while we were disconnected; reload full history
+      // and unstick the input.
+      loadHistory();
+      sealActivityPanel();
+      setStatus('');
+      enableChatInput();
+    }
+    // Otherwise the turn is still genuinely running -- leave the UI as-is;
+    // the now-reconnected stream will deliver the real event when it lands.
+  }).catch(() => {});
+}
+
 function loadHistory(before) {
   let historyUrl = '/api/chat/history?limit=50';
   if (currentThreadId) {
@@ -911,6 +965,7 @@ function loadHistory(before) {
     if (!isPaginating) {
       // Fresh load: clear and render
       pendingActivityEl = null;
+      currentStreamEl = null;
       container.innerHTML = '';
       for (const turn of data.turns) {
         addMessage('user', turn.user_input);
@@ -1008,6 +1063,7 @@ function loadThreads() {
 function switchToAssistant() {
   if (!assistantThreadId) return;
   pendingActivityEl = null;
+  currentStreamEl = null;
   currentThreadId = assistantThreadId;
   hasMore = false;
   oldestTimestamp = null;
@@ -1021,6 +1077,7 @@ function switchToAssistant() {
 
 function switchThread(threadId) {
   pendingActivityEl = null;
+  currentStreamEl = null;
   currentThreadId = threadId;
   hasMore = false;
   oldestTimestamp = null;
@@ -1062,6 +1119,7 @@ function renderConversationTokenStats() {
 function createNewThread() {
   apiFetch('/api/chat/thread/new', { method: 'POST' }).then((data) => {
     pendingActivityEl = null;
+    currentStreamEl = null;
     currentThreadId = data.id || null;
     document.getElementById('chat-messages').innerHTML = '';
     setStatus('');

@@ -1446,7 +1446,34 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                     m
                 });
 
-            let output = reasoning.respond_with_tools(&context).await?;
+            // Forward incremental text chunks to the channel as live output
+            // (e.g. the web UI's "stream_chunk" SSE event) instead of leaving
+            // the user staring at a static "Thinking..." spinner for the
+            // whole LLM round-trip. The forwarding task drains until all
+            // sender clones held by `respond_with_tools_streaming` are
+            // dropped, then exits; awaiting its handle ensures every chunk
+            // is delivered before we move on to the `response`/`status`
+            // events below.
+            let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let stream_channels = Arc::clone(&self.channels);
+            let stream_channel_name = message.channel.clone();
+            let stream_metadata = message.metadata.clone();
+            let forward_chunks = tokio::spawn(async move {
+                while let Some(chunk) = chunk_rx.recv().await {
+                    let _ = stream_channels
+                        .send_status(
+                            &stream_channel_name,
+                            StatusUpdate::StreamChunk(chunk),
+                            &stream_metadata,
+                        )
+                        .await;
+                }
+            });
+
+            let output = reasoning
+                .respond_with_tools_streaming(&context, Some(chunk_tx))
+                .await?;
+            let _ = forward_chunks.await;
 
             // Track token usage for budget enforcement
             tracing::debug!(

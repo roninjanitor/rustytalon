@@ -298,13 +298,18 @@ impl ToolRegistry {
         store: Option<Arc<dyn Database>>,
     ) {
         let mut create_tool = CreateJobTool::new(Arc::clone(&context_manager));
-        if let Some(jm) = job_manager {
-            create_tool = create_tool.with_sandbox(jm, store);
+        if let Some(jm) = job_manager.clone() {
+            create_tool = create_tool.with_sandbox(jm, store.clone());
         }
         self.register_sync(Arc::new(create_tool));
         self.register_sync(Arc::new(ListJobsTool::new(Arc::clone(&context_manager))));
         self.register_sync(Arc::new(JobStatusTool::new(Arc::clone(&context_manager))));
-        self.register_sync(Arc::new(CancelJobTool::new(context_manager)));
+
+        let mut cancel_tool = CancelJobTool::new(context_manager);
+        if let Some(jm) = job_manager {
+            cancel_tool = cancel_tool.with_sandbox(jm, store);
+        }
+        self.register_sync(Arc::new(cancel_tool));
 
         tracing::info!("Registered 4 job management tools");
     }
