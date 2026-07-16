@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
+use crate::agent::Scheduler;
 use crate::context::ContextManager;
 use crate::db::Database;
 use crate::extensions::ExtensionManager;
@@ -296,8 +297,9 @@ impl ToolRegistry {
         context_manager: Arc<ContextManager>,
         job_manager: Option<Arc<ContainerJobManager>>,
         store: Option<Arc<dyn Database>>,
+        scheduler: Arc<Scheduler>,
     ) {
-        let mut create_tool = CreateJobTool::new(Arc::clone(&context_manager));
+        let mut create_tool = CreateJobTool::new(Arc::clone(&context_manager), scheduler);
         if let Some(jm) = job_manager.clone() {
             create_tool = create_tool.with_sandbox(jm, store.clone());
         }

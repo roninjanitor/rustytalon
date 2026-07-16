@@ -222,8 +222,10 @@ pub struct Agent {
 impl Agent {
     /// Create a new agent.
     ///
-    /// Optionally accepts pre-created `ContextManager` and `SessionManager` for sharing
-    /// with external components (job tools, web gateway). Creates new ones if not provided.
+    /// Optionally accepts pre-created `ContextManager`, `SessionManager`, and `Scheduler`
+    /// for sharing with external components (job tools, web gateway). Creates new ones if
+    /// not provided.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: AgentConfig,
         deps: AgentDeps,
@@ -232,20 +234,23 @@ impl Agent {
         routine_config: Option<RoutineConfig>,
         context_manager: Option<Arc<ContextManager>>,
         session_manager: Option<Arc<SessionManager>>,
+        scheduler: Option<Arc<Scheduler>>,
     ) -> Self {
         let context_manager = context_manager
             .unwrap_or_else(|| Arc::new(ContextManager::new(config.max_parallel_jobs)));
 
         let session_manager = session_manager.unwrap_or_else(|| Arc::new(SessionManager::new()));
 
-        let scheduler = Arc::new(Scheduler::new(
-            config.clone(),
-            context_manager.clone(),
-            deps.llm.clone(),
-            deps.safety.clone(),
-            deps.tools.clone(),
-            deps.store.clone(),
-        ));
+        let scheduler = scheduler.unwrap_or_else(|| {
+            Arc::new(Scheduler::new(
+                config.clone(),
+                context_manager.clone(),
+                deps.llm.clone(),
+                deps.safety.clone(),
+                deps.tools.clone(),
+                deps.store.clone(),
+            ))
+        });
 
         Self {
             config,

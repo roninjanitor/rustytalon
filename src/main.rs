@@ -6,7 +6,7 @@ use clap::Parser;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use rustytalon::{
-    agent::{Agent, AgentDeps, SessionManager},
+    agent::{Agent, AgentDeps, Scheduler, SessionManager},
     channels::{
         ChannelManager, GatewayChannel, HttpChannel, ReplChannel, WebhookServer,
         WebhookServerConfig,
@@ -1412,11 +1412,25 @@ async fn main() -> anyhow::Result<()> {
     // Create session manager (shared between agent and web gateway)
     let session_manager = Arc::new(SessionManager::new());
 
+    // Create the scheduler up front (shared between the create_job tool and the agent) so
+    // that jobs created via the LLM-facing `create_job` tool actually get scheduled for
+    // execution, not just inserted into the ContextManager as Pending with nothing to pick
+    // them up.
+    let scheduler = Arc::new(Scheduler::new(
+        config.agent.clone(),
+        Arc::clone(&context_manager),
+        Arc::clone(&llm),
+        Arc::clone(&safety),
+        Arc::clone(&tools),
+        db.clone(),
+    ));
+
     // Register job tools (sandbox deps auto-injected when container_job_manager is available)
     tools.register_job_tools(
         Arc::clone(&context_manager),
         container_job_manager.clone(),
         db.clone(),
+        Arc::clone(&scheduler),
     );
 
     // Add web gateway channel if configured
@@ -1511,6 +1525,7 @@ async fn main() -> anyhow::Result<()> {
         Some(config.routines.clone()),
         Some(context_manager),
         Some(session_manager),
+        Some(scheduler),
     );
 
     tracing::info!("Agent initialized, starting main loop...");

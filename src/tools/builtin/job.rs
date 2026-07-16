@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use uuid::Uuid;
 
+use crate::agent::Scheduler;
 use crate::context::{ContextManager, JobContext, JobState};
 use crate::db::Database;
 use crate::history::SandboxJobRecord;
@@ -24,17 +25,21 @@ use crate::tools::tool::{Tool, ToolError, ToolOutput};
 ///
 /// When sandbox deps are injected (via `with_sandbox`), the tool automatically
 /// delegates execution to a Docker container. Otherwise it creates an in-memory
-/// job via the ContextManager. The LLM never needs to know the difference.
+/// job via the ContextManager and hands it to the `Scheduler` so it actually
+/// gets picked up and run instead of sitting in `Pending` forever. The LLM
+/// never needs to know the difference.
 pub struct CreateJobTool {
     context_manager: Arc<ContextManager>,
+    scheduler: Arc<Scheduler>,
     job_manager: Option<Arc<ContainerJobManager>>,
     store: Option<Arc<dyn Database>>,
 }
 
 impl CreateJobTool {
-    pub fn new(context_manager: Arc<ContextManager>) -> Self {
+    pub fn new(context_manager: Arc<ContextManager>, scheduler: Arc<Scheduler>) -> Self {
         Self {
             context_manager,
+            scheduler,
             job_manager: None,
             store: None,
         }
@@ -117,6 +122,24 @@ impl CreateJobTool {
             .await
         {
             Ok(job_id) => {
+                // create_job_for_user only inserts the job as Pending in the
+                // ContextManager -- without this, nothing ever picks it up and it
+                // sits in Pending forever.
+                if let Err(e) = self.scheduler.schedule(job_id).await {
+                    tracing::warn!(job_id = %job_id, "Failed to schedule job: {}", e);
+                    let result = serde_json::json!({
+                        "job_id": job_id.to_string(),
+                        "title": title,
+                        "status": "pending",
+                        "message": format!(
+                            "Created job '{}' but it could not be scheduled yet ({}); it will \
+                             need to be retried",
+                            title, e
+                        )
+                    });
+                    return Ok(ToolOutput::success(result, start.elapsed()));
+                }
+
                 let result = serde_json::json!({
                     "job_id": job_id.to_string(),
                     "title": title,
@@ -843,11 +866,44 @@ impl Tool for CancelJobTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::SafetyConfig;
+    use crate::llm::test_utils::MockProvider;
+    use crate::safety::SafetyLayer;
+    use crate::tools::ToolRegistry;
+
+    /// Build a real `Scheduler` for tests, backed by mock/minimal dependencies.
+    fn test_scheduler(context_manager: Arc<ContextManager>) -> Arc<Scheduler> {
+        let config = crate::config::AgentConfig {
+            name: "test-agent".to_string(),
+            max_parallel_jobs: 5,
+            job_timeout: Duration::from_secs(60),
+            stuck_threshold: Duration::from_secs(300),
+            repair_check_interval: Duration::from_secs(60),
+            max_repair_attempts: 3,
+            use_planning: false,
+            session_idle_timeout: Duration::from_secs(3600),
+            allow_local_tools: false,
+            primary_user_id: "default".to_string(),
+        };
+        let safety = Arc::new(SafetyLayer::new(&SafetyConfig {
+            max_output_length: 100_000,
+            injection_check_enabled: true,
+        }));
+        Arc::new(Scheduler::new(
+            config,
+            context_manager,
+            Arc::new(MockProvider::succeeding("test", "ok")),
+            safety,
+            Arc::new(ToolRegistry::new()),
+            None,
+        ))
+    }
 
     #[tokio::test]
     async fn test_create_job_tool_local() {
         let manager = Arc::new(ContextManager::new(5));
-        let tool = CreateJobTool::new(manager.clone());
+        let scheduler = test_scheduler(manager.clone());
+        let tool = CreateJobTool::new(manager.clone(), scheduler.clone());
 
         // Without sandbox deps, it should use the local path
         assert!(!tool.sandbox_enabled());
@@ -866,14 +922,24 @@ mod tests {
             result.result.get("status").unwrap().as_str().unwrap(),
             "pending"
         );
+
+        // Regression check: a job created via the LLM-facing tool (not the
+        // slash-command path) must actually be handed to the scheduler, or it
+        // sits in Pending forever with nothing to pick it up.
+        let job_uuid: Uuid = job_id.parse().unwrap();
+        assert!(
+            scheduler.is_running(job_uuid).await,
+            "job created by CreateJobTool::execute_local was never scheduled"
+        );
     }
 
     #[test]
     fn test_schema_changes_with_sandbox() {
         let manager = Arc::new(ContextManager::new(5));
+        let scheduler = test_scheduler(manager.clone());
 
         // Without sandbox
-        let tool = CreateJobTool::new(Arc::clone(&manager));
+        let tool = CreateJobTool::new(Arc::clone(&manager), scheduler);
         let schema = tool.parameters_schema();
         let props = schema.get("properties").unwrap().as_object().unwrap();
         assert!(props.contains_key("title"));
@@ -889,9 +955,10 @@ mod tests {
     #[test]
     fn test_execution_timeout_sandbox() {
         let manager = Arc::new(ContextManager::new(5));
+        let scheduler = test_scheduler(manager.clone());
 
         // Without sandbox: default timeout
-        let tool = CreateJobTool::new(Arc::clone(&manager));
+        let tool = CreateJobTool::new(Arc::clone(&manager), scheduler);
         assert_eq!(tool.execution_timeout(), Duration::from_secs(30));
     }
 
