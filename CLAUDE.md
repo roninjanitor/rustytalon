@@ -511,8 +511,7 @@ Key test patterns:
 10. **Connection broker SSE adapter** - SSE adapter not yet implemented (config parsed but adapter stubbed)
 11. **Connection broker resume support** - Discord RESUME with session_id + sequence — config parsed (`resumable: true`) but not implemented
 12. **Knowledge graph Phase C auto-commit** - High-confidence staged candidates still require manual `approve_candidate`; no confidence-threshold auto-commit yet (deferred until extraction quality is validated over real Phase B usage, per the PRD)
-13. **Knowledge graph review UX** - Review happens via `list_candidates`/`approve_candidate`/`reject_candidate` tool calls from any channel; no Discord react-to-approve or dedicated web UI review list built yet
-14. **Knowledge graph extraction routine** - No built-in scheduled routine; must be created manually via `routine_create` (a `FullJob` whose description tells the agent to review conversation history and call `stage_candidate`)
+13. **Knowledge graph Discord react-to-approve** - Review is available via chat tool calls and the web UI (see Completed); no Discord react-to-approve flow built
 
 ### Completed
 
@@ -541,6 +540,8 @@ Key test patterns:
 - ✅ **Connection broker (WebSocket adapter)** - Host-side persistent connections for WASM channels, with `on-event` WIT callback, event filtering, heartbeat, and reconnect
 - ✅ **Native knowledge graph (Neo4j, optional)** - `neo4j` Cargo feature with `create_entity`/`update_entity`/`create_relationship`/`search_entities`/`get_entity_context`/`delete_entity`/`merge_entities` tools plus a staged extraction review workflow (`stage_candidate`/`list_candidates`/`approve_candidate`/`reject_candidate`), covering PRD Phase A + B
 - ✅ **Knowledge graph web browser (PRD §12, F12/F13)** - "Graph" tab in the web gateway: force-directed visualization (category colors, degree-sized nodes, zoom/pan/drag), browse-by-category sidebar with edge counts, entity search, and a click-through detail panel, backed by new `/api/graph/*` REST endpoints
+- ✅ **Knowledge graph candidate review UI (PRD F9)** - "Pending review" panel in the Graph tab (`GraphClient::update_candidate` in `src/graph/client.rs`, `/api/graph/candidates*` endpoints in `src/channels/web/server.rs`) lists staged candidates with source/confidence/timestamp, lets the reviewer edit a staged entity's name before approving (so extraction runs that name the same real-world thing slightly differently across passes collapse into one node via `create_entity`'s existing `MERGE` instead of creating duplicates), and approve/reject inline. Closes the "review happens via tool calls only" gap.
+- ✅ **Knowledge graph extraction routine auto-seeded (PRD F11)** - On boot, if Neo4j is connected and no routine named "Knowledge graph extraction" exists yet for the default user, one is created automatically (`src/main.rs`, cron every 6h, `FullJob` instructing the agent to review recent history and call `stage_candidate`). Idempotent and non-destructive: only checks-and-creates once, never overwrites a routine the user has since edited, disabled, or deleted.
 
 ## Adding a New Tool
 

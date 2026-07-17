@@ -3658,10 +3658,127 @@ function renderGraphStats(stats) {
     '<div class="graph-stat"><span class="graph-stat-num">' + stats.entities + '</span> entities</div>' +
     '<div class="graph-stat"><span class="graph-stat-num">' + stats.edges + '</span> relationships</div>';
   if (stats.pending_candidates > 0) {
-    html += '<div class="graph-stat graph-stat-pending"><span class="graph-stat-num">' +
+    html += '<div class="graph-stat graph-stat-pending" onclick="toggleGraphCandidates()"><span class="graph-stat-num">' +
       stats.pending_candidates + '</span> pending review</div>';
   }
   el.innerHTML = html;
+
+  const btn = document.getElementById('graph-pending-btn');
+  document.getElementById('graph-pending-count').textContent = stats.pending_candidates;
+  btn.style.display = stats.pending_candidates > 0 ? 'inline-block' : 'none';
+}
+
+// --- Candidate review (F9) ---
+
+function toggleGraphCandidates() {
+  const panel = document.getElementById('graph-candidates');
+  const opening = panel.style.display === 'none';
+  panel.style.display = opening ? 'block' : 'none';
+  if (opening) loadGraphCandidates();
+}
+
+function loadGraphCandidates() {
+  const listEl = document.getElementById('graph-candidates-list');
+  listEl.innerHTML = '<div class="empty-state">Loading...</div>';
+  apiFetch('/api/graph/candidates?status=pending&limit=50')
+    .then((resp) => renderGraphCandidates(resp.candidates))
+    .catch((err) => {
+      listEl.innerHTML = '<div class="empty-state">Failed to load candidates: ' + escapeHtml(err.message) + '</div>';
+    });
+}
+
+function renderGraphCandidates(candidates) {
+  const listEl = document.getElementById('graph-candidates-list');
+  graphState.candidatesById = {};
+  if (!candidates || candidates.length === 0) {
+    listEl.innerHTML = '<div class="empty-state">No candidates pending review</div>';
+    return;
+  }
+
+  listEl.innerHTML = candidates.map((c) => {
+    graphState.candidatesById[c.id] = c;
+    const entities = JSON.parse(c.entities_json || '[]');
+    const relationships = JSON.parse(c.relationships_json || '[]');
+
+    const entityRows = entities.map((e, i) =>
+      '<div class="graph-candidate-entity">'
+      + '<span class="badge">' + escapeHtml(e.type) + '</span> '
+      + '<input type="text" value="' + escapeHtml(e.name) + '" data-cand="' + c.id + '" data-entity-idx="' + i + '">'
+      + '</div>'
+    ).join('');
+
+    const relRows = relationships.map((r) =>
+      '<div class="graph-candidate-rel">' + escapeHtml(r.from_entity) + ' &rarr; <em>' +
+      escapeHtml(r.type) + '</em> &rarr; ' + escapeHtml(r.to_entity) + '</div>'
+    ).join('');
+
+    return '<div class="graph-candidate-card" id="graph-candidate-' + c.id + '">'
+      + '<div class="graph-candidate-meta">'
+      + '<span>source: ' + escapeHtml(c.source) + '</span>'
+      + '<span>confidence: ' + Math.round((c.confidence || 0) * 100) + '%</span>'
+      + '<span>' + formatRelativeTime(c.created_at) + '</span>'
+      + '</div>'
+      + (entityRows ? '<div class="graph-candidate-section"><strong>Entities</strong>' + entityRows + '</div>' : '')
+      + (relRows ? '<div class="graph-candidate-section"><strong>Relationships</strong>' + relRows + '</div>' : '')
+      + '<div class="graph-candidate-actions">'
+      + '<button class="btn-restart" onclick="saveCandidateEdits(\'' + c.id + '\')">Save name changes</button> '
+      + '<button class="btn-restart" onclick="approveCandidate(\'' + c.id + '\')">Approve</button> '
+      + '<button class="btn-cancel" onclick="rejectCandidate(\'' + c.id + '\')">Reject</button>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+function saveCandidateEdits(id) {
+  const card = document.getElementById('graph-candidate-' + id);
+  const inputs = card.querySelectorAll('input[data-entity-idx]');
+  const original = graphState.candidatesById && graphState.candidatesById[id];
+  if (!inputs.length || !original) return;
+
+  // Merge edited names back over the original entity objects (type/properties
+  // unchanged) rather than sending a partial object that would lose them.
+  const originalEntities = JSON.parse(original.entities_json || '[]');
+  const merged = originalEntities.map((e) => ({ ...e }));
+  inputs.forEach((input) => {
+    const idx = parseInt(input.dataset.entityIdx, 10);
+    if (merged[idx]) merged[idx].name = input.value;
+  });
+
+  apiFetch('/api/graph/candidates/' + id + '/edit', {
+    method: 'POST',
+    body: { entities: merged },
+  })
+    .then(() => {
+      showToast('Candidate updated', 'success');
+      loadGraphCandidates();
+    })
+    .catch((err) => showToast('Update failed: ' + err.message, 'error'));
+}
+
+function approveCandidate(id) {
+  apiFetch('/api/graph/candidates/' + id + '/approve', { method: 'POST' })
+    .then((resp) => {
+      const errs = (resp.result && resp.result.errors) || [];
+      if (errs.length) {
+        showToast('Approved with ' + errs.length + ' error(s) -- see console', 'error');
+        console.warn('Candidate approval errors:', errs);
+      } else {
+        showToast('Candidate approved', 'success');
+      }
+      loadGraphCandidates();
+      loadGraph();
+    })
+    .catch((err) => showToast('Approve failed: ' + err.message, 'error'));
+}
+
+function rejectCandidate(id) {
+  if (!confirm('Reject this candidate? It will not be committed to the graph.')) return;
+  apiFetch('/api/graph/candidates/' + id + '/reject', { method: 'POST' })
+    .then(() => {
+      showToast('Candidate rejected', 'success');
+      loadGraphCandidates();
+    })
+    .catch((err) => showToast('Reject failed: ' + err.message, 'error'));
 }
 
 function renderGraphLegend(entities) {

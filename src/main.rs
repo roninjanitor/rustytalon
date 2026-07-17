@@ -609,6 +609,75 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Seed the F8/F11 knowledge-graph extraction routine on first boot with the
+    // graph enabled, so the user doesn't have to remember to ask the agent to
+    // create it (PRD docs/KNOWLEDGE_GRAPH_PRD.md F11). Idempotent: only
+    // creates it if a routine with this exact name doesn't already exist, and
+    // never touches it again afterwards -- if the user disables, reschedules,
+    // or deletes it, that choice is respected on every subsequent boot.
+    #[cfg(feature = "neo4j")]
+    if let (Some(_), Some(db)) = (&graph_client, &db) {
+        const EXTRACTION_ROUTINE_NAME: &str = "Knowledge graph extraction";
+        const EXTRACTION_SCHEDULE: &str = "0 */6 * * *";
+        const EXTRACTION_PROMPT: &str = "Review recent conversation history and workspace daily logs \
+            since the last run. For any notable people, projects, organizations, meetings, documents, \
+            or topics mentioned -- and the relationships between them -- call stage_candidate to propose \
+            them for review. Do not call approve_candidate or otherwise commit anything directly; staging \
+            is the only action this routine should take. Use search_entities first to check whether an \
+            entity already exists so you reuse its exact name rather than inventing a new spelling. If \
+            nothing notable happened since the last run, do nothing.";
+
+        match db
+            .get_routine_by_name("default", EXTRACTION_ROUTINE_NAME)
+            .await
+        {
+            Ok(None) => {
+                let next_fire =
+                    rustytalon::agent::routine::next_cron_fire(EXTRACTION_SCHEDULE).unwrap_or(None);
+                let routine = rustytalon::agent::Routine {
+                    id: uuid::Uuid::new_v4(),
+                    name: EXTRACTION_ROUTINE_NAME.to_string(),
+                    description: "Reviews recent conversation history and stages knowledge-graph \
+                        candidates for review (auto-created)"
+                        .to_string(),
+                    user_id: "default".to_string(),
+                    enabled: true,
+                    trigger: rustytalon::agent::Trigger::Cron {
+                        schedule: EXTRACTION_SCHEDULE.to_string(),
+                    },
+                    action: rustytalon::agent::RoutineAction::FullJob {
+                        title: EXTRACTION_ROUTINE_NAME.to_string(),
+                        description: EXTRACTION_PROMPT.to_string(),
+                        max_iterations: 10,
+                    },
+                    guardrails: rustytalon::agent::routine::RoutineGuardrails {
+                        cooldown: std::time::Duration::from_secs(3600),
+                        max_concurrent: 1,
+                        dedup_window: None,
+                    },
+                    notify: rustytalon::agent::routine::NotifyConfig::default(),
+                    last_run_at: None,
+                    next_fire_at: next_fire,
+                    run_count: 0,
+                    consecutive_failures: 0,
+                    state: serde_json::json!({}),
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                };
+                match db.create_routine(&routine).await {
+                    Ok(()) => tracing::info!(
+                        "seeded default knowledge-graph extraction routine (every 6h)"
+                    ),
+                    Err(e) => {
+                        tracing::warn!("failed to seed knowledge-graph extraction routine: {e}")
+                    }
+                }
+            }
+            Ok(Some(_)) => {}
+            Err(e) => tracing::warn!("failed to check for existing extraction routine: {e}"),
+        }
+    }
+
     // Register builder tool if enabled.
     // When sandbox is enabled and allow_local_tools is false, skip builder registration
     // because register_builder_tool also registers dev tools (shell, file ops) that would

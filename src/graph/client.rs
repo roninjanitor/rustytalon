@@ -599,6 +599,68 @@ impl GraphClient {
         }))
     }
 
+    /// Edit a pending candidate's staged entities/relationships before approval
+    /// (F9 review UI). Only the fields provided are replaced; omitting one
+    /// leaves it as-is. Used to fix extraction naming inconsistencies (e.g.
+    /// the same project staged under two different names across runs) by
+    /// renaming an entity to the canonical name before approving, so
+    /// `create_entity`'s `MERGE` collapses it into the existing node instead
+    /// of creating a duplicate.
+    pub async fn update_candidate(
+        &self,
+        id: &str,
+        entities: Option<&[CandidateEntity]>,
+        relationships: Option<&[CandidateRelationship]>,
+    ) -> Result<Value, GraphError> {
+        self.get_pending_candidate(id).await?;
+
+        if let Some(entities) = entities {
+            for entity in entities {
+                validate_label(&entity.label)?;
+            }
+        }
+        if let Some(relationships) = relationships {
+            for rel in relationships {
+                validate_rel_type(&rel.rel_type)?;
+            }
+        }
+
+        let entities_json = entities
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| GraphError::Query(format!("failed to serialize entities: {e}")))?;
+        let relationships_json = relationships
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| GraphError::Query(format!("failed to serialize relationships: {e}")))?;
+
+        let mut set_clauses = Vec::new();
+        if entities_json.is_some() {
+            set_clauses.push("c.entities_json = $entities_json");
+        }
+        if relationships_json.is_some() {
+            set_clauses.push("c.relationships_json = $relationships_json");
+        }
+        if set_clauses.is_empty() {
+            return self.get_pending_candidate(id).await;
+        }
+
+        let cypher = format!(
+            "MATCH (c:GraphCandidate {{id: $id, status: 'pending'}}) SET {} RETURN c",
+            set_clauses.join(", ")
+        );
+        let mut q = query(&cypher).param("id", id);
+        if let Some(entities_json) = entities_json {
+            q = q.param("entities_json", entities_json);
+        }
+        if let Some(relationships_json) = relationships_json {
+            q = q.param("relationships_json", relationships_json);
+        }
+
+        let row = self.execute_single(q).await?;
+        candidate_node_to_json(&row)
+    }
+
     /// Reject a pending candidate without committing anything (F9). Kept
     /// (status set to `rejected`) rather than deleted, for audit purposes.
     pub async fn reject_candidate(&self, id: &str) -> Result<Value, GraphError> {

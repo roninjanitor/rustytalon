@@ -1448,3 +1448,27 @@ pub struct GraphSearchResponse {
 pub struct GraphEntityContextResponse {
     pub context: serde_json::Value,
 }
+
+/// Response for GET /api/graph/candidates.
+#[cfg(feature = "neo4j")]
+#[derive(Debug, Serialize)]
+pub struct GraphCandidatesResponse {
+    pub candidates: Vec<serde_json::Value>,
+}
+
+/// Body for POST /api/graph/candidates/{id}/edit. Only provided fields are
+/// replaced -- omitting one leaves that part of the candidate unchanged.
+#[cfg(feature = "neo4j")]
+#[derive(Debug, Deserialize)]
+pub struct GraphCandidateEditRequest {
+    pub entities: Option<Vec<crate::graph::CandidateEntity>>,
+    pub relationships: Option<Vec<crate::graph::CandidateRelationship>>,
+}
+
+/// Response for the candidate edit/approve/reject actions -- all return the
+/// raw `serde_json::Value` result from the corresponding `GraphClient` method.
+#[cfg(feature = "neo4j")]
+#[derive(Debug, Serialize)]
+pub struct GraphCandidateActionResponse {
+    pub result: serde_json::Value,
+}

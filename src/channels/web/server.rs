@@ -321,6 +321,19 @@ pub async fn start_server(
         .route(
             "/api/graph/entity/{name}",
             get(graph_entity_context_handler),
+        )
+        .route("/api/graph/candidates", get(graph_candidates_handler))
+        .route(
+            "/api/graph/candidates/{id}/edit",
+            post(graph_candidate_edit_handler),
+        )
+        .route(
+            "/api/graph/candidates/{id}/approve",
+            post(graph_candidate_approve_handler),
+        )
+        .route(
+            "/api/graph/candidates/{id}/reject",
+            post(graph_candidate_reject_handler),
         );
 
     let protected = protected.route_layer(middleware::from_fn_with_state(
@@ -3412,6 +3425,92 @@ async fn graph_entity_context_handler(
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
 
     Ok(Json(GraphEntityContextResponse { context }))
+}
+
+#[cfg(feature = "neo4j")]
+#[derive(Deserialize)]
+struct GraphCandidatesQuery {
+    status: Option<String>,
+    limit: Option<u32>,
+}
+
+/// F9 review UI: list staged extraction candidates for a human to
+/// approve/reject/edit, replacing the tool-call-only workflow.
+#[cfg(feature = "neo4j")]
+async fn graph_candidates_handler(
+    State(state): State<Arc<GatewayState>>,
+    Query(q): Query<GraphCandidatesQuery>,
+) -> Result<Json<GraphCandidatesResponse>, (StatusCode, String)> {
+    let client = state.graph_client.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Graph not available".to_string(),
+    ))?;
+
+    let candidates = client
+        .list_candidates(q.status.as_deref(), q.limit.unwrap_or(50))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(GraphCandidatesResponse { candidates }))
+}
+
+/// Edit a pending candidate's staged entities/relationships before approving
+/// it -- lets the reviewer rename an entity (e.g. collapse "Gear Comp Check
+/// Project" into the canonical "Reverb Comp-Checking Project") so approval
+/// merges into the existing node instead of creating a duplicate.
+#[cfg(feature = "neo4j")]
+async fn graph_candidate_edit_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(id): Path<String>,
+    Json(body): Json<GraphCandidateEditRequest>,
+) -> Result<Json<GraphCandidateActionResponse>, (StatusCode, String)> {
+    let client = state.graph_client.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Graph not available".to_string(),
+    ))?;
+
+    let result = client
+        .update_candidate(&id, body.entities.as_deref(), body.relationships.as_deref())
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    Ok(Json(GraphCandidateActionResponse { result }))
+}
+
+#[cfg(feature = "neo4j")]
+async fn graph_candidate_approve_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(id): Path<String>,
+) -> Result<Json<GraphCandidateActionResponse>, (StatusCode, String)> {
+    let client = state.graph_client.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Graph not available".to_string(),
+    ))?;
+
+    let result = client
+        .approve_candidate(&id)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    Ok(Json(GraphCandidateActionResponse { result }))
+}
+
+#[cfg(feature = "neo4j")]
+async fn graph_candidate_reject_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(id): Path<String>,
+) -> Result<Json<GraphCandidateActionResponse>, (StatusCode, String)> {
+    let client = state.graph_client.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Graph not available".to_string(),
+    ))?;
+
+    let result = client
+        .reject_candidate(&id)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    Ok(Json(GraphCandidateActionResponse { result }))
 }
 
 /// Parse a `since` string that may be either an ISO-8601 timestamp or a
