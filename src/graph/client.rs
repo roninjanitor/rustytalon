@@ -721,9 +721,22 @@ fn node_to_json(node: &Node) -> Result<Value, GraphError> {
         .to::<Value>()
         .map_err(|e| GraphError::Query(format!("failed to decode node: {e}")))?;
 
+    // Every entity carries both its semantic type label (e.g. "Project") and
+    // the common "Entity" label (added by `create_entity` so the fulltext
+    // search index has one label to target). Neo4j does not guarantee label
+    // order is preserved, so callers picking `labels[0]` as "the type" for
+    // e.g. UI color-coding would get an unpredictable mix of the two -- drop
+    // "Entity" here so the first (and normally only) label left is always
+    // the meaningful one.
+    let labels: Vec<&str> = node
+        .labels()
+        .into_iter()
+        .filter(|l| *l != "Entity")
+        .collect();
+
     Ok(json!({
         "id": node.id(),
-        "labels": node.labels(),
+        "labels": labels,
         "properties": properties,
     }))
 }
