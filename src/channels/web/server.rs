@@ -320,7 +320,7 @@ pub async fn start_server(
         .route("/api/graph/search", get(graph_search_handler))
         .route(
             "/api/graph/entity/{name}",
-            get(graph_entity_context_handler),
+            get(graph_entity_context_handler).delete(graph_entity_delete_handler),
         )
         .route("/api/graph/candidates", get(graph_candidates_handler))
         .route(
@@ -3425,6 +3425,34 @@ async fn graph_entity_context_handler(
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
 
     Ok(Json(GraphEntityContextResponse { context }))
+}
+
+#[cfg(feature = "neo4j")]
+#[derive(Deserialize)]
+struct GraphEntityDeleteQuery {
+    label: String,
+}
+
+/// Delete an entity (and its relationships) from the live graph, for
+/// cleaning up bad extractions after the fact -- the entity-detail panel's
+/// delete button, not the candidate-review reject flow.
+#[cfg(feature = "neo4j")]
+async fn graph_entity_delete_handler(
+    State(state): State<Arc<GatewayState>>,
+    Path(name): Path<String>,
+    Query(q): Query<GraphEntityDeleteQuery>,
+) -> Result<Json<GraphEntityDeleteResponse>, (StatusCode, String)> {
+    let client = state.graph_client.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Graph not available".to_string(),
+    ))?;
+
+    client
+        .delete_entity(&q.label, &name)
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+
+    Ok(Json(GraphEntityDeleteResponse { name }))
 }
 
 #[cfg(feature = "neo4j")]

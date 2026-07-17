@@ -3843,9 +3843,10 @@ async function showGraphEntity(name) {
     const ctx = resp.context;
     const props = (ctx.entity && ctx.entity.properties) || {};
     const label = (ctx.entity && ctx.entity.labels && ctx.entity.labels[0]) || '';
+    const entityName = props.name || name;
 
     let html = '<button class="graph-detail-close" onclick="closeGraphDetail()">&times;</button>';
-    html += '<h3>' + escapeHtml(props.name || name) + '</h3>';
+    html += '<h3>' + escapeHtml(entityName) + '</h3>';
     html += '<div class="graph-detail-label" style="color:' + graphColorForLabel(label) + '">' +
       escapeHtml(label) + '</div>';
 
@@ -3858,11 +3859,23 @@ async function showGraphEntity(name) {
 
     if (ctx.relationships && ctx.relationships.length) {
       html += '<div class="graph-detail-rels-title">Relationships</div>';
-      html += '<ul class="graph-detail-rels">' + ctx.relationships.map((r) =>
-        '<li>' + escapeHtml(r.from) + ' <span class="graph-rel-type">' + escapeHtml(r.type) +
-        '</span> ' + escapeHtml(r.to) + '</li>'
-      ).join('') + '</ul>';
+      html += '<ul class="graph-detail-rels">' + ctx.relationships.map((r) => {
+        // Whichever end isn't the entity currently shown is the one worth
+        // navigating to; clicking either name jumps there.
+        const otherName = r.from === entityName ? r.to : r.from;
+        return '<li>'
+          + '<span class="graph-rel-node" onclick="focusAndShowGraphEntity(\'' + r.from.replace(/'/g, "\\'") + '\')">' + escapeHtml(r.from) + '</span>'
+          + ' <span class="graph-rel-type">' + escapeHtml(r.type) + '</span> '
+          + '<span class="graph-rel-node" onclick="focusAndShowGraphEntity(\'' + r.to.replace(/'/g, "\\'") + '\')">' + escapeHtml(r.to) + '</span>'
+          + (otherName !== entityName ? ' <button class="graph-rel-jump" onclick="focusAndShowGraphEntity(\'' + otherName.replace(/'/g, "\\'") + '\')" title="Explore ' + escapeHtml(otherName) + '">&rarr;</button>' : '')
+          + '</li>';
+      }).join('') + '</ul>';
     }
+
+    html += '<div class="graph-detail-actions">'
+      + '<button class="btn-cancel" onclick="deleteGraphEntity(\'' + entityName.replace(/'/g, "\\'") + '\', \'' + label.replace(/'/g, "\\'") + '\')">Delete entity</button>'
+      + '</div>';
+
     detail.innerHTML = html;
   } catch (e) {
     detail.innerHTML = '<div class="empty-state">Failed to load entity: ' + escapeHtml(e.message) + '</div>';
@@ -3871,6 +3884,17 @@ async function showGraphEntity(name) {
 
 function closeGraphDetail() {
   document.getElementById('graph-detail').style.display = 'none';
+}
+
+function deleteGraphEntity(name, label) {
+  if (!confirm('Delete "' + name + '" and all its relationships from the graph? This cannot be undone.')) return;
+  apiFetch('/api/graph/entity/' + encodeURIComponent(name) + '?label=' + encodeURIComponent(label), { method: 'DELETE' })
+    .then(() => {
+      showToast('Entity deleted', 'success');
+      closeGraphDetail();
+      loadGraph();
+    })
+    .catch((err) => showToast('Delete failed: ' + err.message, 'error'));
 }
 
 function focusGraphNode(name) {

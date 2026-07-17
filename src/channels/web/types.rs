@@ -1449,6 +1449,13 @@ pub struct GraphEntityContextResponse {
     pub context: serde_json::Value,
 }
 
+/// Response for DELETE /api/graph/entity/{name}.
+#[cfg(feature = "neo4j")]
+#[derive(Debug, Serialize)]
+pub struct GraphEntityDeleteResponse {
+    pub name: String,
+}
+
 /// Response for GET /api/graph/candidates.
 #[cfg(feature = "neo4j")]
 #[derive(Debug, Serialize)]
