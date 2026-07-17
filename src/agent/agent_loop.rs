@@ -1821,7 +1821,7 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                 );
             }
             Err(_) => {
-                tracing::debug!(
+                tracing::warn!(
                     tool = %tool_name,
                     elapsed_ms = elapsed.as_millis() as u64,
                     timeout_secs = timeout.as_secs(),

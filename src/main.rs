@@ -1011,6 +1011,22 @@ async fn main() -> anyhow::Result<()> {
             });
         }
 
+        // A container that crashes, gets OOM-killed, or is removed out-of-band
+        // never calls back to the orchestrator's /complete endpoint, so its
+        // handle would otherwise sit at ContainerState::Running until
+        // CreateJobTool::execute_sandbox's own 10-minute hard timeout fires.
+        // Poll Docker directly on a short interval so these are caught in
+        // seconds instead of minutes.
+        {
+            let reap_jm = Arc::clone(&jm);
+            tokio::spawn(async move {
+                loop {
+                    reap_jm.reap_dead_containers().await;
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                }
+            });
+        }
+
         tracing::info!("Orchestrator API started on :50051, sandbox delegation configured");
         if config.claude_code.enabled {
             tracing::info!(

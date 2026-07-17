@@ -489,7 +489,18 @@ impl Tool for CreateJobTool {
     }
 
     fn execution_timeout(&self) -> Duration {
-        if self.sandbox_enabled() {
+        // Deliberately keyed on `job_manager.is_some()`, NOT `sandbox_enabled()`.
+        // `sandbox_enabled()` also checks the live `docker_available()` flag,
+        // which a background health check can flip between this call and the
+        // `execute()` call the caller makes right after it (worker.rs wraps
+        // both in the same `tokio::time::timeout`). If Docker health flipped
+        // in between, `execute()` could take the sandbox path while this
+        // returned the short 30s local-path timeout, killing a real container
+        // job mid-flight with no error detail. `job_manager.is_some()` is
+        // fixed at construction time, so it can never disagree with execute()
+        // -- the local path finishes in milliseconds regardless of the
+        // timeout budget it's given, so the longer duration is harmless there.
+        if self.job_manager.is_some() {
             // Sandbox polls for up to 10 min internally; give an extra 60s buffer.
             Duration::from_secs(660)
         } else {
@@ -960,6 +971,34 @@ mod tests {
         // Without sandbox: default timeout
         let tool = CreateJobTool::new(Arc::clone(&manager), scheduler);
         assert_eq!(tool.execution_timeout(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_execution_timeout_matches_sandbox_dispatch_even_when_docker_unhealthy() {
+        // Regression test: `execution_timeout()` must key off `job_manager.is_some()`,
+        // not the live `docker_available()` flag. If it used `sandbox_enabled()`
+        // like `execute()` dispatch does, a Docker health flip between the
+        // caller's `execution_timeout()` call and its `execute()` call (both
+        // wrapped in the same `tokio::time::timeout` in worker.rs) could hand a
+        // real, long-running sandbox job the short 30s local-path budget,
+        // killing it mid-flight with no error detail -- exactly the bug this
+        // guards against.
+        let manager = Arc::new(ContextManager::new(5));
+        let scheduler = test_scheduler(manager.clone());
+        let token_store = crate::orchestrator::auth::TokenStore::new();
+        let job_manager = Arc::new(crate::orchestrator::job_manager::ContainerJobManager::new(
+            crate::orchestrator::job_manager::ContainerJobConfig::default(),
+            token_store,
+        ));
+
+        // Docker has never passed a health check (docker_available defaults to
+        // false), so sandbox_enabled() is false, but the job manager is
+        // configured -- this must still get the long sandbox timeout.
+        assert!(!job_manager.docker_available());
+        let tool =
+            CreateJobTool::new(Arc::clone(&manager), scheduler).with_sandbox(job_manager, None);
+        assert!(!tool.sandbox_enabled());
+        assert_eq!(tool.execution_timeout(), Duration::from_secs(660));
     }
 
     #[tokio::test]

@@ -568,8 +568,9 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
                 );
             }
             Err(_) => {
-                tracing::debug!(
+                tracing::warn!(
                     tool = %tool_name,
+                    job = %job_id,
                     elapsed_ms = elapsed.as_millis() as u64,
                     timeout_secs = tool_timeout.as_secs(),
                     "Tool call timed out"
