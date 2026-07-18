@@ -209,6 +209,7 @@ impl Tool for RoutineCreateTool {
                 title: name.to_string(),
                 description: prompt.to_string(),
                 max_iterations: 10,
+                tool_allowlist: None,
             },
             other => {
                 return Err(ToolError::InvalidParameters(format!(

@@ -334,7 +334,18 @@ async fn execute_routine(ctx: EngineContext, routine: Routine, run: RoutineRun) 
             title,
             description,
             max_iterations,
-        } => execute_full_job(&ctx, &routine, title, description, *max_iterations).await,
+            tool_allowlist,
+        } => {
+            execute_full_job(
+                &ctx,
+                &routine,
+                title,
+                description,
+                *max_iterations,
+                tool_allowlist.as_deref(),
+            )
+            .await
+        }
     };
 
     // Decrement running count
@@ -522,6 +533,7 @@ async fn execute_full_job(
     title: &str,
     description: &str,
     max_iterations: u32,
+    tool_allowlist: Option<&[String]>,
 ) -> Result<(RunStatus, Option<String>, Option<i32>), String> {
     let job_ctx = JobContext::with_user(routine.user_id.clone(), title, description);
 
@@ -559,7 +571,13 @@ async fn execute_full_job(
             ));
         }
 
-        reason_ctx.available_tools = ctx.tools.tool_definitions().await;
+        reason_ctx.available_tools = match tool_allowlist {
+            Some(names) => {
+                let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                ctx.tools.tool_definitions_for(&names).await
+            }
+            None => ctx.tools.tool_definitions().await,
+        };
 
         let respond_output = reasoning
             .respond_with_tools(&reason_ctx)
@@ -599,6 +617,7 @@ async fn execute_full_job(
                         &job_ctx,
                         &tc.name,
                         &tc.arguments,
+                        tool_allowlist,
                     )
                     .await
                     {
@@ -626,7 +645,16 @@ async fn execute_tool_for_routine(
     job_ctx: &JobContext,
     tool_name: &str,
     params: &serde_json::Value,
+    tool_allowlist: Option<&[String]>,
 ) -> Result<String, String> {
+    if let Some(names) = tool_allowlist
+        && !names.iter().any(|n| n == tool_name)
+    {
+        return Err(format!(
+            "Tool '{tool_name}' is not in this routine's tool_allowlist"
+        ));
+    }
+
     let tool = ctx
         .tools
         .get(tool_name)
@@ -1004,13 +1032,39 @@ mod tests {
         let ctx = test_engine_ctx(tools);
         let job_ctx = JobContext::with_user("routine-user", "test", "test");
 
-        let result =
-            execute_tool_for_routine(&ctx, &job_ctx, "echo_ok", &serde_json::json!({"a": 1}))
-                .await
-                .expect("tool call should succeed");
+        let result = execute_tool_for_routine(
+            &ctx,
+            &job_ctx,
+            "echo_ok",
+            &serde_json::json!({"a": 1}),
+            None,
+        )
+        .await
+        .expect("tool call should succeed");
 
         assert!(result.contains("got:"));
         assert!(result.contains("name=\"echo_ok\""));
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_for_routine_blocks_tool_outside_allowlist() {
+        let tools = Arc::new(ToolRegistry::new());
+        tools.register(Arc::new(AlwaysApproveTool)).await;
+        let ctx = test_engine_ctx(tools);
+        let job_ctx = JobContext::with_user("routine-user", "test", "test");
+        let allowlist = vec!["some_other_tool".to_string()];
+
+        let err = execute_tool_for_routine(
+            &ctx,
+            &job_ctx,
+            "echo_ok",
+            &serde_json::json!({"a": 1}),
+            Some(&allowlist),
+        )
+        .await
+        .expect_err("tool outside allowlist must be rejected");
+
+        assert!(err.contains("tool_allowlist"));
     }
 
     #[tokio::test]
@@ -1020,10 +1074,15 @@ mod tests {
         let ctx = test_engine_ctx(tools);
         let job_ctx = JobContext::with_user("routine-user", "test", "test");
 
-        let err =
-            execute_tool_for_routine(&ctx, &job_ctx, "dangerous_tool", &serde_json::json!({}))
-                .await
-                .expect_err("approval-gated tool must be rejected in an unattended routine");
+        let err = execute_tool_for_routine(
+            &ctx,
+            &job_ctx,
+            "dangerous_tool",
+            &serde_json::json!({}),
+            None,
+        )
+        .await
+        .expect_err("approval-gated tool must be rejected in an unattended routine");
 
         assert!(err.contains("requires approval"));
     }
@@ -1034,10 +1093,15 @@ mod tests {
         let ctx = test_engine_ctx(tools);
         let job_ctx = JobContext::with_user("routine-user", "test", "test");
 
-        let err =
-            execute_tool_for_routine(&ctx, &job_ctx, "does_not_exist", &serde_json::json!({}))
-                .await
-                .expect_err("unknown tool must error");
+        let err = execute_tool_for_routine(
+            &ctx,
+            &job_ctx,
+            "does_not_exist",
+            &serde_json::json!({}),
+            None,
+        )
+        .await
+        .expect_err("unknown tool must error");
 
         assert!(err.contains("not found"));
     }

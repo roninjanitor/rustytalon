@@ -579,12 +579,18 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Register memory tools if database is available
+    #[cfg(feature = "neo4j")]
+    let mut memory_workspace: Option<Arc<Workspace>> = None;
     if let Some(ref db) = db {
         let mut workspace = Workspace::new_with_db("default", Arc::clone(db));
         if let Some(ref emb) = embeddings {
             workspace = workspace.with_embeddings(emb.clone());
         }
         let workspace = Arc::new(workspace);
+        #[cfg(feature = "neo4j")]
+        {
+            memory_workspace = Some(Arc::clone(&workspace));
+        }
         tools.register_memory_tools(workspace);
     }
 
@@ -601,6 +607,11 @@ async fn main() -> anyhow::Result<()> {
             Ok(client) => {
                 let client = Arc::new(client);
                 tools.register_graph_tools(Arc::clone(&client));
+                // Pair memory + graph search: only possible when both a workspace
+                // (DB configured) and a connected graph client exist.
+                if let Some(ref workspace) = memory_workspace {
+                    tools.register_context_search_tool(Arc::clone(workspace), Arc::clone(&client));
+                }
                 graph_client = Some(client);
             }
             Err(e) => {
@@ -649,6 +660,15 @@ async fn main() -> anyhow::Result<()> {
                         title: EXTRACTION_ROUTINE_NAME.to_string(),
                         description: EXTRACTION_PROMPT.to_string(),
                         max_iterations: 10,
+                        // Restrict to graph-only tools so this routine can never call
+                        // memory_write and pollute daily logs with its own run
+                        // summaries -- previously only the prompt asked it not to.
+                        tool_allowlist: Some(vec![
+                            "search_entities".to_string(),
+                            "get_entity_context".to_string(),
+                            "stage_candidate".to_string(),
+                            "list_candidates".to_string(),
+                        ]),
                     },
                     guardrails: rustytalon::agent::routine::RoutineGuardrails {
                         cooldown: std::time::Duration::from_secs(3600),

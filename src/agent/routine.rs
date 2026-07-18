@@ -165,6 +165,11 @@ pub enum RoutineAction {
         /// Max reasoning iterations (default: 10).
         #[serde(default = "default_max_iterations")]
         max_iterations: u32,
+        /// If set, restricts the tools available to this job to exactly these
+        /// names (via `ToolRegistry::tool_definitions_for`) instead of the
+        /// full global registry. `None` keeps the unrestricted default.
+        #[serde(default)]
+        tool_allowlist: Option<Vec<String>>,
     },
 }
 
@@ -229,10 +234,18 @@ impl RoutineAction {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(default_max_iterations() as u64)
                     as u32;
+                let tool_allowlist = config.get("tool_allowlist").and_then(|v| v.as_array()).map(
+                    |arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    },
+                );
                 Ok(RoutineAction::FullJob {
                     title,
                     description,
                     max_iterations,
+                    tool_allowlist,
                 })
             }
             other => Err(format!("unknown action type: {other}")),
@@ -255,10 +268,12 @@ impl RoutineAction {
                 title,
                 description,
                 max_iterations,
+                tool_allowlist,
             } => serde_json::json!({
                 "title": title,
                 "description": description,
                 "max_iterations": max_iterations,
+                "tool_allowlist": tool_allowlist,
             }),
         }
     }
@@ -425,13 +440,41 @@ mod tests {
             title: "Deploy review".to_string(),
             description: "Review and deploy pending changes".to_string(),
             max_iterations: 5,
+            tool_allowlist: None,
         };
         let json = action.to_config_json();
         let parsed = RoutineAction::from_db("full_job", json).expect("parse full_job");
         assert!(
-            matches!(parsed, RoutineAction::FullJob { title, max_iterations, .. }
-            if title == "Deploy review" && max_iterations == 5)
+            matches!(parsed, RoutineAction::FullJob { title, max_iterations, tool_allowlist, .. }
+            if title == "Deploy review" && max_iterations == 5 && tool_allowlist.is_none())
         );
+    }
+
+    #[test]
+    fn test_action_full_job_tool_allowlist_roundtrip() {
+        let action = RoutineAction::FullJob {
+            title: "Graph extraction".to_string(),
+            description: "Stage graph candidates from recent history".to_string(),
+            max_iterations: 10,
+            tool_allowlist: Some(vec![
+                "search_entities".to_string(),
+                "stage_candidate".to_string(),
+            ]),
+        };
+        let json = action.to_config_json();
+        let parsed = RoutineAction::from_db("full_job", json).expect("parse full_job");
+        match parsed {
+            RoutineAction::FullJob { tool_allowlist, .. } => {
+                assert_eq!(
+                    tool_allowlist,
+                    Some(vec![
+                        "search_entities".to_string(),
+                        "stage_candidate".to_string()
+                    ])
+                );
+            }
+            _ => panic!("expected FullJob"),
+        }
     }
 
     #[test]

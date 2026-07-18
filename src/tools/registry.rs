@@ -276,6 +276,24 @@ impl ToolRegistry {
         tracing::info!("Registered 11 knowledge graph tools");
     }
 
+    /// Register the `search_context` composite tool, which fans a query out
+    /// to both workspace memory search and graph entity search in parallel.
+    ///
+    /// Call this after `register_memory_tools()` and `register_graph_tools()`
+    /// with the same `Workspace`/`GraphClient` instances handed to those.
+    /// Requires the `neo4j` Cargo feature.
+    #[cfg(feature = "neo4j")]
+    pub fn register_context_search_tool(
+        &self,
+        workspace: Arc<Workspace>,
+        graph_client: Arc<crate::graph::GraphClient>,
+    ) {
+        use crate::tools::builtin::SearchContextTool;
+        self.register_sync(Arc::new(SearchContextTool::new(workspace, graph_client)));
+
+        tracing::info!("Registered search_context tool");
+    }
+
     /// Register the web search tool with the given backend.
     ///
     /// Call this after `register_builtin_tools()` when `config.search.is_enabled()`.
