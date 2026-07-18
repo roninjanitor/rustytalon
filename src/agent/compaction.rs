@@ -209,9 +209,7 @@ Be brief but capture all important details. Use bullet points."#,
             formatted
         )));
 
-        let request = CompletionRequest::new(request_messages)
-            .with_max_tokens(1024)
-            .with_temperature(0.3);
+        let request = CompletionRequest::new(request_messages).with_max_tokens(1024);
 
         let response = self.llm.complete(request).await?;
         Ok(response.content)

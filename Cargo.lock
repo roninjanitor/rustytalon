@@ -4445,7 +4445,7 @@ dependencies = [
 
 [[package]]
 name = "rustytalon"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "aes-gcm",
  "aho-corasick",

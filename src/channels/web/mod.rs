@@ -89,6 +89,7 @@ impl GatewayChannel {
             channel_env_config: std::collections::HashMap::new(),
             #[cfg(feature = "neo4j")]
             graph_client: None,
+            app_config: None,
         });
 
         Self {
@@ -121,6 +122,7 @@ impl GatewayChannel {
             channel_env_config: self.state.channel_env_config.clone(),
             #[cfg(feature = "neo4j")]
             graph_client: self.state.graph_client.clone(),
+            app_config: self.state.app_config.clone(),
         };
         mutate(&mut new_state);
         self.state = Arc::new(new_state);
@@ -206,6 +208,16 @@ impl GatewayChannel {
     /// Inject the list of loaded WASM channels for the channels API.
     pub fn with_wasm_channels(mut self, channels: Vec<(String, Option<String>)>) -> Self {
         self.rebuild_state(|s| s.wasm_channels = channels);
+        self
+    }
+
+    /// Inject the full effective app config so the settings UI can render
+    /// env-only sections (Docker Sandbox, Safety, WASM Sandbox, Tool Builder,
+    /// Routines, Claude Code, Search, Knowledge Graph) read-only from their
+    /// actual boot-resolved values instead of editable rows that have no
+    /// DB-backed effect.
+    pub fn with_app_config(mut self, config: Arc<crate::config::Config>) -> Self {
+        self.rebuild_state(|s| s.app_config = Some(config));
         self
     }
 

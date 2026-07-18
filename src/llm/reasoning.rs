@@ -201,9 +201,7 @@ impl Reasoning {
             )));
         }
 
-        let request = CompletionRequest::new(messages)
-            .with_max_tokens(2048)
-            .with_temperature(0.3);
+        let request = CompletionRequest::new(messages).with_max_tokens(2048);
 
         let response = self.llm.complete(request).await?;
 
@@ -295,9 +293,7 @@ Respond in JSON format:
             )));
         }
 
-        let request = CompletionRequest::new(messages)
-            .with_max_tokens(1024)
-            .with_temperature(0.1);
+        let request = CompletionRequest::new(messages).with_max_tokens(1024);
 
         let response = self.llm.complete(request).await?;
 
@@ -335,6 +331,19 @@ Respond in JSON format:
         &self,
         context: &ReasoningContext,
     ) -> Result<RespondOutput, LlmError> {
+        self.respond_with_tools_streaming(context, None).await
+    }
+
+    /// Same as `respond_with_tools`, but if `chunk_tx` is provided, forwards
+    /// incremental text chunks of the final text response as they stream in
+    /// (used so the web UI / REPL can show live output instead of a static
+    /// spinner for the whole LLM round-trip). Tool-call content is never
+    /// streamed chunk-by-chunk, only the plain-text branches are.
+    pub async fn respond_with_tools_streaming(
+        &self,
+        context: &ReasoningContext,
+        chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    ) -> Result<RespondOutput, LlmError> {
         let system_prompt = self.build_conversation_prompt(context);
 
         let mut messages = vec![ChatMessage::system(system_prompt)];
@@ -344,11 +353,14 @@ Respond in JSON format:
         if !context.available_tools.is_empty() {
             let mut request = ToolCompletionRequest::new(messages, context.available_tools.clone())
                 .with_max_tokens(4096)
-                .with_temperature(0.7)
                 .with_tool_choice("auto");
             request.metadata = context.metadata.clone();
 
-            let response = self.llm.complete_with_tools(request).await?;
+            let response = if let Some(tx) = chunk_tx.clone() {
+                self.llm.complete_with_tools_streaming(request, tx).await?
+            } else {
+                self.llm.complete_with_tools(request).await?
+            };
             let usage = TokenUsage {
                 input_tokens: response.input_tokens,
                 output_tokens: response.output_tokens,
@@ -394,12 +406,14 @@ Respond in JSON format:
             })
         } else {
             // No tools, use simple completion
-            let mut request = CompletionRequest::new(messages)
-                .with_max_tokens(4096)
-                .with_temperature(0.7);
+            let mut request = CompletionRequest::new(messages).with_max_tokens(4096);
             request.metadata = context.metadata.clone();
 
-            let response = self.llm.complete(request).await?;
+            let response = if let Some(tx) = chunk_tx {
+                self.llm.complete_streaming(request, tx).await?
+            } else {
+                self.llm.complete(request).await?
+            };
             Ok(RespondOutput {
                 result: RespondResult::Text(clean_response(&response.content)),
                 usage: TokenUsage {

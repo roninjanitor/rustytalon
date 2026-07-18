@@ -203,6 +203,11 @@ pub struct AgentDeps {
     pub tools: Arc<ToolRegistry>,
     pub workspace: Option<Arc<Workspace>>,
     pub extension_manager: Option<Arc<ExtensionManager>>,
+    /// Connected knowledge-graph client, if Neo4j is enabled and reachable.
+    /// Threaded into the heartbeat runner so daily-log consolidation can also
+    /// stage graph candidates from the same LLM pass.
+    #[cfg(feature = "neo4j")]
+    pub graph_client: Option<Arc<crate::graph::GraphClient>>,
 }
 
 /// The main agent that coordinates all components.
@@ -222,8 +227,10 @@ pub struct Agent {
 impl Agent {
     /// Create a new agent.
     ///
-    /// Optionally accepts pre-created `ContextManager` and `SessionManager` for sharing
-    /// with external components (job tools, web gateway). Creates new ones if not provided.
+    /// Optionally accepts pre-created `ContextManager`, `SessionManager`, and `Scheduler`
+    /// for sharing with external components (job tools, web gateway). Creates new ones if
+    /// not provided.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: AgentConfig,
         deps: AgentDeps,
@@ -232,20 +239,23 @@ impl Agent {
         routine_config: Option<RoutineConfig>,
         context_manager: Option<Arc<ContextManager>>,
         session_manager: Option<Arc<SessionManager>>,
+        scheduler: Option<Arc<Scheduler>>,
     ) -> Self {
         let context_manager = context_manager
             .unwrap_or_else(|| Arc::new(ContextManager::new(config.max_parallel_jobs)));
 
         let session_manager = session_manager.unwrap_or_else(|| Arc::new(SessionManager::new()));
 
-        let scheduler = Arc::new(Scheduler::new(
-            config.clone(),
-            context_manager.clone(),
-            deps.llm.clone(),
-            deps.safety.clone(),
-            deps.tools.clone(),
-            deps.store.clone(),
-        ));
+        let scheduler = scheduler.unwrap_or_else(|| {
+            Arc::new(Scheduler::new(
+                config.clone(),
+                context_manager.clone(),
+                deps.llm.clone(),
+                deps.safety.clone(),
+                deps.tools.clone(),
+                deps.store.clone(),
+            ))
+        });
 
         Self {
             config,
@@ -280,6 +290,11 @@ impl Agent {
 
     fn workspace(&self) -> Option<&Arc<Workspace>> {
         self.deps.workspace.as_ref()
+    }
+
+    #[cfg(feature = "neo4j")]
+    fn graph_client(&self) -> Option<&Arc<crate::graph::GraphClient>> {
+        self.deps.graph_client.as_ref()
     }
 
     /// Try to resolve a `/skill-name [args]` invocation from the workspace.
@@ -523,6 +538,8 @@ impl Agent {
                         self.llm().clone(),
                         self.store().cloned(),
                         Some(notify_tx),
+                        #[cfg(feature = "neo4j")]
+                        self.graph_client().cloned(),
                     ))
                 } else {
                     tracing::warn!("Heartbeat enabled but no workspace available");
@@ -1446,7 +1463,34 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                     m
                 });
 
-            let output = reasoning.respond_with_tools(&context).await?;
+            // Forward incremental text chunks to the channel as live output
+            // (e.g. the web UI's "stream_chunk" SSE event) instead of leaving
+            // the user staring at a static "Thinking..." spinner for the
+            // whole LLM round-trip. The forwarding task drains until all
+            // sender clones held by `respond_with_tools_streaming` are
+            // dropped, then exits; awaiting its handle ensures every chunk
+            // is delivered before we move on to the `response`/`status`
+            // events below.
+            let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let stream_channels = Arc::clone(&self.channels);
+            let stream_channel_name = message.channel.clone();
+            let stream_metadata = message.metadata.clone();
+            let forward_chunks = tokio::spawn(async move {
+                while let Some(chunk) = chunk_rx.recv().await {
+                    let _ = stream_channels
+                        .send_status(
+                            &stream_channel_name,
+                            StatusUpdate::StreamChunk(chunk),
+                            &stream_metadata,
+                        )
+                        .await;
+                }
+            });
+
+            let output = reasoning
+                .respond_with_tools_streaming(&context, Some(chunk_tx))
+                .await?;
+            let _ = forward_chunks.await;
 
             // Track token usage for budget enforcement
             tracing::debug!(
@@ -1789,7 +1833,7 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
                 );
             }
             Err(_) => {
-                tracing::debug!(
+                tracing::warn!(
                     tool = %tool_name,
                     elapsed_ms = elapsed.as_millis() as u64,
                     timeout_secs = timeout.as_secs(),
@@ -2730,9 +2774,7 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
         context.extend_from_slice(&messages[start..]);
         context.push(ChatMessage::user("Summarize this conversation."));
 
-        let request = crate::llm::CompletionRequest::new(context)
-            .with_max_tokens(512)
-            .with_temperature(0.3);
+        let request = crate::llm::CompletionRequest::new(context).with_max_tokens(512);
 
         match self.llm().complete(request).await {
             Ok(response) => Ok(SubmissionResult::response(format!(
@@ -2777,9 +2819,7 @@ Just tell me your name and we'll get started — or skip straight to whatever yo
         context.extend_from_slice(&messages[start..]);
         context.push(ChatMessage::user("What should I do next?"));
 
-        let request = crate::llm::CompletionRequest::new(context)
-            .with_max_tokens(512)
-            .with_temperature(0.5);
+        let request = crate::llm::CompletionRequest::new(context).with_max_tokens(512);
 
         match self.llm().complete(request).await {
             Ok(response) => Ok(SubmissionResult::response(format!(

@@ -18,6 +18,11 @@ let pendingActivityEl = null; // the .activity-panel DOM node being built for th
 let lastToolEntryEl = null;   // the last <details> tool entry, for attaching results
 let pendingTokensIn = 0;      // accumulated input tokens for current turn
 let pendingTokensOut = 0;     // accumulated output tokens for current turn
+// The assistant bubble currently being filled in by 'stream_chunk' events for
+// the in-flight turn, if any. Tracked explicitly (rather than "the last
+// .message.assistant in the DOM") so a new turn's streamed text can never be
+// appended onto a previous, already-completed turn's bubble.
+let currentStreamEl = null;
 
 // Conversation-level token tracking (persists across turns for the current thread)
 let convTokensIn = 0;   // total input tokens for current conversation (from DB + live)
@@ -99,6 +104,8 @@ function apiFetch(path, options) {
 
 // --- SSE ---
 
+let sseHasConnectedBefore = false;
+
 function connectSSE() {
   if (eventSource) eventSource.close();
 
@@ -107,6 +114,15 @@ function connectSSE() {
   eventSource.onopen = () => {
     document.getElementById('sse-dot').classList.remove('disconnected');
     document.getElementById('sse-status').textContent = 'Connected';
+    // The browser transparently reconnects EventSource after a drop, but any
+    // event broadcast server-side while we had no active connection is lost
+    // (the broadcast channel has no per-client replay buffer). If a turn was
+    // in flight, re-sync from the DB-backed history so we don't get stuck
+    // showing "Sending..." forever.
+    if (sseHasConnectedBefore) {
+      resyncAfterReconnect();
+    }
+    sseHasConnectedBefore = true;
   };
 
   eventSource.onerror = () => {
@@ -118,7 +134,16 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     if (!isCurrentThread(data.thread_id)) return;
     sealActivityPanel();
-    addMessage('assistant', data.content);
+    if (currentStreamEl) {
+      // Chunks already streamed into a live bubble -- reconcile with the
+      // authoritative final text (covers dropped/reordered chunks) instead
+      // of adding a duplicate message.
+      currentStreamEl.setAttribute('data-raw', data.content);
+      currentStreamEl.innerHTML = renderMarkdown(data.content);
+      currentStreamEl = null;
+    } else {
+      addMessage('assistant', data.content);
+    }
     setStatus('');
     enableChatInput();
     // Refresh thread list so new titles appear after first message
@@ -334,6 +359,7 @@ function sendMessage() {
   renderAttachmentPreviews();
 
   addMessage('user', content || '[image]');
+  currentStreamEl = null;
   input.value = '';
   autoResizeTextarea(input);
   setStatus('Sending...', true);
@@ -448,20 +474,19 @@ function addMessage(role, content) {
   }
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
+  return div;
 }
 
 function appendToLastAssistant(chunk) {
-  const container = document.getElementById('chat-messages');
-  const messages = container.querySelectorAll('.message.assistant');
-  if (messages.length > 0) {
-    const last = messages[messages.length - 1];
-    const raw = (last.getAttribute('data-raw') || '') + chunk;
-    last.setAttribute('data-raw', raw);
-    last.innerHTML = renderMarkdown(raw);
-    container.scrollTop = container.scrollHeight;
-  } else {
-    addMessage('assistant', chunk);
+  if (!currentStreamEl) {
+    currentStreamEl = addMessage('assistant', chunk);
+    return;
   }
+  const container = document.getElementById('chat-messages');
+  const raw = (currentStreamEl.getAttribute('data-raw') || '') + chunk;
+  currentStreamEl.setAttribute('data-raw', raw);
+  currentStreamEl.innerHTML = renderMarkdown(raw);
+  container.scrollTop = container.scrollHeight;
 }
 
 function setStatus(text, spinning) {
@@ -893,6 +918,35 @@ function showAuthCardError(extensionName, message) {
   }
 }
 
+// Called on every SSE reconnect after the first. If a turn was mid-flight
+// when the connection dropped, check whether it actually finished (the
+// final 'response' event may have been broadcast into the void) and, if so,
+// catch the UI up instead of leaving it stuck on "Sending...".
+function resyncAfterReconnect() {
+  const sendBtn = document.getElementById('send-btn');
+  if (!sendBtn || !sendBtn.disabled) return; // no turn was in flight
+
+  let historyUrl = '/api/chat/history?limit=1';
+  if (currentThreadId) {
+    historyUrl += '&thread_id=' + encodeURIComponent(currentThreadId);
+  }
+
+  apiFetch(historyUrl).then((data) => {
+    const turns = data.turns || [];
+    const lastTurn = turns[turns.length - 1];
+    if (lastTurn && lastTurn.response) {
+      // The turn completed while we were disconnected; reload full history
+      // and unstick the input.
+      loadHistory();
+      sealActivityPanel();
+      setStatus('');
+      enableChatInput();
+    }
+    // Otherwise the turn is still genuinely running -- leave the UI as-is;
+    // the now-reconnected stream will deliver the real event when it lands.
+  }).catch(() => {});
+}
+
 function loadHistory(before) {
   let historyUrl = '/api/chat/history?limit=50';
   if (currentThreadId) {
@@ -911,6 +965,7 @@ function loadHistory(before) {
     if (!isPaginating) {
       // Fresh load: clear and render
       pendingActivityEl = null;
+      currentStreamEl = null;
       container.innerHTML = '';
       for (const turn of data.turns) {
         addMessage('user', turn.user_input);
@@ -1008,6 +1063,7 @@ function loadThreads() {
 function switchToAssistant() {
   if (!assistantThreadId) return;
   pendingActivityEl = null;
+  currentStreamEl = null;
   currentThreadId = assistantThreadId;
   hasMore = false;
   oldestTimestamp = null;
@@ -1021,6 +1077,7 @@ function switchToAssistant() {
 
 function switchThread(threadId) {
   pendingActivityEl = null;
+  currentStreamEl = null;
   currentThreadId = threadId;
   hasMore = false;
   oldestTimestamp = null;
@@ -1062,6 +1119,7 @@ function renderConversationTokenStats() {
 function createNewThread() {
   apiFetch('/api/chat/thread/new', { method: 'POST' }).then((data) => {
     pendingActivityEl = null;
+    currentStreamEl = null;
     currentThreadId = data.id || null;
     document.getElementById('chat-messages').innerHTML = '';
     setStatus('');
@@ -3600,10 +3658,127 @@ function renderGraphStats(stats) {
     '<div class="graph-stat"><span class="graph-stat-num">' + stats.entities + '</span> entities</div>' +
     '<div class="graph-stat"><span class="graph-stat-num">' + stats.edges + '</span> relationships</div>';
   if (stats.pending_candidates > 0) {
-    html += '<div class="graph-stat graph-stat-pending"><span class="graph-stat-num">' +
+    html += '<div class="graph-stat graph-stat-pending" onclick="toggleGraphCandidates()"><span class="graph-stat-num">' +
       stats.pending_candidates + '</span> pending review</div>';
   }
   el.innerHTML = html;
+
+  const btn = document.getElementById('graph-pending-btn');
+  document.getElementById('graph-pending-count').textContent = stats.pending_candidates;
+  btn.style.display = stats.pending_candidates > 0 ? 'inline-block' : 'none';
+}
+
+// --- Candidate review (F9) ---
+
+function toggleGraphCandidates() {
+  const panel = document.getElementById('graph-candidates');
+  const opening = panel.style.display === 'none';
+  panel.style.display = opening ? 'block' : 'none';
+  if (opening) loadGraphCandidates();
+}
+
+function loadGraphCandidates() {
+  const listEl = document.getElementById('graph-candidates-list');
+  listEl.innerHTML = '<div class="empty-state">Loading...</div>';
+  apiFetch('/api/graph/candidates?status=pending&limit=50')
+    .then((resp) => renderGraphCandidates(resp.candidates))
+    .catch((err) => {
+      listEl.innerHTML = '<div class="empty-state">Failed to load candidates: ' + escapeHtml(err.message) + '</div>';
+    });
+}
+
+function renderGraphCandidates(candidates) {
+  const listEl = document.getElementById('graph-candidates-list');
+  graphState.candidatesById = {};
+  if (!candidates || candidates.length === 0) {
+    listEl.innerHTML = '<div class="empty-state">No candidates pending review</div>';
+    return;
+  }
+
+  listEl.innerHTML = candidates.map((c) => {
+    graphState.candidatesById[c.id] = c;
+    const entities = JSON.parse(c.entities_json || '[]');
+    const relationships = JSON.parse(c.relationships_json || '[]');
+
+    const entityRows = entities.map((e, i) =>
+      '<div class="graph-candidate-entity">'
+      + '<span class="badge">' + escapeHtml(e.type) + '</span> '
+      + '<input type="text" value="' + escapeHtml(e.name) + '" data-cand="' + c.id + '" data-entity-idx="' + i + '">'
+      + '</div>'
+    ).join('');
+
+    const relRows = relationships.map((r) =>
+      '<div class="graph-candidate-rel">' + escapeHtml(r.from_entity) + ' &rarr; <em>' +
+      escapeHtml(r.type) + '</em> &rarr; ' + escapeHtml(r.to_entity) + '</div>'
+    ).join('');
+
+    return '<div class="graph-candidate-card" id="graph-candidate-' + c.id + '">'
+      + '<div class="graph-candidate-meta">'
+      + '<span>source: ' + escapeHtml(c.source) + '</span>'
+      + '<span>confidence: ' + Math.round((c.confidence || 0) * 100) + '%</span>'
+      + '<span>' + formatRelativeTime(c.created_at) + '</span>'
+      + '</div>'
+      + (entityRows ? '<div class="graph-candidate-section"><strong>Entities</strong>' + entityRows + '</div>' : '')
+      + (relRows ? '<div class="graph-candidate-section"><strong>Relationships</strong>' + relRows + '</div>' : '')
+      + '<div class="graph-candidate-actions">'
+      + '<button class="btn-restart" onclick="saveCandidateEdits(\'' + c.id + '\')">Save name changes</button> '
+      + '<button class="btn-restart" onclick="approveCandidate(\'' + c.id + '\')">Approve</button> '
+      + '<button class="btn-cancel" onclick="rejectCandidate(\'' + c.id + '\')">Reject</button>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+function saveCandidateEdits(id) {
+  const card = document.getElementById('graph-candidate-' + id);
+  const inputs = card.querySelectorAll('input[data-entity-idx]');
+  const original = graphState.candidatesById && graphState.candidatesById[id];
+  if (!inputs.length || !original) return;
+
+  // Merge edited names back over the original entity objects (type/properties
+  // unchanged) rather than sending a partial object that would lose them.
+  const originalEntities = JSON.parse(original.entities_json || '[]');
+  const merged = originalEntities.map((e) => ({ ...e }));
+  inputs.forEach((input) => {
+    const idx = parseInt(input.dataset.entityIdx, 10);
+    if (merged[idx]) merged[idx].name = input.value;
+  });
+
+  apiFetch('/api/graph/candidates/' + id + '/edit', {
+    method: 'POST',
+    body: { entities: merged },
+  })
+    .then(() => {
+      showToast('Candidate updated', 'success');
+      loadGraphCandidates();
+    })
+    .catch((err) => showToast('Update failed: ' + err.message, 'error'));
+}
+
+function approveCandidate(id) {
+  apiFetch('/api/graph/candidates/' + id + '/approve', { method: 'POST' })
+    .then((resp) => {
+      const errs = (resp.result && resp.result.errors) || [];
+      if (errs.length) {
+        showToast('Approved with ' + errs.length + ' error(s) -- see console', 'error');
+        console.warn('Candidate approval errors:', errs);
+      } else {
+        showToast('Candidate approved', 'success');
+      }
+      loadGraphCandidates();
+      loadGraph();
+    })
+    .catch((err) => showToast('Approve failed: ' + err.message, 'error'));
+}
+
+function rejectCandidate(id) {
+  if (!confirm('Reject this candidate? It will not be committed to the graph.')) return;
+  apiFetch('/api/graph/candidates/' + id + '/reject', { method: 'POST' })
+    .then(() => {
+      showToast('Candidate rejected', 'success');
+      loadGraphCandidates();
+    })
+    .catch((err) => showToast('Reject failed: ' + err.message, 'error'));
 }
 
 function renderGraphLegend(entities) {
@@ -3668,9 +3843,10 @@ async function showGraphEntity(name) {
     const ctx = resp.context;
     const props = (ctx.entity && ctx.entity.properties) || {};
     const label = (ctx.entity && ctx.entity.labels && ctx.entity.labels[0]) || '';
+    const entityName = props.name || name;
 
     let html = '<button class="graph-detail-close" onclick="closeGraphDetail()">&times;</button>';
-    html += '<h3>' + escapeHtml(props.name || name) + '</h3>';
+    html += '<h3>' + escapeHtml(entityName) + '</h3>';
     html += '<div class="graph-detail-label" style="color:' + graphColorForLabel(label) + '">' +
       escapeHtml(label) + '</div>';
 
@@ -3683,11 +3859,23 @@ async function showGraphEntity(name) {
 
     if (ctx.relationships && ctx.relationships.length) {
       html += '<div class="graph-detail-rels-title">Relationships</div>';
-      html += '<ul class="graph-detail-rels">' + ctx.relationships.map((r) =>
-        '<li>' + escapeHtml(r.from) + ' <span class="graph-rel-type">' + escapeHtml(r.type) +
-        '</span> ' + escapeHtml(r.to) + '</li>'
-      ).join('') + '</ul>';
+      html += '<ul class="graph-detail-rels">' + ctx.relationships.map((r) => {
+        // Whichever end isn't the entity currently shown is the one worth
+        // navigating to; clicking either name jumps there.
+        const otherName = r.from === entityName ? r.to : r.from;
+        return '<li>'
+          + '<span class="graph-rel-node" onclick="focusAndShowGraphEntity(\'' + r.from.replace(/'/g, "\\'") + '\')">' + escapeHtml(r.from) + '</span>'
+          + ' <span class="graph-rel-type">' + escapeHtml(r.type) + '</span> '
+          + '<span class="graph-rel-node" onclick="focusAndShowGraphEntity(\'' + r.to.replace(/'/g, "\\'") + '\')">' + escapeHtml(r.to) + '</span>'
+          + (otherName !== entityName ? ' <button class="graph-rel-jump" onclick="focusAndShowGraphEntity(\'' + otherName.replace(/'/g, "\\'") + '\')" title="Explore ' + escapeHtml(otherName) + '">&rarr;</button>' : '')
+          + '</li>';
+      }).join('') + '</ul>';
     }
+
+    html += '<div class="graph-detail-actions">'
+      + '<button class="btn-cancel" onclick="deleteGraphEntity(\'' + entityName.replace(/'/g, "\\'") + '\', \'' + label.replace(/'/g, "\\'") + '\')">Delete entity</button>'
+      + '</div>';
+
     detail.innerHTML = html;
   } catch (e) {
     detail.innerHTML = '<div class="empty-state">Failed to load entity: ' + escapeHtml(e.message) + '</div>';
@@ -3696,6 +3884,17 @@ async function showGraphEntity(name) {
 
 function closeGraphDetail() {
   document.getElementById('graph-detail').style.display = 'none';
+}
+
+function deleteGraphEntity(name, label) {
+  if (!confirm('Delete "' + name + '" and all its relationships from the graph? This cannot be undone.')) return;
+  apiFetch('/api/graph/entity/' + encodeURIComponent(name) + '?label=' + encodeURIComponent(label), { method: 'DELETE' })
+    .then(() => {
+      showToast('Entity deleted', 'success');
+      closeGraphDetail();
+      loadGraph();
+    })
+    .catch((err) => showToast('Delete failed: ' + err.message, 'error'));
 }
 
 function focusGraphNode(name) {
@@ -4592,40 +4791,92 @@ const SETTINGS_SECTIONS = [
     ],
   },
   {
+    // Read-only: SafetyConfig::resolve() takes no `Settings` param, so these
+    // have no DB-backed override path -- see the `sandbox` section below for
+    // the full explanation of why this whole page can't edit them.
     id: 'safety', label: 'Safety',
+    special: 'env_only',
     settings: [
-      { key: 'safety.injection_check_enabled', label: 'Injection check',    desc: 'Scan all tool outputs for prompt injection patterns before passing to LLM', type: 'boolean', default: true },
-      { key: 'safety.max_output_length',       label: 'Max output length',  desc: 'Maximum byte size of any tool output forwarded to the LLM',                 type: 'number',  default: 100000, unit: 'bytes' },
+      { key: 'safety.injection_check_enabled', label: 'Injection check',    desc: 'Scan all tool outputs for prompt injection patterns before passing to LLM', type: 'boolean', env: 'SAFETY_INJECTION_CHECK_ENABLED' },
+      { key: 'safety.max_output_length',       label: 'Max output length',  desc: 'Maximum byte size of any tool output forwarded to the LLM',                 type: 'number',  unit: 'bytes', env: 'SAFETY_MAX_OUTPUT_LENGTH' },
     ],
   },
   {
+    // Read-only, same reason as Safety above.
     id: 'wasm', label: 'WASM Sandbox',
+    special: 'env_only',
     settings: [
-      { key: 'wasm.enabled',               label: 'Enable WASM sandbox',    desc: 'Run WASM tools inside an isolated sandbox with resource limits', type: 'boolean', default: true },
-      { key: 'wasm.default_memory_limit',  label: 'Memory limit',           desc: 'Default RAM cap for WASM module execution',                      type: 'number',  default: 10485760, unit: 'bytes' },
-      { key: 'wasm.default_timeout_secs',  label: 'Execution timeout',      desc: 'Maximum wall-clock time for a single WASM tool call',            type: 'number',  default: 60,       unit: 'sec' },
-      { key: 'wasm.default_fuel_limit',    label: 'Fuel limit',             desc: 'CPU instruction budget per call — higher allows more compute',   type: 'number',  default: 10000000 },
-      { key: 'wasm.cache_compiled',        label: 'Cache compiled modules', desc: 'Cache compiled WASM to speed up subsequent cold starts',         type: 'boolean', default: true },
+      { key: 'wasm.enabled',               label: 'Enable WASM sandbox',    desc: 'Run WASM tools inside an isolated sandbox with resource limits', type: 'boolean', env: 'WASM_ENABLED' },
+      { key: 'wasm.default_memory_limit',  label: 'Memory limit',           desc: 'Default RAM cap for WASM module execution',                      type: 'number',  unit: 'bytes', env: 'WASM_DEFAULT_MEMORY_LIMIT' },
+      { key: 'wasm.default_timeout_secs',  label: 'Execution timeout',      desc: 'Maximum wall-clock time for a single WASM tool call',            type: 'number',  unit: 'sec', env: 'WASM_DEFAULT_TIMEOUT_SECS' },
+      { key: 'wasm.default_fuel_limit',    label: 'Fuel limit',             desc: 'CPU instruction budget per call — higher allows more compute',   type: 'number',  env: 'WASM_DEFAULT_FUEL_LIMIT' },
+      { key: 'wasm.cache_compiled',        label: 'Cache compiled modules', desc: 'Cache compiled WASM to speed up subsequent cold starts',         type: 'boolean', env: 'WASM_CACHE_COMPILED' },
     ],
   },
   {
     id: 'sandbox', label: 'Docker Sandbox',
+    special: 'sandbox_status',
+    settings: [],
+  },
+  {
+    // Read-only, same reason as Safety above.
+    id: 'builder', label: 'Tool Builder',
+    special: 'env_only',
     settings: [
-      { key: 'sandbox.enabled',         label: 'Enable Docker sandbox', desc: 'Run jobs inside isolated Docker containers',                        type: 'boolean', default: true },
-      { key: 'sandbox.policy',          label: 'Sandbox policy',        desc: 'Level of filesystem access granted to the container',               type: 'select',  default: 'readonly', options: ['readonly', 'workspace_write', 'full_access'] },
-      { key: 'sandbox.timeout_secs',    label: 'Command timeout',       desc: 'Maximum time a sandboxed command may run',                          type: 'number',  default: 120,  unit: 'sec' },
-      { key: 'sandbox.memory_limit_mb', label: 'Memory limit',          desc: 'RAM cap for each sandbox container',                                type: 'number',  default: 2048, unit: 'MB' },
-      { key: 'sandbox.image',           label: 'Docker image',          desc: 'Container image used for the worker sandbox',                       type: 'string',  default: 'rustytalon-worker:latest' },
-      { key: 'sandbox.auto_pull_image', label: 'Auto-pull image',       desc: 'Automatically pull the image from Docker Hub if not found locally', type: 'boolean', default: true },
+      { key: 'builder.enabled',         label: 'Enable builder',       desc: 'Allow the agent to build new WASM tools dynamically at runtime', type: 'boolean', env: 'BUILDER_ENABLED' },
+      { key: 'builder.max_iterations',  label: 'Max build iterations', desc: 'Maximum build-and-fix attempts before giving up on a tool',      type: 'number',  env: 'BUILDER_MAX_ITERATIONS' },
+      { key: 'builder.timeout_secs',    label: 'Build timeout',        desc: 'Maximum total time for a complete build session',                 type: 'number',  unit: 'sec', env: 'BUILDER_TIMEOUT_SECS' },
+      { key: 'builder.auto_register',   label: 'Auto-register tools',  desc: 'Automatically add newly built tools to the registry',             type: 'boolean', env: 'BUILDER_AUTO_REGISTER' },
     ],
   },
   {
-    id: 'builder', label: 'Tool Builder',
+    // Read-only: RoutineConfig::resolve() takes no `Settings` param.
+    id: 'routines', label: 'Routines',
+    special: 'env_only',
     settings: [
-      { key: 'builder.enabled',         label: 'Enable builder',       desc: 'Allow the agent to build new WASM tools dynamically at runtime', type: 'boolean', default: true },
-      { key: 'builder.max_iterations',  label: 'Max build iterations', desc: 'Maximum build-and-fix attempts before giving up on a tool',      type: 'number',  default: 20 },
-      { key: 'builder.timeout_secs',    label: 'Build timeout',        desc: 'Maximum total time for a complete build session',                 type: 'number',  default: 600, unit: 'sec' },
-      { key: 'builder.auto_register',   label: 'Auto-register tools',  desc: 'Automatically add newly built tools to the registry',             type: 'boolean', default: true },
+      { key: 'routines.enabled',                     label: 'Enable routines',           desc: 'Run scheduled (cron), reactive (event/webhook), and manual routines', type: 'boolean', env: 'ROUTINES_ENABLED' },
+      { key: 'routines.cron_check_interval_secs',    label: 'Cron check interval',       desc: 'How often the engine polls for cron routines that need firing',       type: 'number',  unit: 'sec', env: 'ROUTINES_CRON_INTERVAL' },
+      { key: 'routines.max_concurrent_routines',     label: 'Max concurrent routines',   desc: 'Max routines executing concurrently across all users',                type: 'number',  env: 'ROUTINES_MAX_CONCURRENT' },
+      { key: 'routines.default_cooldown_secs',       label: 'Default cooldown',          desc: 'Default minimum time between fires for a routine',                    type: 'number',  unit: 'sec', env: 'ROUTINES_DEFAULT_COOLDOWN' },
+      { key: 'routines.max_lightweight_tokens',      label: 'Max lightweight tokens',    desc: 'Max output tokens for lightweight (tool-less) routine LLM calls',     type: 'number',  env: 'ROUTINES_MAX_TOKENS' },
+    ],
+  },
+  {
+    // Read-only: ClaudeCodeConfig::resolve() takes no `Settings` param.
+    id: 'claude_code', label: 'Claude Code',
+    special: 'env_only',
+    settings: [
+      { key: 'claude_code.enabled',         label: 'Enable Claude Code mode', desc: 'Allow sandbox jobs to run via the Claude Code CLI instead of the built-in worker', type: 'boolean', env: 'CLAUDE_CODE_ENABLED' },
+      { key: 'claude_code.model',           label: 'Model',                   desc: 'Claude model used by Claude Code mode',                                            type: 'string',  env: 'CLAUDE_CODE_MODEL' },
+      { key: 'claude_code.max_turns',       label: 'Max turns',               desc: 'Maximum agentic turns before stopping',                                            type: 'number',  env: 'CLAUDE_CODE_MAX_TURNS' },
+      { key: 'claude_code.memory_limit_mb', label: 'Memory limit',            desc: 'RAM cap for Claude Code containers',                                               type: 'number',  unit: 'MB', env: 'CLAUDE_CODE_MEMORY_LIMIT_MB' },
+      { key: 'claude_code.config_dir',      label: 'Config directory',        desc: 'Host directory containing Claude auth session (mounted read-only)',               type: 'string',  env: 'CLAUDE_CONFIG_DIR' },
+      { key: 'claude_code.allowed_tools',   label: 'Allowed tools',           desc: 'Tool patterns auto-approved inside the container',                                type: 'string',  env: 'CLAUDE_CODE_ALLOWED_TOOLS' },
+    ],
+  },
+  {
+    // Read-only: SearchConfig::resolve() takes no `Settings` param. API keys
+    // are never sent to the browser -- only whether one is configured.
+    id: 'search', label: 'Web Search',
+    special: 'env_only',
+    settings: [
+      { key: 'search.searxng_url',     label: 'SearXNG URL',           desc: 'Self-hosted SearXNG instance base URL',                                 type: 'string',  env: 'SEARXNG_URL' },
+      { key: 'search.brave_api_key',   label: 'Brave Search API key',  desc: 'Whether a Brave Search API key is configured',                          type: 'boolean', env: 'BRAVE_SEARCH_API_KEY' },
+      { key: 'search.tavily_api_key',  label: 'Tavily API key',        desc: 'Whether a Tavily AI Search API key is configured',                      type: 'boolean', env: 'TAVILY_API_KEY' },
+      { key: 'search.active',          label: 'Active provider',       desc: 'Which backend web_search actually uses (priority: SearXNG > Brave > Tavily)', type: 'string' },
+    ],
+  },
+  {
+    // Read-only: Neo4jConfig::resolve() takes no `Settings` param. The
+    // password is never sent to the browser -- only whether one is set.
+    id: 'graph', label: 'Knowledge Graph',
+    special: 'env_only',
+    settings: [
+      { key: 'graph.enabled',   label: 'Enable knowledge graph', desc: 'Whether Neo4j graph tools are registered (requires the `neo4j` build feature)', type: 'boolean', env: 'NEO4J_ENABLED' },
+      { key: 'graph.uri',       label: 'Neo4j URI',              desc: 'Bolt connection URI',                                                          type: 'string',  env: 'NEO4J_URI' },
+      { key: 'graph.user',      label: 'Neo4j user',             desc: 'Database user',                                                                type: 'string',  env: 'NEO4J_USER' },
+      { key: 'graph.password',  label: 'Neo4j password',         desc: 'Whether a database password is configured',                                   type: 'boolean', env: 'NEO4J_PASSWORD' },
+      { key: 'graph.connected', label: 'Connected',              desc: 'Live Neo4j connection status',                                                 type: 'boolean' },
     ],
   },
   {
@@ -4678,6 +4929,9 @@ async function loadSettings() {
 
   // Load current version into the About card (no network check on every load).
   loadVersionInfo();
+  // Fire-and-forget: re-render once each lands.
+  loadSandboxStatus();
+  loadEnvConfig();
 }
 
 // ---- About / Version ----
@@ -4741,6 +4995,12 @@ async function checkForUpdate() {
         _versionDockerCmd = data.docker_pull;
         if (dockerCmd) dockerCmd.textContent = data.docker_pull;
         dockerBlock.style.display = '';
+      }
+      btn.textContent = 'Check again';
+    } else if (data.ahead_of_release) {
+      if (statusEl) {
+        statusEl.className = 'version-status dev-build';
+        statusEl.textContent = '⚠ Dev build (ahead of latest release)';
       }
       btn.textContent = 'Check again';
     } else {
@@ -4824,9 +5084,143 @@ function renderSettingsSections(notice) {
 
 function renderSettingsSection(sec) {
   if (sec.special === 'model_costs_table') return renderModelCostsSection(sec);
+  if (sec.special === 'sandbox_status') return renderSandboxStatusSection(sec);
+  if (sec.special === 'env_only') return renderEnvOnlySection(sec);
   const rows = sec.settings.map(s => renderSettingRow(s)).join('');
   return `<div class="settings-section">
     <div class="settings-section-header"><span class="settings-section-title">${escapeHtml(sec.label)}</span></div>
+    <div class="settings-section-body">${rows}</div>
+  </div>`;
+}
+
+// ── Env-only settings sections (read-only) ────────────────────────────────
+//
+// Safety, WASM Sandbox, Tool Builder, Routines, Claude Code, Web Search, and
+// Knowledge Graph all resolve their config from env vars only -- none of
+// them take the DB-loaded `Settings` struct as input (see config.rs), so
+// there's no override path for the settings table to feed into. Editable
+// rows for these would have the exact same silently-does-nothing problem
+// the Docker Sandbox panel had. One shared renderer drives all of them from
+// the live values `GET /api/settings/env-config` returns, keyed to match
+// each catalog entry's `key`.
+
+let _envConfig = null; // null = not loaded yet; else { [key]: {value, env_var} }
+
+async function loadEnvConfig() {
+  try {
+    const data = await apiFetch('/api/settings/env-config');
+    _envConfig = {};
+    for (const f of (data.fields || [])) {
+      _envConfig[f.key] = f;
+    }
+  } catch (e) {
+    _envConfig = null;
+  }
+  renderSettingsSections(null);
+}
+
+function formatEnvValue(value) {
+  if (Array.isArray(value)) return value.length ? value.join(', ') : '(none)';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (value === '' || value === null || value === undefined) return '(not set)';
+  return String(value);
+}
+
+function renderEnvOnlySection(sec) {
+  if (!_envConfig) {
+    return `<div class="settings-section">
+      <div class="settings-section-header"><span class="settings-section-title">${escapeHtml(sec.label)}</span></div>
+      <div class="settings-section-body"><div class="settings-row"><div class="settings-row-info"><div class="settings-row-desc">Loading…</div></div></div></div>
+    </div>`;
+  }
+
+  const rows = sec.settings.map(s => {
+    const field = _envConfig[s.key];
+    const val = field ? formatEnvValue(field.value) : '(unavailable)';
+    const envVar = field ? field.env_var : s.env;
+    const source = envVar
+      ? `Set via <code>${escapeHtml(envVar)}</code> — requires a restart to change`
+      : 'Live status, not a config value';
+    return `<div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">${escapeHtml(s.label)}</div>
+        <div class="settings-row-desc">${escapeHtml(s.desc)} — ${source}</div>
+      </div>
+      <div class="settings-row-control"><code class="setting-val-cell">${escapeHtml(val)}</code></div>
+    </div>`;
+  }).join('');
+
+  return `<div class="settings-section">
+    <div class="settings-section-header">
+      <span class="settings-section-title">${escapeHtml(sec.label)}</span>
+      <span class="settings-section-desc">Read-only — resolved once at startup from environment variables.</span>
+    </div>
+    <div class="settings-section-body">${rows}</div>
+  </div>`;
+}
+
+// ── Docker Sandbox status (read-only) ─────────────────────────────────────
+//
+// Unlike other settings sections, sandbox config has no DB-backed override
+// path at all: it's resolved once from SANDBOX_* env vars at process boot
+// and never read back from the settings table. Rendering it as editable
+// rows (as it used to be) let a user toggle "Enable Docker sandbox" in the
+// UI and believe it took effect when it silently did nothing. This section
+// instead fetches the live, effective config and renders it read-only.
+
+let _sandboxStatus = null;
+
+async function loadSandboxStatus() {
+  try {
+    _sandboxStatus = await apiFetch('/api/sandbox/status');
+  } catch (e) {
+    _sandboxStatus = null;
+  }
+  renderSettingsSections(null);
+}
+
+function renderSandboxStatusSection(sec) {
+  const s = _sandboxStatus;
+
+  if (!s || !s.configured) {
+    const body = !s
+      ? '<div class="settings-row-desc">Loading…</div>'
+      : `<div class="settings-row-desc">Docker sandbox is not configured for this deployment.
+           Set <code>SANDBOX_ENABLED=true</code> (and related <code>SANDBOX_*</code> env vars)
+           in the environment and restart to enable it.</div>`;
+    return `<div class="settings-section">
+      <div class="settings-section-header"><span class="settings-section-title">${escapeHtml(sec.label)}</span></div>
+      <div class="settings-section-body"><div class="settings-row"><div class="settings-row-info">${body}</div></div></div>
+    </div>`;
+  }
+
+  const dockerBadge = s.docker_available === true
+    ? '<span class="catalog-status-badge status-active">Docker reachable</span>'
+    : s.docker_available === false
+      ? '<span class="catalog-status-badge status-error">Docker unreachable</span>'
+      : '<span class="catalog-status-badge status-inactive">Sandbox disabled</span>';
+
+  const fields = [
+    ['Enabled', s.enabled ? 'true' : 'false', 'SANDBOX_ENABLED'],
+    ['Sandbox policy', s.policy, 'SANDBOX_POLICY'],
+    ['Command timeout', `${s.timeout_secs} sec`, 'SANDBOX_TIMEOUT_SECS'],
+    ['Memory limit', `${s.memory_limit_mb} MB`, 'SANDBOX_MEMORY_LIMIT_MB'],
+    ['Docker image', s.image, 'SANDBOX_IMAGE'],
+    ['Auto-pull image', s.auto_pull_image ? 'true' : 'false', 'SANDBOX_AUTO_PULL'],
+  ];
+  const rows = fields.map(([label, val, envVar]) => `<div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">${escapeHtml(label)}</div>
+        <div class="settings-row-desc">Set via <code>${escapeHtml(envVar)}</code> — requires a restart to change</div>
+      </div>
+      <div class="settings-row-control"><code class="setting-val-cell">${escapeHtml(String(val))}</code></div>
+    </div>`).join('');
+
+  return `<div class="settings-section">
+    <div class="settings-section-header">
+      <span class="settings-section-title">${escapeHtml(sec.label)}</span>
+      <span class="settings-section-desc">Read-only — resolved once at startup from environment variables. ${dockerBadge}</span>
+    </div>
     <div class="settings-section-body">${rows}</div>
   </div>`;
 }

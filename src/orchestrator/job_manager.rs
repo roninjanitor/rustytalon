@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
@@ -126,6 +127,10 @@ pub struct ContainerJobManager {
     config: ContainerJobConfig,
     token_store: TokenStore,
     containers: Arc<RwLock<HashMap<Uuid, ContainerHandle>>>,
+    /// Cached result of the last Docker reachability check, refreshed periodically
+    /// by a background task (see `refresh_docker_health`). Starts `false` so the
+    /// tool layer never advertises sandbox capability before the first check runs.
+    docker_available: Arc<AtomicBool>,
 }
 
 impl ContainerJobManager {
@@ -134,6 +139,47 @@ impl ContainerJobManager {
             config,
             token_store,
             containers: Arc::new(RwLock::new(HashMap::new())),
+            docker_available: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Whether Docker was reachable as of the last background health check.
+    ///
+    /// This is a cached flag, not a live probe -- callers that need certainty
+    /// (e.g. actually creating a container) should still handle `create_job`
+    /// failures. This exists so the `create_job` tool can decide, cheaply and
+    /// synchronously, whether to advertise sandboxed-container capability to
+    /// the LLM at all.
+    pub fn docker_available(&self) -> bool {
+        self.docker_available.load(Ordering::Relaxed)
+    }
+
+    /// Ping Docker and update the cached availability flag. Intended to be called
+    /// periodically from a background task started at startup.
+    ///
+    /// Failures log at `warn!` on *every* poll (not just on the
+    /// available-to-unavailable transition) -- a Docker daemon that is
+    /// unreachable from the very first check (e.g. a mounted socket the
+    /// process's non-root user can't actually open) never has an
+    /// available-to-unavailable edge to log, so it must warn every cycle or
+    /// `create_job` silently stays on the local-only fallback path forever
+    /// with nothing in the logs to explain why.
+    pub async fn refresh_docker_health(&self) {
+        let result = connect_docker().await;
+        let available = result.is_ok();
+        let was_available = self.docker_available.swap(available, Ordering::Relaxed);
+
+        match result {
+            Ok(_) if !was_available => {
+                tracing::info!("Docker is now reachable; sandbox job execution enabled");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Docker unreachable; create_job will fall back to local execution"
+                );
+            }
         }
     }
 
@@ -432,12 +478,20 @@ impl ContainerJobManager {
         job_id: Uuid,
         result: CompletionResult,
     ) -> Result<(), OrchestratorError> {
-        // Store the result before stopping
+        // Store the result before stopping. A worker-reported failure gets its
+        // own `Failed` state rather than `Stopped`, so `CreateJobTool` and
+        // anything else inspecting `ContainerHandle::state` (web UI, job
+        // listings) can distinguish "ran to completion but failed" from "ran
+        // to completion successfully" without inspecting `completion_result`.
         {
             let mut containers = self.containers.write().await;
             if let Some(handle) = containers.get_mut(&job_id) {
+                handle.state = if result.success {
+                    ContainerState::Stopped
+                } else {
+                    ContainerState::Failed
+                };
                 handle.completion_result = Some(result);
-                handle.state = ContainerState::Stopped;
             }
         }
 
@@ -494,6 +548,78 @@ impl ContainerJobManager {
         self.containers.write().await.remove(&job_id);
     }
 
+    /// Detect containers that have died (crashed, OOM-killed, entrypoint
+    /// failure, or were removed out-of-band) without the worker ever calling
+    /// back to `complete_job`. Without this, a dead container's handle stays
+    /// `Running` forever from `ContainerJobManager`'s perspective, and
+    /// `CreateJobTool::execute_sandbox`'s poll loop only notices via its own
+    /// 10-minute hard timeout -- a much worse failure experience than the
+    /// ~30s the bootstrap-failure case produces. Intended to be polled
+    /// periodically from a background task (mirrors `refresh_docker_health`).
+    pub async fn reap_dead_containers(&self) {
+        // Snapshot handles that are still "in flight" from our perspective --
+        // a worker that already reported completion (Stopped/Failed) doesn't
+        // need reaping, and Creating handles may not have a container_id yet.
+        let candidates: Vec<(Uuid, String)> = {
+            let containers = self.containers.read().await;
+            containers
+                .values()
+                .filter(|h| h.state == ContainerState::Running && !h.container_id.is_empty())
+                .map(|h| (h.job_id, h.container_id.clone()))
+                .collect()
+        };
+
+        if candidates.is_empty() {
+            return;
+        }
+
+        let docker = match connect_docker().await {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(error = %e, "reap_dead_containers: failed to connect to Docker");
+                return;
+            }
+        };
+
+        for (job_id, container_id) in candidates {
+            let reason = match docker.inspect_container(&container_id, None).await {
+                Ok(resp) => {
+                    let state = resp.state.unwrap_or_default();
+                    if state.running.unwrap_or(true) {
+                        continue; // still alive, nothing to do
+                    }
+                    Some(describe_dead_container(&state))
+                }
+                Err(bollard::errors::Error::DockerResponseServerError {
+                    status_code: 404, ..
+                }) => Some("container no longer exists (removed out-of-band)".to_string()),
+                Err(e) => {
+                    tracing::warn!(job_id = %job_id, error = %e, "reap_dead_containers: inspect failed");
+                    continue;
+                }
+            };
+            let Some(reason) = reason else { continue };
+
+            let mut containers = self.containers.write().await;
+            if let Some(handle) = containers.get_mut(&job_id) {
+                // Re-check state under the lock: the worker may have called
+                // complete_job in the gap between our snapshot and now.
+                if handle.state == ContainerState::Running {
+                    tracing::warn!(
+                        job_id = %job_id,
+                        reason = %reason,
+                        "Detected dead container without a worker completion callback"
+                    );
+                    handle.state = ContainerState::Failed;
+                    handle.completion_result = Some(CompletionResult {
+                        success: false,
+                        message: Some(reason),
+                    });
+                }
+            }
+        }
+    }
+
     /// Get the handle for a job.
     pub async fn get_handle(&self, job_id: Uuid) -> Option<ContainerHandle> {
         self.containers.read().await.get(&job_id).cloned()
@@ -510,9 +636,90 @@ impl ContainerJobManager {
     }
 }
 
+/// Build a human-readable failure reason from a dead container's inspected
+/// state, for jobs whose worker never called back to `complete_job`.
+fn describe_dead_container(state: &bollard::models::ContainerState) -> String {
+    let status = state
+        .status
+        .map(|s| format!("{:?}", s).to_lowercase())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    if state.oom_killed.unwrap_or(false) {
+        return format!("container was OOM-killed (status: {status})");
+    }
+    if let Some(err) = state.error.as_ref().filter(|e| !e.is_empty()) {
+        return format!("container exited with error: {err} (status: {status})");
+    }
+    let exit_code = state.exit_code.unwrap_or(-1);
+    format!("container exited unexpectedly with code {exit_code} (status: {status})")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_describe_dead_container_oom_killed() {
+        let state = bollard::models::ContainerState {
+            status: Some(bollard::models::ContainerStateStatusEnum::EXITED),
+            oom_killed: Some(true),
+            exit_code: Some(137),
+            ..Default::default()
+        };
+        let msg = describe_dead_container(&state);
+        assert!(msg.contains("OOM-killed"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_describe_dead_container_error_message() {
+        let state = bollard::models::ContainerState {
+            status: Some(bollard::models::ContainerStateStatusEnum::EXITED),
+            error: Some("no such image".to_string()),
+            ..Default::default()
+        };
+        let msg = describe_dead_container(&state);
+        assert!(msg.contains("no such image"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_describe_dead_container_exit_code_fallback() {
+        let state = bollard::models::ContainerState {
+            status: Some(bollard::models::ContainerStateStatusEnum::EXITED),
+            exit_code: Some(1),
+            ..Default::default()
+        };
+        let msg = describe_dead_container(&state);
+        assert!(msg.contains('1'), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_reap_dead_containers_noop_when_nothing_running() {
+        // No Running candidates -- must return without touching Docker at all,
+        // so this must not hang or error even with no daemon reachable.
+        let manager = ContainerJobManager::new(
+            ContainerJobConfig::default(),
+            crate::orchestrator::auth::TokenStore::new(),
+        );
+        let job_id = Uuid::new_v4();
+        manager.containers.write().await.insert(
+            job_id,
+            ContainerHandle {
+                job_id,
+                container_id: String::new(),
+                state: ContainerState::Creating, // no container_id yet
+                mode: JobMode::Worker,
+                created_at: Utc::now(),
+                project_dir: None,
+                task_description: "test".to_string(),
+                completion_result: None,
+            },
+        );
+
+        manager.reap_dead_containers().await;
+
+        let handle = manager.get_handle(job_id).await.unwrap();
+        assert_eq!(handle.state, ContainerState::Creating);
+    }
 
     #[test]
     fn test_container_job_config_default() {
@@ -525,5 +732,82 @@ mod tests {
     fn test_container_state_display() {
         assert_eq!(ContainerState::Running.to_string(), "running");
         assert_eq!(ContainerState::Stopped.to_string(), "stopped");
+        assert_eq!(ContainerState::Failed.to_string(), "failed");
+    }
+
+    #[tokio::test]
+    async fn test_complete_job_sets_failed_state_on_failure() {
+        let manager = ContainerJobManager::new(
+            ContainerJobConfig::default(),
+            crate::orchestrator::auth::TokenStore::new(),
+        );
+        let job_id = Uuid::new_v4();
+        manager.containers.write().await.insert(
+            job_id,
+            ContainerHandle {
+                job_id,
+                container_id: String::new(),
+                state: ContainerState::Running,
+                mode: JobMode::Worker,
+                created_at: Utc::now(),
+                project_dir: None,
+                task_description: "test".to_string(),
+                completion_result: None,
+            },
+        );
+
+        manager
+            .complete_job(
+                job_id,
+                CompletionResult {
+                    success: false,
+                    message: Some("build failed".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let handle = manager.get_handle(job_id).await.unwrap();
+        assert_eq!(handle.state, ContainerState::Failed);
+        assert_eq!(
+            handle.completion_result.unwrap().message.unwrap(),
+            "build failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_complete_job_sets_stopped_state_on_success() {
+        let manager = ContainerJobManager::new(
+            ContainerJobConfig::default(),
+            crate::orchestrator::auth::TokenStore::new(),
+        );
+        let job_id = Uuid::new_v4();
+        manager.containers.write().await.insert(
+            job_id,
+            ContainerHandle {
+                job_id,
+                container_id: String::new(),
+                state: ContainerState::Running,
+                mode: JobMode::Worker,
+                created_at: Utc::now(),
+                project_dir: None,
+                task_description: "test".to_string(),
+                completion_result: None,
+            },
+        );
+
+        manager
+            .complete_job(
+                job_id,
+                CompletionResult {
+                    success: true,
+                    message: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let handle = manager.get_handle(job_id).await.unwrap();
+        assert_eq!(handle.state, ContainerState::Stopped);
     }
 }

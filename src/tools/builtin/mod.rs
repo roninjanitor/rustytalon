@@ -13,6 +13,8 @@ mod marketplace;
 mod memory;
 mod restaurant;
 pub mod routine;
+#[cfg(feature = "neo4j")]
+mod search_context;
 pub(crate) mod shell;
 mod taskrabbit;
 mod time;
@@ -39,6 +41,8 @@ pub use restaurant::RestaurantTool;
 pub use routine::{
     RoutineCreateTool, RoutineDeleteTool, RoutineHistoryTool, RoutineListTool, RoutineUpdateTool,
 };
+#[cfg(feature = "neo4j")]
+pub use search_context::SearchContextTool;
 pub use shell::ShellTool;
 pub use taskrabbit::TaskRabbitTool;
 pub use time::TimeTool;

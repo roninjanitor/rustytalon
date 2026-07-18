@@ -310,6 +310,41 @@ pub trait LlmProvider: Send + Sync {
         request: ToolCompletionRequest,
     ) -> Result<ToolCompletionResponse, LlmError>;
 
+    /// Complete a chat conversation, forwarding incremental text chunks over
+    /// `chunk_tx` as they arrive so callers can show live output.
+    ///
+    /// Default implementation buffers the full response from `complete()`
+    /// and sends it as a single chunk at the end -- providers/wrappers that
+    /// don't override this still work correctly, just without incremental
+    /// output. Only `RigAdapter` currently overrides this with real
+    /// provider-level streaming.
+    async fn complete_streaming(
+        &self,
+        request: CompletionRequest,
+        chunk_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<CompletionResponse, LlmError> {
+        let response = self.complete(request).await?;
+        let _ = chunk_tx.send(response.content.clone());
+        Ok(response)
+    }
+
+    /// Complete with tool use support, forwarding incremental text chunks
+    /// (not tool-call argument deltas) over `chunk_tx` as they arrive.
+    ///
+    /// Same fallback behavior as `complete_streaming`: default buffers and
+    /// sends one final chunk.
+    async fn complete_with_tools_streaming(
+        &self,
+        request: ToolCompletionRequest,
+        chunk_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<ToolCompletionResponse, LlmError> {
+        let response = self.complete_with_tools(request).await?;
+        if let Some(content) = &response.content {
+            let _ = chunk_tx.send(content.clone());
+        }
+        Ok(response)
+    }
+
     /// List available models from the provider.
     /// Default implementation returns empty list.
     async fn list_models(&self) -> Result<Vec<String>, LlmError> {

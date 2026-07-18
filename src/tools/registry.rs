@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
+use crate::agent::Scheduler;
 use crate::context::ContextManager;
 use crate::db::Database;
 use crate::extensions::ExtensionManager;
@@ -275,6 +276,24 @@ impl ToolRegistry {
         tracing::info!("Registered 11 knowledge graph tools");
     }
 
+    /// Register the `search_context` composite tool, which fans a query out
+    /// to both workspace memory search and graph entity search in parallel.
+    ///
+    /// Call this after `register_memory_tools()` and `register_graph_tools()`
+    /// with the same `Workspace`/`GraphClient` instances handed to those.
+    /// Requires the `neo4j` Cargo feature.
+    #[cfg(feature = "neo4j")]
+    pub fn register_context_search_tool(
+        &self,
+        workspace: Arc<Workspace>,
+        graph_client: Arc<crate::graph::GraphClient>,
+    ) {
+        use crate::tools::builtin::SearchContextTool;
+        self.register_sync(Arc::new(SearchContextTool::new(workspace, graph_client)));
+
+        tracing::info!("Registered search_context tool");
+    }
+
     /// Register the web search tool with the given backend.
     ///
     /// Call this after `register_builtin_tools()` when `config.search.is_enabled()`.
@@ -296,15 +315,21 @@ impl ToolRegistry {
         context_manager: Arc<ContextManager>,
         job_manager: Option<Arc<ContainerJobManager>>,
         store: Option<Arc<dyn Database>>,
+        scheduler: Arc<Scheduler>,
     ) {
-        let mut create_tool = CreateJobTool::new(Arc::clone(&context_manager));
-        if let Some(jm) = job_manager {
-            create_tool = create_tool.with_sandbox(jm, store);
+        let mut create_tool = CreateJobTool::new(Arc::clone(&context_manager), scheduler);
+        if let Some(jm) = job_manager.clone() {
+            create_tool = create_tool.with_sandbox(jm, store.clone());
         }
         self.register_sync(Arc::new(create_tool));
         self.register_sync(Arc::new(ListJobsTool::new(Arc::clone(&context_manager))));
         self.register_sync(Arc::new(JobStatusTool::new(Arc::clone(&context_manager))));
-        self.register_sync(Arc::new(CancelJobTool::new(context_manager)));
+
+        let mut cancel_tool = CancelJobTool::new(context_manager);
+        if let Some(jm) = job_manager {
+            cancel_tool = cancel_tool.with_sandbox(jm, store);
+        }
+        self.register_sync(Arc::new(cancel_tool));
 
         tracing::info!("Registered 4 job management tools");
     }

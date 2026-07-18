@@ -699,6 +699,41 @@ pub struct SettingsExportResponse {
     pub settings: std::collections::HashMap<String, serde_json::Value>,
 }
 
+/// Live, read-only Docker sandbox status. Unlike the generic `settings.*`
+/// catalog, these values come straight from the boot-resolved `SANDBOX_*`
+/// env vars (there is no DB-backed override path for sandbox config), so
+/// this is a distinct endpoint rather than a `settings` row.
+#[derive(Debug, Serialize)]
+pub struct SandboxStatusResponse {
+    /// Whether a sandbox was configured at all (`job_manager` constructed).
+    pub configured: bool,
+    pub enabled: bool,
+    pub policy: String,
+    pub timeout_secs: u64,
+    pub memory_limit_mb: u64,
+    pub image: String,
+    pub auto_pull_image: bool,
+    /// Live Docker reachability, from the periodic health-check poll --
+    /// `None` when sandbox isn't configured at all.
+    pub docker_available: Option<bool>,
+}
+
+/// One read-only settings value: `key` matches a `SETTINGS_SECTIONS` catalog
+/// entry (e.g. `"safety.max_output_length"`), `env_var` is the environment
+/// variable that controls it (`None` for a live/derived signal such as
+/// `"graph.connected"` rather than a boot-resolved config value).
+#[derive(Debug, Serialize)]
+pub struct EnvConfigField {
+    pub key: String,
+    pub value: serde_json::Value,
+    pub env_var: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EnvConfigResponse {
+    pub fields: Vec<EnvConfigField>,
+}
+
 // --- Health ---
 
 #[derive(Debug, Serialize)]
@@ -729,6 +764,13 @@ pub struct VersionResponse {
     /// Human-readable error if the update check failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub check_error: Option<String>,
+    /// True when the running version is strictly newer than the latest
+    /// GitHub release -- i.e. an unreleased build from `develop` (a `:dev`
+    /// or `:dev-<sha>` image), not a stale install. Distinguishes that case
+    /// from `update_available: false`, which otherwise reads identically
+    /// for "you're current" and "you're ahead of the last release."
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ahead_of_release: Option<bool>,
 }
 
 #[cfg(test)]
@@ -1440,4 +1482,35 @@ pub struct GraphSearchResponse {
 #[derive(Debug, Serialize)]
 pub struct GraphEntityContextResponse {
     pub context: serde_json::Value,
+}
+
+/// Response for DELETE /api/graph/entity/{name}.
+#[cfg(feature = "neo4j")]
+#[derive(Debug, Serialize)]
+pub struct GraphEntityDeleteResponse {
+    pub name: String,
+}
+
+/// Response for GET /api/graph/candidates.
+#[cfg(feature = "neo4j")]
+#[derive(Debug, Serialize)]
+pub struct GraphCandidatesResponse {
+    pub candidates: Vec<serde_json::Value>,
+}
+
+/// Body for POST /api/graph/candidates/{id}/edit. Only provided fields are
+/// replaced -- omitting one leaves that part of the candidate unchanged.
+#[cfg(feature = "neo4j")]
+#[derive(Debug, Deserialize)]
+pub struct GraphCandidateEditRequest {
+    pub entities: Option<Vec<crate::graph::CandidateEntity>>,
+    pub relationships: Option<Vec<crate::graph::CandidateRelationship>>,
+}
+
+/// Response for the candidate edit/approve/reject actions -- all return the
+/// raw `serde_json::Value` result from the corresponding `GraphClient` method.
+#[cfg(feature = "neo4j")]
+#[derive(Debug, Serialize)]
+pub struct GraphCandidateActionResponse {
+    pub result: serde_json::Value,
 }

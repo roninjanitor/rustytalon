@@ -3976,6 +3976,11 @@ mark {
   color: var(--accent);
   border: 1px solid rgba(88, 166, 255, 0.2);
 }
+.version-status.dev-build {
+  background: rgba(188, 140, 255, 0.12);
+  color: #bc8cff;
+  border: 1px solid rgba(188, 140, 255, 0.3);
+}
 .version-card-actions {
   display: flex;
   align-items: center;
@@ -4147,6 +4152,10 @@ mark {
 
 .graph-stat-pending .graph-stat-num {
   color: var(--warning);
+}
+
+.graph-stat-pending {
+  cursor: pointer;
 }
 
 .graph-legend {
@@ -4355,6 +4364,110 @@ mark {
   color: var(--accent);
   font-family: monospace;
   font-size: 11px;
+}
+
+.graph-rel-node {
+  cursor: pointer;
+  border-bottom: 1px dotted var(--text-secondary);
+}
+
+.graph-rel-node:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.graph-rel-jump {
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.graph-rel-jump:hover {
+  color: var(--accent);
+}
+
+.graph-detail-actions {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.graph-candidates {
+  position: absolute;
+  inset: 0;
+  background: var(--bg);
+  overflow-y: auto;
+  padding: 16px;
+  z-index: 5;
+}
+
+.graph-candidates-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.graph-candidates-header h3 {
+  margin: 0;
+}
+
+.graph-candidate-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.graph-candidate-meta {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.graph-candidate-section {
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.graph-candidate-section strong {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.graph-candidate-entity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.graph-candidate-entity input {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.graph-candidate-rel {
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+.graph-candidate-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 @media (max-width: 900px) {

@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use uuid::Uuid;
 
+use crate::agent::Scheduler;
 use crate::context::{ContextManager, JobContext, JobState};
 use crate::db::Database;
 use crate::history::SandboxJobRecord;
@@ -24,17 +25,21 @@ use crate::tools::tool::{Tool, ToolError, ToolOutput};
 ///
 /// When sandbox deps are injected (via `with_sandbox`), the tool automatically
 /// delegates execution to a Docker container. Otherwise it creates an in-memory
-/// job via the ContextManager. The LLM never needs to know the difference.
+/// job via the ContextManager and hands it to the `Scheduler` so it actually
+/// gets picked up and run instead of sitting in `Pending` forever. The LLM
+/// never needs to know the difference.
 pub struct CreateJobTool {
     context_manager: Arc<ContextManager>,
+    scheduler: Arc<Scheduler>,
     job_manager: Option<Arc<ContainerJobManager>>,
     store: Option<Arc<dyn Database>>,
 }
 
 impl CreateJobTool {
-    pub fn new(context_manager: Arc<ContextManager>) -> Self {
+    pub fn new(context_manager: Arc<ContextManager>, scheduler: Arc<Scheduler>) -> Self {
         Self {
             context_manager,
+            scheduler,
             job_manager: None,
             store: None,
         }
@@ -51,8 +56,15 @@ impl CreateJobTool {
         self
     }
 
+    /// True only when a job manager is configured AND Docker was reachable as of
+    /// the last background health check. `SANDBOX_ENABLED=true` alone (e.g. the
+    /// container-job-manager was constructed) does not imply Docker is actually
+    /// up -- gating on `docker_available()` keeps the tool from advertising
+    /// container capability to the LLM that it can't currently deliver.
     fn sandbox_enabled(&self) -> bool {
-        self.job_manager.is_some()
+        self.job_manager
+            .as_ref()
+            .is_some_and(|jm| jm.docker_available())
     }
 
     /// Persist a sandbox job record (fire-and-forget).
@@ -110,6 +122,24 @@ impl CreateJobTool {
             .await
         {
             Ok(job_id) => {
+                // create_job_for_user only inserts the job as Pending in the
+                // ContextManager -- without this, nothing ever picks it up and it
+                // sits in Pending forever.
+                if let Err(e) = self.scheduler.schedule(job_id).await {
+                    tracing::warn!(job_id = %job_id, "Failed to schedule job: {}", e);
+                    let result = serde_json::json!({
+                        "job_id": job_id.to_string(),
+                        "title": title,
+                        "status": "pending",
+                        "message": format!(
+                            "Created job '{}' but it could not be scheduled yet ({}); it will \
+                             need to be retried",
+                            title, e
+                        )
+                    });
+                    return Ok(ToolOutput::success(result, start.elapsed()));
+                }
+
                 let result = serde_json::json!({
                     "job_id": job_id.to_string(),
                     "title": title,
@@ -185,7 +215,12 @@ impl CreateJobTool {
                     None,
                     Some(Utc::now()),
                 );
-                ToolError::ExecutionFailed(format!("failed to create container: {}", e))
+                ToolError::ExecutionFailed(format!(
+                    "failed to create container: {}. Docker may have gone down since the last \
+                     health check; verify the daemon is running and /var/run/docker.sock is \
+                     reachable (mounted into the container if RustyTalon itself runs in Docker).",
+                    e
+                ))
             })?;
 
         // Container started successfully.
@@ -454,7 +489,18 @@ impl Tool for CreateJobTool {
     }
 
     fn execution_timeout(&self) -> Duration {
-        if self.sandbox_enabled() {
+        // Deliberately keyed on `job_manager.is_some()`, NOT `sandbox_enabled()`.
+        // `sandbox_enabled()` also checks the live `docker_available()` flag,
+        // which a background health check can flip between this call and the
+        // `execute()` call the caller makes right after it (worker.rs wraps
+        // both in the same `tokio::time::timeout`). If Docker health flipped
+        // in between, `execute()` could take the sandbox path while this
+        // returned the short 30s local-path timeout, killing a real container
+        // job mid-flight with no error detail. `job_manager.is_some()` is
+        // fixed at construction time, so it can never disagree with execute()
+        // -- the local path finishes in milliseconds regardless of the
+        // timeout budget it's given, so the longer duration is harmless there.
+        if self.job_manager.is_some() {
             // Sandbox polls for up to 10 min internally; give an extra 60s buffer.
             Duration::from_secs(660)
         } else {
@@ -681,11 +727,29 @@ impl Tool for JobStatusTool {
 /// Tool for canceling a job.
 pub struct CancelJobTool {
     context_manager: Arc<ContextManager>,
+    job_manager: Option<Arc<ContainerJobManager>>,
+    store: Option<Arc<dyn Database>>,
 }
 
 impl CancelJobTool {
     pub fn new(context_manager: Arc<ContextManager>) -> Self {
-        Self { context_manager }
+        Self {
+            context_manager,
+            job_manager: None,
+            store: None,
+        }
+    }
+
+    /// Inject sandbox dependencies so `cancel_job` can actually stop a running
+    /// Docker container, mirroring `CreateJobTool::with_sandbox`.
+    pub fn with_sandbox(
+        mut self,
+        job_manager: Arc<ContainerJobManager>,
+        store: Option<Arc<dyn Database>>,
+    ) -> Self {
+        self.job_manager = Some(job_manager);
+        self.store = store;
+        self
     }
 }
 
@@ -729,7 +793,45 @@ impl Tool for CancelJobTool {
             ToolError::InvalidParameters(format!("invalid job ID format: {}", job_id_str))
         })?;
 
-        // Transition to cancelled state
+        // If this is a sandboxed (Docker container) job, stop the container for
+        // real instead of only flipping DB state. Mirrors the web gateway's
+        // `jobs_cancel_handler`.
+        if let Some(store) = self.store.clone()
+            && let Ok(Some(sandbox_job)) = store.get_sandbox_job(job_id).await
+        {
+            if sandbox_job.user_id != requester_id {
+                let result = serde_json::json!({ "error": "Job not found".to_string() });
+                return Ok(ToolOutput::success(result, start.elapsed()));
+            }
+            if sandbox_job.status == "running" || sandbox_job.status == "creating" {
+                if let Some(jm) = self.job_manager.clone()
+                    && let Err(e) = jm.stop_job(job_id).await
+                {
+                    tracing::warn!(job_id = %job_id, error = %e, "Failed to stop container during cancellation");
+                }
+                store
+                    .update_sandbox_job_status(
+                        job_id,
+                        "failed",
+                        Some(false),
+                        Some("Cancelled by user"),
+                        None,
+                        Some(Utc::now()),
+                    )
+                    .await
+                    .map_err(|e| {
+                        ToolError::ExecutionFailed(format!("failed to update job status: {}", e))
+                    })?;
+            }
+            let result = serde_json::json!({
+                "job_id": job_id.to_string(),
+                "status": "cancelled",
+                "message": "Job cancelled successfully"
+            });
+            return Ok(ToolOutput::success(result, start.elapsed()));
+        }
+
+        // Otherwise, fall back to the in-memory ContextManager job.
         match self
             .context_manager
             .update_context(job_id, |ctx| {
@@ -775,11 +877,44 @@ impl Tool for CancelJobTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::SafetyConfig;
+    use crate::llm::test_utils::MockProvider;
+    use crate::safety::SafetyLayer;
+    use crate::tools::ToolRegistry;
+
+    /// Build a real `Scheduler` for tests, backed by mock/minimal dependencies.
+    fn test_scheduler(context_manager: Arc<ContextManager>) -> Arc<Scheduler> {
+        let config = crate::config::AgentConfig {
+            name: "test-agent".to_string(),
+            max_parallel_jobs: 5,
+            job_timeout: Duration::from_secs(60),
+            stuck_threshold: Duration::from_secs(300),
+            repair_check_interval: Duration::from_secs(60),
+            max_repair_attempts: 3,
+            use_planning: false,
+            session_idle_timeout: Duration::from_secs(3600),
+            allow_local_tools: false,
+            primary_user_id: "default".to_string(),
+        };
+        let safety = Arc::new(SafetyLayer::new(&SafetyConfig {
+            max_output_length: 100_000,
+            injection_check_enabled: true,
+        }));
+        Arc::new(Scheduler::new(
+            config,
+            context_manager,
+            Arc::new(MockProvider::succeeding("test", "ok")),
+            safety,
+            Arc::new(ToolRegistry::new()),
+            None,
+        ))
+    }
 
     #[tokio::test]
     async fn test_create_job_tool_local() {
         let manager = Arc::new(ContextManager::new(5));
-        let tool = CreateJobTool::new(manager.clone());
+        let scheduler = test_scheduler(manager.clone());
+        let tool = CreateJobTool::new(manager.clone(), scheduler.clone());
 
         // Without sandbox deps, it should use the local path
         assert!(!tool.sandbox_enabled());
@@ -798,14 +933,24 @@ mod tests {
             result.result.get("status").unwrap().as_str().unwrap(),
             "pending"
         );
+
+        // Regression check: a job created via the LLM-facing tool (not the
+        // slash-command path) must actually be handed to the scheduler, or it
+        // sits in Pending forever with nothing to pick it up.
+        let job_uuid: Uuid = job_id.parse().unwrap();
+        assert!(
+            scheduler.is_running(job_uuid).await,
+            "job created by CreateJobTool::execute_local was never scheduled"
+        );
     }
 
     #[test]
     fn test_schema_changes_with_sandbox() {
         let manager = Arc::new(ContextManager::new(5));
+        let scheduler = test_scheduler(manager.clone());
 
         // Without sandbox
-        let tool = CreateJobTool::new(Arc::clone(&manager));
+        let tool = CreateJobTool::new(Arc::clone(&manager), scheduler);
         let schema = tool.parameters_schema();
         let props = schema.get("properties").unwrap().as_object().unwrap();
         assert!(props.contains_key("title"));
@@ -821,10 +966,39 @@ mod tests {
     #[test]
     fn test_execution_timeout_sandbox() {
         let manager = Arc::new(ContextManager::new(5));
+        let scheduler = test_scheduler(manager.clone());
 
         // Without sandbox: default timeout
-        let tool = CreateJobTool::new(Arc::clone(&manager));
+        let tool = CreateJobTool::new(Arc::clone(&manager), scheduler);
         assert_eq!(tool.execution_timeout(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_execution_timeout_matches_sandbox_dispatch_even_when_docker_unhealthy() {
+        // Regression test: `execution_timeout()` must key off `job_manager.is_some()`,
+        // not the live `docker_available()` flag. If it used `sandbox_enabled()`
+        // like `execute()` dispatch does, a Docker health flip between the
+        // caller's `execution_timeout()` call and its `execute()` call (both
+        // wrapped in the same `tokio::time::timeout` in worker.rs) could hand a
+        // real, long-running sandbox job the short 30s local-path budget,
+        // killing it mid-flight with no error detail -- exactly the bug this
+        // guards against.
+        let manager = Arc::new(ContextManager::new(5));
+        let scheduler = test_scheduler(manager.clone());
+        let token_store = crate::orchestrator::auth::TokenStore::new();
+        let job_manager = Arc::new(crate::orchestrator::job_manager::ContainerJobManager::new(
+            crate::orchestrator::job_manager::ContainerJobConfig::default(),
+            token_store,
+        ));
+
+        // Docker has never passed a health check (docker_available defaults to
+        // false), so sandbox_enabled() is false, but the job manager is
+        // configured -- this must still get the long sandbox timeout.
+        assert!(!job_manager.docker_available());
+        let tool =
+            CreateJobTool::new(Arc::clone(&manager), scheduler).with_sandbox(job_manager, None);
+        assert!(!tool.sandbox_enabled());
+        assert_eq!(tool.execution_timeout(), Duration::from_secs(660));
     }
 
     #[tokio::test]

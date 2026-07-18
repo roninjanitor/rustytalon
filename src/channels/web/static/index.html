@@ -194,6 +194,7 @@
           <div class="graph-toolbar">
             <button onclick="refreshGraphSample()">Refresh</button>
             <label>Nodes shown: <input type="number" id="graph-node-limit" value="150" min="10" max="1000"></label>
+            <button id="graph-pending-btn" onclick="toggleGraphCandidates()" style="display:none">Pending review (<span id="graph-pending-count">0</span>)</button>
           </div>
           <div class="graph-canvas-wrap">
             <canvas id="graph-canvas"></canvas>
@@ -203,6 +204,13 @@
             <div class="graph-unavailable" id="graph-unavailable" style="display:none">
               Knowledge graph is not available. RustyTalon must be built with the <code>neo4j</code> feature and connected to Neo4j.
             </div>
+          </div>
+          <div class="graph-candidates" id="graph-candidates" style="display:none">
+            <div class="graph-candidates-header">
+              <h3>Pending review</h3>
+              <button class="btn-cancel" onclick="toggleGraphCandidates()">Close</button>
+            </div>
+            <div id="graph-candidates-list"></div>
           </div>
           <div class="graph-detail" id="graph-detail" style="display:none"></div>
         </div>

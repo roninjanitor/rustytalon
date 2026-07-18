@@ -109,6 +109,8 @@ pub struct HeartbeatRunner {
     db: Option<Arc<dyn Database>>,
     response_tx: Option<mpsc::Sender<OutgoingResponse>>,
     consecutive_failures: u32,
+    #[cfg(feature = "neo4j")]
+    graph_client: Option<Arc<crate::graph::GraphClient>>,
 }
 
 impl HeartbeatRunner {
@@ -125,6 +127,8 @@ impl HeartbeatRunner {
             db: None,
             response_tx: None,
             consecutive_failures: 0,
+            #[cfg(feature = "neo4j")]
+            graph_client: None,
         }
     }
 
@@ -137,6 +141,14 @@ impl HeartbeatRunner {
     /// Set the response channel for notifications.
     pub fn with_response_channel(mut self, tx: mpsc::Sender<OutgoingResponse>) -> Self {
         self.response_tx = Some(tx);
+        self
+    }
+
+    /// Attach a knowledge-graph client so daily-log consolidation also stages
+    /// graph candidates from the same LLM pass (see `consolidate_daily_logs`).
+    #[cfg(feature = "neo4j")]
+    pub fn with_graph_client(mut self, client: Arc<crate::graph::GraphClient>) -> Self {
+        self.graph_client = Some(client);
         self
     }
 
@@ -254,9 +266,7 @@ impl HeartbeatRunner {
             }
         };
 
-        let request = CompletionRequest::new(messages)
-            .with_max_tokens(max_tokens)
-            .with_temperature(0.3);
+        let request = CompletionRequest::new(messages).with_max_tokens(max_tokens);
 
         let response = match self.llm.complete(request).await {
             Ok(r) => r,
@@ -346,6 +356,11 @@ impl HeartbeatRunner {
                 .map(|d| d.content)
                 .unwrap_or_default();
 
+            #[cfg(feature = "neo4j")]
+            let graph_section = self.build_graph_prompt_section().await;
+            #[cfg(not(feature = "neo4j"))]
+            let graph_section = String::new();
+
             let prompt = format!(
                 "Review this daily activity log from {} and extract facts worth keeping.\n\
                  \n\
@@ -362,13 +377,13 @@ impl HeartbeatRunner {
                  USER: <fact about the user — preference, context, skill, identity>\n\
                  MEMORY: <important decision, outcome, or lesson worth remembering>\n\
                  \n\
-                 Skip trivial exchanges. If nothing new is worth keeping, output exactly: NONE",
-                date, log_content, user_md, memory_md
+                 Skip trivial exchanges. If nothing new is worth keeping, output exactly: NONE\
+                 {}",
+                date, log_content, user_md, memory_md, graph_section
             );
 
-            let request = CompletionRequest::new(vec![ChatMessage::user(&prompt)])
-                .with_max_tokens(512)
-                .with_temperature(0.1);
+            let request =
+                CompletionRequest::new(vec![ChatMessage::user(&prompt)]).with_max_tokens(768);
 
             let response = match self.llm.complete(request).await {
                 Ok(r) => r,
@@ -426,12 +441,84 @@ impl HeartbeatRunner {
                 tracing::debug!("No new facts to extract from {path}");
             }
 
+            // Stage any knowledge-graph candidates the same LLM pass proposed.
+            // Deliberately independent of the USER:/MEMORY: branch above --
+            // a day can be graph-worthy without producing new memory facts.
+            #[cfg(feature = "neo4j")]
+            if let Some(ref client) = self.graph_client
+                && let Some((entities, relationships)) = parse_graph_candidates(output)
+            {
+                match client
+                    .stage_candidate(
+                        &entities,
+                        &relationships,
+                        &format!("heartbeat-consolidation:{date}"),
+                        0.5,
+                    )
+                    .await
+                {
+                    Ok(_) => tracing::info!(
+                        "Staged {} entit(y/ies)/{} relationship(s) from {} for graph review",
+                        entities.len(),
+                        relationships.len(),
+                        path
+                    ),
+                    Err(e) => tracing::warn!("Failed to stage graph candidates from {path}: {e}"),
+                }
+            }
+
             // Daily log is now consolidated — delete it.
             // prune_daily_logs() handles any that survive past the retention window.
             if let Err(e) = self.workspace.delete(&path).await {
                 tracing::warn!("Failed to delete consolidated daily log {path}: {e}");
             }
         }
+    }
+
+    /// Build the prompt section that asks the consolidation LLM call to also
+    /// propose knowledge-graph candidates, seeded with a list of already-known
+    /// entity names so it can reuse an exact spelling instead of inventing a
+    /// new one (standing in for the `search_entities` dedup check the old
+    /// tool-calling extraction routine used, since this is a plain completion
+    /// call with no tool access). Returns an empty string if no graph client
+    /// is attached.
+    #[cfg(feature = "neo4j")]
+    async fn build_graph_prompt_section(&self) -> String {
+        let Some(ref client) = self.graph_client else {
+            return String::new();
+        };
+
+        let known_names = match client.list_entities(50).await {
+            Ok(entities) => entities
+                .iter()
+                .filter_map(|e| e.get("name").and_then(|n| n.as_str()))
+                .collect::<Vec<_>>()
+                .join(", "),
+            Err(e) => {
+                tracing::warn!("Failed to list known graph entities: {e}");
+                String::new()
+            }
+        };
+        let known_names = if known_names.is_empty() {
+            "(none yet)".to_string()
+        } else {
+            known_names
+        };
+
+        format!(
+            "\n\n## Known knowledge-graph entities\n\
+             {known_names}\n\
+             \n\
+             You may also optionally emit one more block proposing knowledge-graph \
+             candidates for anything notable in this log -- people, projects, \
+             organizations, meetings, documents, topics, and the relationships between \
+             them. Reuse an exact name from the list above if it refers to the same \
+             thing, rather than inventing a new spelling. Omit this block entirely if \
+             nothing graph-worthy happened.\n\
+             GRAPH_CANDIDATES:\n\
+             {{\"entities\": [{{\"type\": \"Person\", \"name\": \"...\", \"properties\": {{}}}}], \
+             \"relationships\": [{{\"from_entity\": \"...\", \"to_entity\": \"...\", \"type\": \"...\", \"properties\": {{}}}}]}}"
+        )
     }
 
     /// Prune audit log rows older than the configured retention window.
@@ -556,6 +643,43 @@ fn strip_html_comments(content: &str) -> String {
     result
 }
 
+/// Extract and parse an optional `GRAPH_CANDIDATES: {...}` block from a
+/// consolidation LLM response. Returns `None` if the marker is absent, the
+/// JSON fails to parse, or both `entities` and `relationships` are empty --
+/// a malformed or missing block is treated as "nothing to stage," never as
+/// a reason to fail the surrounding consolidation call.
+#[cfg(feature = "neo4j")]
+fn parse_graph_candidates(
+    output: &str,
+) -> Option<(
+    Vec<crate::graph::CandidateEntity>,
+    Vec<crate::graph::CandidateRelationship>,
+)> {
+    #[derive(serde::Deserialize)]
+    struct ParsedCandidates {
+        #[serde(default)]
+        entities: Vec<crate::graph::CandidateEntity>,
+        #[serde(default)]
+        relationships: Vec<crate::graph::CandidateRelationship>,
+    }
+
+    let marker = "GRAPH_CANDIDATES:";
+    let json_str = output
+        .find(marker)
+        .map(|idx| output[idx + marker.len()..].trim())?;
+
+    match serde_json::from_str::<ParsedCandidates>(json_str) {
+        Ok(parsed) if !parsed.entities.is_empty() || !parsed.relationships.is_empty() => {
+            Some((parsed.entities, parsed.relationships))
+        }
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!("Failed to parse GRAPH_CANDIDATES block: {e}");
+            None
+        }
+    }
+}
+
 /// Spawn the heartbeat runner as a background task.
 ///
 /// Returns a handle that can be used to stop the runner.
@@ -565,6 +689,7 @@ pub fn spawn_heartbeat(
     llm: Arc<dyn LlmProvider>,
     db: Option<Arc<dyn Database>>,
     response_tx: Option<mpsc::Sender<OutgoingResponse>>,
+    #[cfg(feature = "neo4j")] graph_client: Option<Arc<crate::graph::GraphClient>>,
 ) -> tokio::task::JoinHandle<()> {
     let mut runner = HeartbeatRunner::new(config, workspace, llm);
     if let Some(db) = db {
@@ -572,6 +697,10 @@ pub fn spawn_heartbeat(
     }
     if let Some(tx) = response_tx {
         runner = runner.with_response_channel(tx);
+    }
+    #[cfg(feature = "neo4j")]
+    if let Some(client) = graph_client {
+        runner = runner.with_graph_client(client);
     }
 
     tokio::spawn(async move {
@@ -706,5 +835,39 @@ mod tests {
     fn test_effectively_empty_comment_plus_real_content() {
         let content = "<!-- comment -->\nActual task here";
         assert!(!is_effectively_empty(content));
+    }
+
+    // ==================== parse_graph_candidates ====================
+
+    #[cfg(feature = "neo4j")]
+    #[test]
+    fn test_parse_graph_candidates_valid() {
+        let output = "USER: likes dark mode\n\nGRAPH_CANDIDATES:\n{\"entities\": [{\"type\": \"Person\", \"name\": \"Nick\", \"properties\": {}}], \"relationships\": []}";
+        let (entities, relationships) = parse_graph_candidates(output).expect("should parse");
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].name, "Nick");
+        assert_eq!(entities[0].label, "Person");
+        assert!(relationships.is_empty());
+    }
+
+    #[cfg(feature = "neo4j")]
+    #[test]
+    fn test_parse_graph_candidates_absent_marker() {
+        let output = "USER: likes dark mode\nMEMORY: shipped v1";
+        assert!(parse_graph_candidates(output).is_none());
+    }
+
+    #[cfg(feature = "neo4j")]
+    #[test]
+    fn test_parse_graph_candidates_malformed_json_does_not_panic() {
+        let output = "GRAPH_CANDIDATES:\nnot valid json at all";
+        assert!(parse_graph_candidates(output).is_none());
+    }
+
+    #[cfg(feature = "neo4j")]
+    #[test]
+    fn test_parse_graph_candidates_empty_lists_treated_as_none() {
+        let output = "GRAPH_CANDIDATES:\n{\"entities\": [], \"relationships\": []}";
+        assert!(parse_graph_candidates(output).is_none());
     }
 }

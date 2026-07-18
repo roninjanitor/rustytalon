@@ -64,8 +64,14 @@ impl GraphClient {
     }
 
     async fn ensure_indexes(&self) -> Result<(), GraphError> {
+        // Neo4j's fulltext index syntax requires an explicit label on the node
+        // pattern -- a bare `(n)` (needed here since entity types are open-ended,
+        // not a fixed enum) is a syntax error for CREATE FULLTEXT INDEX, unlike a
+        // plain MATCH. Every entity gets a common `Entity` label (see
+        // `create_entity`) alongside its specific type label so this index can
+        // cover all of them regardless of type.
         let cypher = format!(
-            "CREATE FULLTEXT INDEX {ENTITY_SEARCH_INDEX} IF NOT EXISTS FOR (n) ON EACH [n.name]"
+            "CREATE FULLTEXT INDEX {ENTITY_SEARCH_INDEX} IF NOT EXISTS FOR (n:Entity) ON EACH [n.name]"
         );
         self.graph
             .run(query(&cypher))
@@ -104,8 +110,11 @@ impl GraphClient {
         let props = Self::properties_to_bolt(properties)?;
         let now = chrono::Utc::now().to_rfc3339();
 
+        // Every entity also gets the common `Entity` label (in addition to its
+        // specific type label) so the fulltext search index -- which must target
+        // a concrete label -- can cover entities of any type.
         let cypher = format!(
-            "MERGE (n:{label} {{name: $name}}) \
+            "MERGE (n:{label}:Entity {{name: $name}}) \
              ON CREATE SET n += $props, n.created_at = $now \
              ON MATCH SET n += $props, n.updated_at = $now \
              RETURN n"
@@ -590,6 +599,68 @@ impl GraphClient {
         }))
     }
 
+    /// Edit a pending candidate's staged entities/relationships before approval
+    /// (F9 review UI). Only the fields provided are replaced; omitting one
+    /// leaves it as-is. Used to fix extraction naming inconsistencies (e.g.
+    /// the same project staged under two different names across runs) by
+    /// renaming an entity to the canonical name before approving, so
+    /// `create_entity`'s `MERGE` collapses it into the existing node instead
+    /// of creating a duplicate.
+    pub async fn update_candidate(
+        &self,
+        id: &str,
+        entities: Option<&[CandidateEntity]>,
+        relationships: Option<&[CandidateRelationship]>,
+    ) -> Result<Value, GraphError> {
+        self.get_pending_candidate(id).await?;
+
+        if let Some(entities) = entities {
+            for entity in entities {
+                validate_label(&entity.label)?;
+            }
+        }
+        if let Some(relationships) = relationships {
+            for rel in relationships {
+                validate_rel_type(&rel.rel_type)?;
+            }
+        }
+
+        let entities_json = entities
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| GraphError::Query(format!("failed to serialize entities: {e}")))?;
+        let relationships_json = relationships
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| GraphError::Query(format!("failed to serialize relationships: {e}")))?;
+
+        let mut set_clauses = Vec::new();
+        if entities_json.is_some() {
+            set_clauses.push("c.entities_json = $entities_json");
+        }
+        if relationships_json.is_some() {
+            set_clauses.push("c.relationships_json = $relationships_json");
+        }
+        if set_clauses.is_empty() {
+            return self.get_pending_candidate(id).await;
+        }
+
+        let cypher = format!(
+            "MATCH (c:GraphCandidate {{id: $id, status: 'pending'}}) SET {} RETURN c",
+            set_clauses.join(", ")
+        );
+        let mut q = query(&cypher).param("id", id);
+        if let Some(entities_json) = entities_json {
+            q = q.param("entities_json", entities_json);
+        }
+        if let Some(relationships_json) = relationships_json {
+            q = q.param("relationships_json", relationships_json);
+        }
+
+        let row = self.execute_single(q).await?;
+        candidate_node_to_json(&row)
+    }
+
     /// Reject a pending candidate without committing anything (F9). Kept
     /// (status set to `rejected`) rather than deleted, for audit purposes.
     pub async fn reject_candidate(&self, id: &str) -> Result<Value, GraphError> {
@@ -650,9 +721,22 @@ fn node_to_json(node: &Node) -> Result<Value, GraphError> {
         .to::<Value>()
         .map_err(|e| GraphError::Query(format!("failed to decode node: {e}")))?;
 
+    // Every entity carries both its semantic type label (e.g. "Project") and
+    // the common "Entity" label (added by `create_entity` so the fulltext
+    // search index has one label to target). Neo4j does not guarantee label
+    // order is preserved, so callers picking `labels[0]` as "the type" for
+    // e.g. UI color-coding would get an unpredictable mix of the two -- drop
+    // "Entity" here so the first (and normally only) label left is always
+    // the meaningful one.
+    let labels: Vec<&str> = node
+        .labels()
+        .into_iter()
+        .filter(|l| *l != "Entity")
+        .collect();
+
     Ok(json!({
         "id": node.id(),
-        "labels": node.labels(),
+        "labels": labels,
         "properties": properties,
     }))
 }

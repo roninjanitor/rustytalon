@@ -6,7 +6,7 @@ use clap::Parser;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use rustytalon::{
-    agent::{Agent, AgentDeps, SessionManager},
+    agent::{Agent, AgentDeps, Scheduler, SessionManager},
     channels::{
         ChannelManager, GatewayChannel, HttpChannel, ReplChannel, WebhookServer,
         WebhookServerConfig,
@@ -579,12 +579,18 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Register memory tools if database is available
+    #[cfg(feature = "neo4j")]
+    let mut memory_workspace: Option<Arc<Workspace>> = None;
     if let Some(ref db) = db {
         let mut workspace = Workspace::new_with_db("default", Arc::clone(db));
         if let Some(ref emb) = embeddings {
             workspace = workspace.with_embeddings(emb.clone());
         }
         let workspace = Arc::new(workspace);
+        #[cfg(feature = "neo4j")]
+        {
+            memory_workspace = Some(Arc::clone(&workspace));
+        }
         tools.register_memory_tools(workspace);
     }
 
@@ -601,6 +607,11 @@ async fn main() -> anyhow::Result<()> {
             Ok(client) => {
                 let client = Arc::new(client);
                 tools.register_graph_tools(Arc::clone(&client));
+                // Pair memory + graph search: only possible when both a workspace
+                // (DB configured) and a connected graph client exist.
+                if let Some(ref workspace) = memory_workspace {
+                    tools.register_context_search_tool(Arc::clone(workspace), Arc::clone(&client));
+                }
                 graph_client = Some(client);
             }
             Err(e) => {
@@ -927,7 +938,38 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        tracing::info!("Orchestrator API started on :50051, sandbox delegation enabled");
+        // SANDBOX_ENABLED only means the orchestrator/job manager were constructed --
+        // it says nothing about whether the Docker daemon is actually reachable (e.g.
+        // /var/run/docker.sock missing or not mounted). Probe it now and keep probing
+        // periodically so `create_job`'s tool description reflects real capability
+        // instead of unconditionally advertising container support.
+        {
+            let health_jm = Arc::clone(&jm);
+            tokio::spawn(async move {
+                loop {
+                    health_jm.refresh_docker_health().await;
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                }
+            });
+        }
+
+        // A container that crashes, gets OOM-killed, or is removed out-of-band
+        // never calls back to the orchestrator's /complete endpoint, so its
+        // handle would otherwise sit at ContainerState::Running until
+        // CreateJobTool::execute_sandbox's own 10-minute hard timeout fires.
+        // Poll Docker directly on a short interval so these are caught in
+        // seconds instead of minutes.
+        {
+            let reap_jm = Arc::clone(&jm);
+            tokio::spawn(async move {
+                loop {
+                    reap_jm.reap_dead_containers().await;
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                }
+            });
+        }
+
+        tracing::info!("Orchestrator API started on :50051, sandbox delegation configured");
         if config.claude_code.enabled {
             tracing::info!(
                 "Claude Code sandbox mode available (model: {}, max_turns: {})",
@@ -1397,11 +1439,25 @@ async fn main() -> anyhow::Result<()> {
     // Create session manager (shared between agent and web gateway)
     let session_manager = Arc::new(SessionManager::new());
 
+    // Create the scheduler up front (shared between the create_job tool and the agent) so
+    // that jobs created via the LLM-facing `create_job` tool actually get scheduled for
+    // execution, not just inserted into the ContextManager as Pending with nothing to pick
+    // them up.
+    let scheduler = Arc::new(Scheduler::new(
+        config.agent.clone(),
+        Arc::clone(&context_manager),
+        Arc::clone(&llm),
+        Arc::clone(&safety),
+        Arc::clone(&tools),
+        db.clone(),
+    ));
+
     // Register job tools (sandbox deps auto-injected when container_job_manager is available)
     tools.register_job_tools(
         Arc::clone(&context_manager),
         container_job_manager.clone(),
         db.clone(),
+        Arc::clone(&scheduler),
     );
 
     // Add web gateway channel if configured
@@ -1422,6 +1478,7 @@ async fn main() -> anyhow::Result<()> {
         if let Some(ref jm) = container_job_manager {
             gw = gw.with_job_manager(Arc::clone(jm));
         }
+        gw = gw.with_app_config(Arc::new(config.clone()));
         #[cfg(feature = "neo4j")]
         if let Some(ref gc) = graph_client {
             gw = gw.with_graph_client(Arc::clone(gc));
@@ -1487,6 +1544,8 @@ async fn main() -> anyhow::Result<()> {
         tools,
         workspace,
         extension_manager,
+        #[cfg(feature = "neo4j")]
+        graph_client,
     };
     let agent = Agent::new(
         config.agent.clone(),
@@ -1496,6 +1555,7 @@ async fn main() -> anyhow::Result<()> {
         Some(config.routines.clone()),
         Some(context_manager),
         Some(session_manager),
+        Some(scheduler),
     );
 
     tracing::info!("Agent initialized, starting main loop...");

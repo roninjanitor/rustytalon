@@ -492,6 +492,7 @@ mod tests {
             channel_env_config: std::collections::HashMap::new(),
             #[cfg(feature = "neo4j")]
             graph_client: None,
+            app_config: None,
         }
     }
 }

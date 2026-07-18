@@ -489,11 +489,19 @@ impl ContainerRunner {
 /// 2. `/var/run/docker.sock` (Linux default)
 /// 3. `~/.docker/run/docker.sock` (Docker Desktop on macOS)
 pub async fn connect_docker() -> Result<Docker> {
+    // Track the most recent real failure so a caller (and the logs) sees why
+    // Docker isn't reachable -- e.g. a permission-denied ping on a mounted
+    // socket looks nothing like "socket not found" and needs a different fix
+    // (group membership / socket ownership) than an actually-missing socket.
+    let mut last_error: String;
+
     // First try bollard defaults (checks DOCKER_HOST, then /var/run/docker.sock)
-    if let Ok(docker) = Docker::connect_with_local_defaults()
-        && docker.ping().await.is_ok()
-    {
-        return Ok(docker);
+    match Docker::connect_with_local_defaults() {
+        Ok(docker) => match docker.ping().await {
+            Ok(_) => return Ok(docker),
+            Err(e) => last_error = format!("ping via local defaults failed: {e}"),
+        },
+        Err(e) => last_error = format!("connect via local defaults failed: {e}"),
     }
 
     // Try Docker Desktop socket (macOS)
@@ -501,18 +509,17 @@ pub async fn connect_docker() -> Result<Docker> {
         let desktop_sock = std::path::Path::new(&home).join(".docker/run/docker.sock");
         if desktop_sock.exists() {
             let sock_str = desktop_sock.to_string_lossy();
-            if let Ok(docker) =
-                Docker::connect_with_socket(&sock_str, 120, bollard::API_DEFAULT_VERSION)
-                && docker.ping().await.is_ok()
-            {
-                return Ok(docker);
+            match Docker::connect_with_socket(&sock_str, 120, bollard::API_DEFAULT_VERSION) {
+                Ok(docker) => match docker.ping().await {
+                    Ok(_) => return Ok(docker),
+                    Err(e) => last_error = format!("ping via {sock_str} failed: {e}"),
+                },
+                Err(e) => last_error = format!("connect via {sock_str} failed: {e}"),
             }
         }
     }
 
-    Err(SandboxError::DockerNotAvailable {
-        reason: "Socket not found: /var/run/docker.sock".to_string(),
-    })
+    Err(SandboxError::DockerNotAvailable { reason: last_error })
 }
 
 #[cfg(test)]
@@ -533,5 +540,31 @@ mod tests {
         let runner = ContainerRunner::new(docker, "alpine:latest".to_string(), 0);
         // Just check that we can query Docker (result doesn't matter for CI)
         let _available = runner.is_available().await;
+    }
+
+    #[tokio::test]
+    async fn test_connect_docker_error_preserves_real_reason() {
+        // Regression test: connect_docker() used to unconditionally return the
+        // hardcoded "Socket not found: /var/run/docker.sock" on any failure --
+        // including a permission-denied ping on a mounted-but-inaccessible
+        // socket, which is a completely different problem (needs group
+        // membership, not a socket) but looked identical in logs. This
+        // sandboxed test environment has no Docker daemon, so it deterministically
+        // exercises the failure path.
+        if let Err(e) = connect_docker().await {
+            let msg = e.to_string();
+            // The old code discarded whatever bollard actually reported and
+            // replaced it with exactly this literal string, with no
+            // indication of which connection attempt was made or why it
+            // failed (ENOENT vs EACCES vs anything else). The new code always
+            // prefixes the real underlying error with which attempt produced
+            // it, so the message is strictly longer/more specific now even
+            // when bollard's own error text happens to also mention a socket.
+            assert!(
+                msg.contains("connect via") || msg.contains("ping via"),
+                "error should preserve which connection attempt failed and the \
+                 real underlying reason, got: {msg}"
+            );
+        }
     }
 }

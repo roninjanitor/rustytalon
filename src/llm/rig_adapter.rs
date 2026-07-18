@@ -314,6 +314,42 @@ fn build_rig_request(
     })
 }
 
+/// Drain a rig-core streaming response, forwarding text chunks over `chunk_tx`
+/// as they arrive and returning the same `(text, tool_calls, finish_reason)`
+/// shape as `extract_response`, plus token usage collected at stream end.
+///
+/// Tool-call deltas are accumulated by rig-core internally (into
+/// `stream.choice`) but not forwarded chunk-by-chunk -- only text content
+/// streams live to the UI.
+async fn drain_stream<R>(
+    stream: &mut rig::streaming::StreamingCompletionResponse<R>,
+    chunk_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+    model_name: &str,
+) -> Result<(Option<String>, Vec<IronToolCall>, FinishReason, RigUsage), LlmError>
+where
+    R: Clone + Unpin + rig::completion::GetTokenUsage,
+{
+    use futures::StreamExt;
+    use rig::streaming::StreamedAssistantContent;
+
+    while let Some(item) = stream.next().await {
+        if let StreamedAssistantContent::Text(text) =
+            item.map_err(|e| map_rig_error(model_name, e))?
+        {
+            let _ = chunk_tx.send(text.text);
+        }
+    }
+
+    let (text, tool_calls, finish) = extract_response(&stream.choice, &RigUsage::new());
+    let usage = stream
+        .response
+        .as_ref()
+        .and_then(|r| r.token_usage())
+        .unwrap_or_default();
+
+    Ok((text, tool_calls, finish, usage))
+}
+
 #[async_trait]
 impl<M> LlmProvider for RigAdapter<M>
 where
@@ -387,6 +423,77 @@ where
             tool_calls,
             input_tokens: saturate_u32(response.usage.input_tokens),
             output_tokens: saturate_u32(response.usage.output_tokens),
+            finish_reason: finish,
+            response_id: None,
+        })
+    }
+
+    async fn complete_streaming(
+        &self,
+        request: CompletionRequest,
+        chunk_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<CompletionResponse, LlmError> {
+        let (preamble, history) = convert_messages(&request.messages);
+
+        let rig_req = build_rig_request(
+            preamble,
+            history,
+            Vec::new(),
+            None,
+            request.temperature,
+            request.max_tokens,
+        )?;
+
+        let mut stream = self
+            .model
+            .stream(rig_req)
+            .await
+            .map_err(|e| map_rig_error(&self.model_name, e))?;
+
+        let (text, _tool_calls, finish, usage) =
+            drain_stream(&mut stream, &chunk_tx, &self.model_name).await?;
+
+        Ok(CompletionResponse {
+            content: text.unwrap_or_default(),
+            input_tokens: saturate_u32(usage.input_tokens),
+            output_tokens: saturate_u32(usage.output_tokens),
+            finish_reason: finish,
+            response_id: None,
+        })
+    }
+
+    async fn complete_with_tools_streaming(
+        &self,
+        request: ToolCompletionRequest,
+        chunk_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<ToolCompletionResponse, LlmError> {
+        let (preamble, history) = convert_messages(&request.messages);
+        let tools = convert_tools(&request.tools);
+        let tool_choice = convert_tool_choice(request.tool_choice.as_deref());
+
+        let rig_req = build_rig_request(
+            preamble,
+            history,
+            tools,
+            tool_choice,
+            request.temperature,
+            request.max_tokens,
+        )?;
+
+        let mut stream = self
+            .model
+            .stream(rig_req)
+            .await
+            .map_err(|e| map_rig_error(&self.model_name, e))?;
+
+        let (text, tool_calls, finish, usage) =
+            drain_stream(&mut stream, &chunk_tx, &self.model_name).await?;
+
+        Ok(ToolCompletionResponse {
+            content: text,
+            tool_calls,
+            input_tokens: saturate_u32(usage.input_tokens),
+            output_tokens: saturate_u32(usage.output_tokens),
             finish_reason: finish,
             response_id: None,
         })
