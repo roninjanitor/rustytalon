@@ -664,7 +664,9 @@ fn parse_graph_candidates(
     }
 
     let marker = "GRAPH_CANDIDATES:";
-    let json_str = output.find(marker).map(|idx| output[idx + marker.len()..].trim())?;
+    let json_str = output
+        .find(marker)
+        .map(|idx| output[idx + marker.len()..].trim())?;
 
     match serde_json::from_str::<ParsedCandidates>(json_str) {
         Ok(parsed) if !parsed.entities.is_empty() || !parsed.relationships.is_empty() => {

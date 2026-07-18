@@ -234,13 +234,15 @@ impl RoutineAction {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(default_max_iterations() as u64)
                     as u32;
-                let tool_allowlist = config.get("tool_allowlist").and_then(|v| v.as_array()).map(
-                    |arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    },
-                );
+                let tool_allowlist =
+                    config
+                        .get("tool_allowlist")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        });
                 Ok(RoutineAction::FullJob {
                     title,
                     description,
