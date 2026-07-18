@@ -203,6 +203,11 @@ pub struct AgentDeps {
     pub tools: Arc<ToolRegistry>,
     pub workspace: Option<Arc<Workspace>>,
     pub extension_manager: Option<Arc<ExtensionManager>>,
+    /// Connected knowledge-graph client, if Neo4j is enabled and reachable.
+    /// Threaded into the heartbeat runner so daily-log consolidation can also
+    /// stage graph candidates from the same LLM pass.
+    #[cfg(feature = "neo4j")]
+    pub graph_client: Option<Arc<crate::graph::GraphClient>>,
 }
 
 /// The main agent that coordinates all components.
@@ -285,6 +290,11 @@ impl Agent {
 
     fn workspace(&self) -> Option<&Arc<Workspace>> {
         self.deps.workspace.as_ref()
+    }
+
+    #[cfg(feature = "neo4j")]
+    fn graph_client(&self) -> Option<&Arc<crate::graph::GraphClient>> {
+        self.deps.graph_client.as_ref()
     }
 
     /// Try to resolve a `/skill-name [args]` invocation from the workspace.
@@ -528,6 +538,8 @@ impl Agent {
                         self.llm().clone(),
                         self.store().cloned(),
                         Some(notify_tx),
+                        #[cfg(feature = "neo4j")]
+                        self.graph_client().cloned(),
                     ))
                 } else {
                     tracing::warn!("Heartbeat enabled but no workspace available");
