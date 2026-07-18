@@ -58,6 +58,7 @@ async fn start_test_server() -> (
         channel_env_config: std::collections::HashMap::new(),
         #[cfg(feature = "neo4j")]
         graph_client: None,
+        app_config: None,
     });
 
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -278,6 +279,60 @@ async fn test_gateway_status_endpoint() {
     assert_eq!(body["ws_connections"], 1);
     assert!(body["total_connections"].as_u64().unwrap() >= 1);
 }
+
+#[tokio::test]
+async fn test_sandbox_status_endpoint_not_configured() {
+    // start_test_server()'s state has app_config: None, mirroring a
+    // deployment where the gateway never received a live SandboxModeConfig
+    // (e.g. an older build, or a code path that forgot to wire it up).
+    let (addr, _state, _agent_rx) = start_test_server().await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("http://{}/api/sandbox/status", addr))
+        .header("Authorization", format!("Bearer {}", AUTH_TOKEN))
+        .send()
+        .await
+        .expect("Failed to fetch sandbox status");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["configured"], false);
+    assert_eq!(body["docker_available"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn test_env_config_endpoint_no_app_config() {
+    // start_test_server()'s state has app_config: None. The endpoint should
+    // still return 200 with just the always-present live "graph.connected"
+    // field, not error out.
+    let (addr, _state, _agent_rx) = start_test_server().await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("http://{}/api/settings/env-config", addr))
+        .header("Authorization", format!("Bearer {}", AUTH_TOKEN))
+        .send()
+        .await
+        .expect("Failed to fetch env config");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let fields = body["fields"].as_array().expect("fields array");
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0]["key"], "graph.connected");
+    assert_eq!(fields[0]["value"], false);
+    assert_eq!(fields[0]["env_var"], serde_json::Value::Null);
+}
+
+// The "configured" (non-empty app_config) case for /api/sandbox/status and
+// /api/settings/env-config is covered by pure-function unit tests in
+// src/channels/web/server.rs (build_sandbox_status / build_env_config_fields)
+// rather than here -- constructing a full rustytalon::config::Config for an
+// HTTP-level integration test would require populating a dozen unrelated
+// sub-configs with no Default impl (DatabaseConfig, LlmConfig, AgentConfig,
+// etc.), coupling this test to config shape that has nothing to do with what
+// it's testing.
 
 #[tokio::test]
 async fn test_ws_no_auth_rejected() {

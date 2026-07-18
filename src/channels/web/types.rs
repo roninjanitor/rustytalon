@@ -699,6 +699,41 @@ pub struct SettingsExportResponse {
     pub settings: std::collections::HashMap<String, serde_json::Value>,
 }
 
+/// Live, read-only Docker sandbox status. Unlike the generic `settings.*`
+/// catalog, these values come straight from the boot-resolved `SANDBOX_*`
+/// env vars (there is no DB-backed override path for sandbox config), so
+/// this is a distinct endpoint rather than a `settings` row.
+#[derive(Debug, Serialize)]
+pub struct SandboxStatusResponse {
+    /// Whether a sandbox was configured at all (`job_manager` constructed).
+    pub configured: bool,
+    pub enabled: bool,
+    pub policy: String,
+    pub timeout_secs: u64,
+    pub memory_limit_mb: u64,
+    pub image: String,
+    pub auto_pull_image: bool,
+    /// Live Docker reachability, from the periodic health-check poll --
+    /// `None` when sandbox isn't configured at all.
+    pub docker_available: Option<bool>,
+}
+
+/// One read-only settings value: `key` matches a `SETTINGS_SECTIONS` catalog
+/// entry (e.g. `"safety.max_output_length"`), `env_var` is the environment
+/// variable that controls it (`None` for a live/derived signal such as
+/// `"graph.connected"` rather than a boot-resolved config value).
+#[derive(Debug, Serialize)]
+pub struct EnvConfigField {
+    pub key: String,
+    pub value: serde_json::Value,
+    pub env_var: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EnvConfigResponse {
+    pub fields: Vec<EnvConfigField>,
+}
+
 // --- Health ---
 
 #[derive(Debug, Serialize)]

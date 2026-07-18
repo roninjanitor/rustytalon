@@ -1536,6 +1536,7 @@ async fn main() -> anyhow::Result<()> {
         if let Some(ref jm) = container_job_manager {
             gw = gw.with_job_manager(Arc::clone(jm));
         }
+        gw = gw.with_app_config(Arc::new(config.clone()));
         #[cfg(feature = "neo4j")]
         if let Some(ref gc) = graph_client {
             gw = gw.with_graph_client(Arc::clone(gc));

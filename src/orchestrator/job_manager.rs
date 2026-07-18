@@ -156,9 +156,31 @@ impl ContainerJobManager {
 
     /// Ping Docker and update the cached availability flag. Intended to be called
     /// periodically from a background task started at startup.
+    ///
+    /// Failures log at `warn!` on *every* poll (not just on the
+    /// available-to-unavailable transition) -- a Docker daemon that is
+    /// unreachable from the very first check (e.g. a mounted socket the
+    /// process's non-root user can't actually open) never has an
+    /// available-to-unavailable edge to log, so it must warn every cycle or
+    /// `create_job` silently stays on the local-only fallback path forever
+    /// with nothing in the logs to explain why.
     pub async fn refresh_docker_health(&self) {
-        let available = connect_docker().await.is_ok();
-        self.docker_available.store(available, Ordering::Relaxed);
+        let result = connect_docker().await;
+        let available = result.is_ok();
+        let was_available = self.docker_available.swap(available, Ordering::Relaxed);
+
+        match result {
+            Ok(_) if !was_available => {
+                tracing::info!("Docker is now reachable; sandbox job execution enabled");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Docker unreachable; create_job will fall back to local execution"
+                );
+            }
+        }
     }
 
     /// Create and start a new container for a job.

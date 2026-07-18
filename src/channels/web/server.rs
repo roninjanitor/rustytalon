@@ -153,6 +153,14 @@ pub struct GatewayState {
     /// built with the `neo4j` feature and Neo4j is configured/reachable.
     #[cfg(feature = "neo4j")]
     pub graph_client: Option<Arc<crate::graph::GraphClient>>,
+    /// The full effective config, resolved once from env vars (and, for a
+    /// handful of sections, the DB `settings` table) at boot. Several config
+    /// sections -- `sandbox`, `safety`, `wasm`, `builder`, `routines`,
+    /// `claude_code`, `search`, `graph` -- have no DB-backed override path at
+    /// all (their `resolve()` never reads the `settings` table), so the
+    /// settings UI renders those sections read-only from here instead of as
+    /// editable rows that would silently have no effect.
+    pub app_config: Option<Arc<crate::config::Config>>,
 }
 
 /// Start the gateway HTTP server.
@@ -267,6 +275,8 @@ pub async fn start_server(
         .route("/api/routines/{id}/runs", get(routines_runs_handler))
         // Settings
         .route("/api/settings", get(settings_list_handler))
+        .route("/api/sandbox/status", get(sandbox_status_handler))
+        .route("/api/settings/env-config", get(env_config_handler))
         .route("/api/settings/export", get(settings_export_handler))
         .route("/api/settings/import", post(settings_import_handler))
         .route("/api/settings/{key}", get(settings_get_handler))
@@ -2781,6 +2791,274 @@ async fn settings_set_handler(
     Ok(Json(serde_json::json!({ "ok": true, "key": key })))
 }
 
+/// Pure mapping from a resolved `SandboxModeConfig` (+ live Docker health) to
+/// the wire response. Split out from `sandbox_status_handler` so it's
+/// testable without a running server or a full `Config`.
+fn build_sandbox_status(
+    cfg: Option<&crate::config::SandboxModeConfig>,
+    docker_available: Option<bool>,
+) -> SandboxStatusResponse {
+    let Some(cfg) = cfg else {
+        return SandboxStatusResponse {
+            configured: false,
+            enabled: false,
+            policy: String::new(),
+            timeout_secs: 0,
+            memory_limit_mb: 0,
+            image: String::new(),
+            auto_pull_image: false,
+            docker_available: None,
+        };
+    };
+
+    SandboxStatusResponse {
+        configured: true,
+        enabled: cfg.enabled,
+        policy: cfg.policy.clone(),
+        timeout_secs: cfg.timeout_secs,
+        memory_limit_mb: cfg.memory_limit_mb,
+        image: cfg.image.clone(),
+        auto_pull_image: cfg.auto_pull_image,
+        docker_available,
+    }
+}
+
+/// Live Docker sandbox status, read-only. See `SandboxStatusResponse` for why
+/// this doesn't go through the generic `settings` CRUD endpoints.
+async fn sandbox_status_handler(
+    State(state): State<Arc<GatewayState>>,
+) -> Json<SandboxStatusResponse> {
+    let docker_available = state.job_manager.as_ref().map(|jm| jm.docker_available());
+    Json(build_sandbox_status(
+        state.app_config.as_ref().map(|c| &c.sandbox),
+        docker_available,
+    ))
+}
+
+/// Pure mapping from the individual env-only config sections to the flat
+/// field list the settings UI consumes. Split out from `env_config_handler`
+/// (and takes narrow sub-configs rather than the whole `Config`) so it's
+/// testable with just `SafetyConfig::default()` etc., all of which implement
+/// `Default` -- unlike the top-level `Config`, which doesn't (several of its
+/// other sections, e.g. `DatabaseConfig`/`LlmConfig`, have no sensible
+/// default and aren't relevant to what this function does).
+///
+/// Each field's `key` matches the corresponding entry's `key` in the
+/// frontend's `SETTINGS_SECTIONS` catalog (e.g. `"safety.max_output_length"`)
+/// so the UI can render label/description from the catalog and the actual
+/// value + controlling env var from here. Secret values (API keys, DB
+/// passwords) are never included -- only whether one is configured.
+fn build_env_config_fields(
+    safety: &crate::config::SafetyConfig,
+    wasm: &crate::config::WasmConfig,
+    builder: &crate::config::BuilderModeConfig,
+    routines: &crate::config::RoutineConfig,
+    claude_code: &crate::config::ClaudeCodeConfig,
+    search: &crate::config::SearchConfig,
+    graph: &crate::config::Neo4jConfig,
+) -> Vec<EnvConfigField> {
+    let mut fields = Vec::new();
+    macro_rules! field {
+        ($key:expr, $value:expr, $env:expr) => {
+            fields.push(EnvConfigField {
+                key: $key.to_string(),
+                value: serde_json::json!($value),
+                env_var: Some($env.to_string()),
+            })
+        };
+    }
+    macro_rules! live_field {
+        ($key:expr, $value:expr) => {
+            fields.push(EnvConfigField {
+                key: $key.to_string(),
+                value: serde_json::json!($value),
+                env_var: None,
+            })
+        };
+    }
+
+    field!(
+        "safety.injection_check_enabled",
+        safety.injection_check_enabled,
+        "SAFETY_INJECTION_CHECK_ENABLED"
+    );
+    field!(
+        "safety.max_output_length",
+        safety.max_output_length,
+        "SAFETY_MAX_OUTPUT_LENGTH"
+    );
+
+    field!("wasm.enabled", wasm.enabled, "WASM_ENABLED");
+    field!(
+        "wasm.default_memory_limit",
+        wasm.default_memory_limit,
+        "WASM_DEFAULT_MEMORY_LIMIT"
+    );
+    field!(
+        "wasm.default_timeout_secs",
+        wasm.default_timeout_secs,
+        "WASM_DEFAULT_TIMEOUT_SECS"
+    );
+    field!(
+        "wasm.default_fuel_limit",
+        wasm.default_fuel_limit,
+        "WASM_DEFAULT_FUEL_LIMIT"
+    );
+    field!(
+        "wasm.cache_compiled",
+        wasm.cache_compiled,
+        "WASM_CACHE_COMPILED"
+    );
+
+    field!("builder.enabled", builder.enabled, "BUILDER_ENABLED");
+    field!(
+        "builder.max_iterations",
+        builder.max_iterations,
+        "BUILDER_MAX_ITERATIONS"
+    );
+    field!(
+        "builder.timeout_secs",
+        builder.timeout_secs,
+        "BUILDER_TIMEOUT_SECS"
+    );
+    field!(
+        "builder.auto_register",
+        builder.auto_register,
+        "BUILDER_AUTO_REGISTER"
+    );
+
+    field!("routines.enabled", routines.enabled, "ROUTINES_ENABLED");
+    field!(
+        "routines.cron_check_interval_secs",
+        routines.cron_check_interval_secs,
+        "ROUTINES_CRON_INTERVAL"
+    );
+    field!(
+        "routines.max_concurrent_routines",
+        routines.max_concurrent_routines,
+        "ROUTINES_MAX_CONCURRENT"
+    );
+    field!(
+        "routines.default_cooldown_secs",
+        routines.default_cooldown_secs,
+        "ROUTINES_DEFAULT_COOLDOWN"
+    );
+    field!(
+        "routines.max_lightweight_tokens",
+        routines.max_lightweight_tokens,
+        "ROUTINES_MAX_TOKENS"
+    );
+
+    field!(
+        "claude_code.enabled",
+        claude_code.enabled,
+        "CLAUDE_CODE_ENABLED"
+    );
+    field!("claude_code.model", claude_code.model, "CLAUDE_CODE_MODEL");
+    field!(
+        "claude_code.max_turns",
+        claude_code.max_turns,
+        "CLAUDE_CODE_MAX_TURNS"
+    );
+    field!(
+        "claude_code.memory_limit_mb",
+        claude_code.memory_limit_mb,
+        "CLAUDE_CODE_MEMORY_LIMIT_MB"
+    );
+    field!(
+        "claude_code.config_dir",
+        claude_code.config_dir.display().to_string(),
+        "CLAUDE_CONFIG_DIR"
+    );
+    field!(
+        "claude_code.allowed_tools",
+        claude_code.allowed_tools.join(", "),
+        "CLAUDE_CODE_ALLOWED_TOOLS"
+    );
+
+    field!(
+        "search.searxng_url",
+        search.searxng_url.clone().unwrap_or_default(),
+        "SEARXNG_URL"
+    );
+    field!(
+        "search.brave_api_key",
+        search.brave_api_key.is_some(),
+        "BRAVE_SEARCH_API_KEY"
+    );
+    field!(
+        "search.tavily_api_key",
+        search.tavily_api_key.is_some(),
+        "TAVILY_API_KEY"
+    );
+    live_field!("search.active", search_active_provider(search));
+
+    field!("graph.enabled", graph.enabled, "NEO4J_ENABLED");
+    field!(
+        "graph.uri",
+        graph.uri.clone().unwrap_or_default(),
+        "NEO4J_URI"
+    );
+    field!(
+        "graph.user",
+        graph.user.clone().unwrap_or_default(),
+        "NEO4J_USER"
+    );
+    field!("graph.password", graph.password.is_some(), "NEO4J_PASSWORD");
+
+    fields
+}
+
+/// Live, read-only values for every settings section whose config has no
+/// DB-backed override path: Safety, WASM Sandbox, Tool Builder, Routines,
+/// Claude Code, Search, and Knowledge Graph (Docker Sandbox has its own
+/// richer `sandbox_status_handler` above, for the live `docker_available`
+/// signal).
+async fn env_config_handler(State(state): State<Arc<GatewayState>>) -> Json<EnvConfigResponse> {
+    let mut fields = state
+        .app_config
+        .as_ref()
+        .map(|cfg| {
+            build_env_config_fields(
+                &cfg.safety,
+                &cfg.wasm,
+                &cfg.builder,
+                &cfg.routines,
+                &cfg.claude_code,
+                &cfg.search,
+                &cfg.graph,
+            )
+        })
+        .unwrap_or_default();
+
+    #[cfg(feature = "neo4j")]
+    let graph_connected = state.graph_client.is_some();
+    #[cfg(not(feature = "neo4j"))]
+    let graph_connected = false;
+    fields.push(EnvConfigField {
+        key: "graph.connected".to_string(),
+        value: serde_json::json!(graph_connected),
+        env_var: None,
+    });
+
+    Json(EnvConfigResponse { fields })
+}
+
+/// Which web search backend is actually active, given the documented
+/// priority: SearXNG (self-hosted) > Brave > Tavily. Mirrors
+/// `SearchConfig::is_enabled()`'s precedence without exposing key material.
+fn search_active_provider(search: &crate::config::SearchConfig) -> &'static str {
+    if search.searxng_url.is_some() {
+        "searxng"
+    } else if search.brave_api_key.is_some() {
+        "brave"
+    } else if search.tavily_api_key.is_some() {
+        "tavily"
+    } else {
+        "none"
+    }
+}
+
 async fn settings_delete_handler(
     State(state): State<Arc<GatewayState>>,
     Path(key): Path<String>,
@@ -3728,6 +4006,133 @@ fn sanitize_skill_name(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── build_sandbox_status / build_env_config_fields ──────────────────────
+
+    #[test]
+    fn test_build_sandbox_status_not_configured() {
+        let resp = build_sandbox_status(None, None);
+        assert!(!resp.configured);
+        assert!(resp.docker_available.is_none());
+    }
+
+    #[test]
+    fn test_build_sandbox_status_configured() {
+        let cfg = crate::config::SandboxModeConfig {
+            enabled: true,
+            policy: "readonly".to_string(),
+            timeout_secs: 120,
+            memory_limit_mb: 2048,
+            cpu_shares: 1024,
+            image: "rustytalon-worker:latest".to_string(),
+            auto_pull_image: true,
+            extra_allowed_domains: Vec::new(),
+        };
+        let resp = build_sandbox_status(Some(&cfg), Some(true));
+        assert!(resp.configured);
+        assert!(resp.enabled);
+        assert_eq!(resp.policy, "readonly");
+        assert_eq!(resp.image, "rustytalon-worker:latest");
+        assert_eq!(resp.docker_available, Some(true));
+    }
+
+    #[test]
+    fn test_build_env_config_fields_uses_defaults() {
+        let fields = build_env_config_fields(
+            &crate::config::SafetyConfig {
+                max_output_length: 100_000,
+                injection_check_enabled: true,
+            },
+            &crate::config::WasmConfig::default(),
+            &crate::config::BuilderModeConfig::default(),
+            &crate::config::RoutineConfig::default(),
+            &crate::config::ClaudeCodeConfig::default(),
+            &crate::config::SearchConfig::default(),
+            &crate::config::Neo4jConfig::default(),
+        );
+
+        let by_key: std::collections::HashMap<_, _> =
+            fields.iter().map(|f| (f.key.as_str(), f)).collect();
+
+        let wasm_enabled = by_key.get("wasm.enabled").expect("wasm.enabled present");
+        assert_eq!(wasm_enabled.value, serde_json::json!(true));
+        assert_eq!(wasm_enabled.env_var.as_deref(), Some("WASM_ENABLED"));
+
+        // Secrets must never leak the raw value -- only presence.
+        let brave = by_key
+            .get("search.brave_api_key")
+            .expect("search.brave_api_key present");
+        assert_eq!(brave.value, serde_json::json!(false));
+
+        let password = by_key
+            .get("graph.password")
+            .expect("graph.password present");
+        assert_eq!(password.value, serde_json::json!(false));
+
+        // No provider configured -> "none", and it's a live/derived field
+        // (no controlling env var of its own).
+        let active = by_key.get("search.active").expect("search.active present");
+        assert_eq!(active.value, serde_json::json!("none"));
+        assert!(active.env_var.is_none());
+    }
+
+    #[test]
+    fn test_build_env_config_fields_never_leaks_secret_values() {
+        let search = crate::config::SearchConfig {
+            brave_api_key: Some(secrecy::SecretString::from("sk-super-secret".to_string())),
+            ..Default::default()
+        };
+        let graph = crate::config::Neo4jConfig {
+            password: Some(secrecy::SecretString::from("hunter2".to_string())),
+            ..Default::default()
+        };
+
+        let fields = build_env_config_fields(
+            &crate::config::SafetyConfig {
+                max_output_length: 100_000,
+                injection_check_enabled: true,
+            },
+            &crate::config::WasmConfig::default(),
+            &crate::config::BuilderModeConfig::default(),
+            &crate::config::RoutineConfig::default(),
+            &crate::config::ClaudeCodeConfig::default(),
+            &search,
+            &graph,
+        );
+
+        for f in &fields {
+            let as_str = f.value.to_string();
+            assert!(
+                !as_str.contains("sk-super-secret") && !as_str.contains("hunter2"),
+                "field {} leaked a secret value: {}",
+                f.key,
+                as_str
+            );
+        }
+        let by_key: std::collections::HashMap<_, _> =
+            fields.iter().map(|f| (f.key.as_str(), f)).collect();
+        assert_eq!(
+            by_key["search.brave_api_key"].value,
+            serde_json::json!(true)
+        );
+        assert_eq!(by_key["graph.password"].value, serde_json::json!(true));
+        assert_eq!(by_key["search.active"].value, serde_json::json!("brave"));
+    }
+
+    #[test]
+    fn test_search_active_provider_priority() {
+        let mut search = crate::config::SearchConfig::default();
+        assert_eq!(search_active_provider(&search), "none");
+
+        search.tavily_api_key = Some(secrecy::SecretString::from("t".to_string()));
+        assert_eq!(search_active_provider(&search), "tavily");
+
+        search.brave_api_key = Some(secrecy::SecretString::from("b".to_string()));
+        assert_eq!(search_active_provider(&search), "brave");
+
+        search.searxng_url = Some("http://localhost:8888".to_string());
+        assert_eq!(search_active_provider(&search), "searxng");
+    }
 
     // ── semver_gt ────────────────────────────────────────────────────────
 
